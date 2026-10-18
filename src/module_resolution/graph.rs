@@ -59,6 +59,14 @@ impl ModuleGraph {
     /// be absolute so that one file is never interned under two spellings of its path.
     /// The ids of the result follow path order, whatever order the entries were given in.
     pub fn build(entries: &[PathBuf], resolver: &ModuleResolver) -> Result<Self, ModuleError> {
+        // Discovery parses every file on the calling thread, and the parser recurses on
+        // nested syntax. It runs on the same 64 MB stack the checking workers have, so a
+        // file this can parse is a file they can parse, and not on whatever stack the
+        // caller happens to be on (8 MB for a main thread, 2 MB for a spawned one).
+        crate::stack_guard::on_big_stack(|| Self::discover(entries, resolver))
+    }
+
+    fn discover(entries: &[PathBuf], resolver: &ModuleResolver) -> Result<Self, ModuleError> {
         // Discovery ids: handed out as files are found, and used only until the walk ends.
         let mut files = ProjectFiles::new();
         for entry in entries {

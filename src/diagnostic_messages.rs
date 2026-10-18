@@ -312,6 +312,16 @@ pub mod messages {
         )
     }
 
+    // Not a tsc diagnostic: the file nests expressions or declarations deeper than the
+    // checker's stack allows, so it stopped descending there and the types below that
+    // point are unknown. tsc has no limit of this kind; it would overflow its own stack.
+    pub fn nesting_too_deep() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::NestingTooDeep,
+            "This code is nested too deeply for the checker; the types below this point are not checked.",
+        )
+    }
+
     pub fn module_not_found(specifier: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::ModuleNotFound,

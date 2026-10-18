@@ -90,6 +90,7 @@ pub enum DiagnosticCode {
 
     // 9100s: the checker itself failed (no tsc counterpart)
     InternalCheckerError,
+    NestingTooDeep,
 }
 
 impl DiagnosticCode {
@@ -158,6 +159,7 @@ impl DiagnosticCode {
             UnresolvableDestructuringTypeAnnotation => "TSR9013",
             UnresolvableTypeParameterConstraint => "TSR9014",
             InternalCheckerError => "TSR9101",
+            NestingTooDeep => "TSR9102",
 
             UnreachableCode => "TSR1601",
             ExpressionTooComplex => "TSR1701",
@@ -239,7 +241,8 @@ impl DiagnosticCode {
             | UnresolvableTypeAnnotation
             | UnresolvableDestructuringTypeAnnotation
             | UnresolvableTypeParameterConstraint
-            | InternalCheckerError => return None,
+            | InternalCheckerError
+            | NestingTooDeep => return None,
         })
     }
 

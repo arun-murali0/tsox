@@ -99,6 +99,11 @@ pub(crate) fn check_file(
 
     declare_phase(&program, &mut ctx);
     bodies_phase(&program, &semantic, &mut ctx);
+    // The guard in the namespace has no diagnostics of its own to write to, so it left a
+    // flag. The position is the start of the file, since a cut chain has no one place.
+    if ctx.namespace.take_depth_cut() {
+        ctx.nesting_too_deep(oxc_span::Span::new(0, 0));
+    }
     if ctx.cancelled {
         *arena = ctx.arena;
         return Ok(None);

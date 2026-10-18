@@ -143,14 +143,14 @@ fn main() -> ExitCode {
 #[cfg(feature = "module-resolution")]
 fn run(files: &[PathBuf], options: &Options) -> Result<Tally, String> {
     if options.flat {
-        return Ok(check_flat(files));
+        return Ok(ts_rust::with_deep_stack(|| check_flat(files)));
     }
     check_with_modules(files, options)
 }
 
 #[cfg(not(feature = "module-resolution"))]
 fn run(files: &[PathBuf], _options: &Options) -> Result<Tally, String> {
-    Ok(check_flat(files))
+    Ok(ts_rust::with_deep_stack(|| check_flat(files)))
 }
 
 // One file at a time with no knowledge of the others, which is what every build did

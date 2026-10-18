@@ -22,10 +22,12 @@ mod scc;
 #[cfg(feature = "scratchpad")]
 mod scratchpad;
 mod semantic;
+mod source_depth;
 #[allow(dead_code)]
 mod stable_hash;
 #[allow(dead_code)]
 mod stable_walk;
+mod stack_guard;
 mod subtyping;
 mod symbol_map;
 #[cfg(feature = "module-resolution")]
@@ -54,6 +56,7 @@ pub use portable::{
     PortableDecl, PortableType,
 };
 pub use stable_hash::Prim;
+pub use stack_guard::with_deep_stack;
 pub use unit::{AmbientExports, CancelToken, UnitContext, UnitError, UnitOutput, Worker};
 
 #[cfg(feature = "incremental")]

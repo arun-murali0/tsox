@@ -54,6 +54,14 @@ impl<'a, R: KeyResolver> StableHasher<'a, R> {
     }
 
     pub(crate) fn hash(&mut self, id: TypeId) -> Option<NodeHash> {
+        // The walk is as deep as one declaration's own nesting, which a file can make as
+        // deep as it likes (`number[][][]...`). Past the stack budget the type has no
+        // identity, which is the answer the caller already treats as an export it cannot
+        // represent: incomplete, never wrong. Nothing is cached for it here, so a shallower
+        // caller that asks again is not told the type is unhashable.
+        if crate::stack_guard::exhausted() {
+            return None;
+        }
         let at = id.index() as usize;
         // Grown on demand, so this needs nothing from the arena but the id.
         if at >= self.cache.len() {
