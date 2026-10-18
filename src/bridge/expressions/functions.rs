@@ -77,10 +77,16 @@ fn infer_arrow_function_type_inner(
         let inferred = infer_expression_type(body_expr, scoping, ctx);
         match declared_return {
             Some(declared) => {
-                if !ctx.is_assignable_instantiating(inferred, declared) {
+                // An async arrow's expression is a T where the annotation says Promise<T>.
+                let (checked, expected) = if arrow.r#async {
+                    (ctx.awaited_type(inferred), ctx.promised_type(declared))
+                } else {
+                    (inferred, declared)
+                };
+                if !ctx.is_assignable_instantiating(checked, expected) {
                     ctx.error(
                         crate::diagnostic_messages::messages::return_type_mismatch(
-                            &ctx.arena, inferred, declared,
+                            &ctx.arena, checked, expected,
                         ),
                         body_expr.span(),
                     );
@@ -97,7 +103,7 @@ fn infer_arrow_function_type_inner(
         // A block body has no return inference yet. Without an annotation its returns are
         // checked against any, so nothing false can be said about them.
         let return_type = declared_return.unwrap_or_else(|| ctx.arena.any());
-        let return_scope = ctx.enter_return_scope(Some(return_type), false);
+        let return_scope = ctx.enter_function_return_scope(Some(return_type), false, arrow.r#async);
         for body_stmt in &body.statements {
             check_statement(body_stmt, scoping, ctx);
         }
@@ -157,7 +163,7 @@ fn infer_function_expression_type_inner(
     let return_type = declared_return.unwrap_or_else(|| ctx.arena.any());
 
     if let Some(body) = &func.body {
-        let return_scope = ctx.enter_return_scope(Some(return_type), false);
+        let return_scope = ctx.enter_function_return_scope(Some(return_type), false, func.r#async);
 
         // Unlike an arrow function, a plain function expression gets its own
         // `this` binding at call time rather than inheriting the enclosing one,

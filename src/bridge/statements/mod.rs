@@ -59,6 +59,13 @@ pub(super) fn check_return_statement(
         }
     }
 
+    // In an async function what is returned is awaited, so `return promise` is a T.
+    let actual = if ctx.current_return_async {
+        ctx.awaited_type(actual)
+    } else {
+        actual
+    };
+
     if let Some(expected) = ctx.current_return_type {
         if !ctx.is_assignable_instantiating(actual, expected) {
             let whole = crate::diagnostic_messages::messages::return_type_mismatch(
