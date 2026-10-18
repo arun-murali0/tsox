@@ -199,3 +199,24 @@ fn an_async_return_of_the_wrong_type_still_fails() {
         "got: {diagnostics:?}"
     );
 }
+
+// Problem: `{ get x() { ... } }` gave the object a property x typed as the getter function,
+// so `const n: number = obj.x` was reported as `() => any` not assignable to number.
+// Now: a getter is the type it returns and a setter the type it accepts.
+#[test]
+fn an_object_literal_accessor_is_a_property() {
+    let source =
+        include_str!("fixtures/false-positive-fixes/object_literal_accessors_are_properties.ts");
+    assert_clean(&check(source, "object_literal_accessors_are_properties.ts"));
+}
+
+#[test]
+fn an_object_literal_getter_still_has_its_type() {
+    let source = include_str!("fixtures/false-positive-fixes/object_literal_accessor_mismatch.ts");
+    let diagnostics = check(source, "object_literal_accessor_mismatch.ts");
+    let error = the_one_error(&diagnostics);
+    assert!(
+        error.message.contains("'number'") && error.message.contains("'string'"),
+        "got: {diagnostics:?}"
+    );
+}
