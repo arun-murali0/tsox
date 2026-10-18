@@ -54,8 +54,6 @@ pub enum IncompleteReason {
     /// `export default function () {}` with no body and no return annotation: its return
     /// type would have to be inferred from a body that has no symbol.
     AnonymousDefaultWithoutSignature,
-    /// A default export of a declaration kind with no portable form.
-    UnsupportedDefaultExport,
     /// `export = x` where x is not an object value: it can carry properties the model
     /// cannot list.
     NonObjectExportAssignment,
@@ -68,10 +66,16 @@ pub enum IncompleteReason {
     DeclarationFileWithoutExportStatement,
     /// An exported declaration the portable form could not be built for.
     UnrepresentableDeclaration,
-    /// `export * from` a module whose export list is partial or not known.
+    /// `export * from` a module whose export list was read and is partial. The file is partial
+    /// only because that module is.
     StarFromPartialModule,
-    /// `export * as ns from` a module whose export list is partial or not known.
+    /// `export * as ns from` a module whose export list was read and is partial.
     NamespaceStarFromPartialModule,
+    /// `export * from` a module that is missing, or that exists but whose exports were not
+    /// read. The cause is the module, not a partial list upstream.
+    StarFromUnknownModule,
+    /// `export * as ns from` a module that is missing, or whose exports were not read.
+    NamespaceStarFromUnknownModule,
 }
 
 impl IncompleteReason {
@@ -85,7 +89,6 @@ impl IncompleteReason {
             Self::AnonymousDefaultWithoutSignature => {
                 "an anonymous default function has no signature to export"
             }
-            Self::UnsupportedDefaultExport => "a default export of an unsupported kind",
             Self::NonObjectExportAssignment => "`export =` of a value that may carry properties",
             Self::UnknownLocalExport => "an export names something not declared in the file",
             Self::UnresolvedReExport => "a re-exported import has no known source",
@@ -97,7 +100,28 @@ impl IncompleteReason {
             Self::NamespaceStarFromPartialModule => {
                 "`export * as ns` from a module with a partial list"
             }
+            Self::StarFromUnknownModule => "`export *` from a module that is missing or not read",
+            Self::NamespaceStarFromUnknownModule => {
+                "`export * as ns` from a module that is missing or not read"
+            }
         }
+    }
+}
+
+// Why a star re-export leaves the list partial, if it does. A module whose list was read and is
+// complete adds nothing. One whose list was read and is partial passes its partiality on. Anything
+// else (no file for the specifier, a file whose exports were not read, no import table at all) is
+// a problem with the module itself and is reported as such, so a missing module is not counted as
+// a partial list upstream.
+fn star_reason(
+    known: Option<ModuleExports>,
+    partial: IncompleteReason,
+    unknown: IncompleteReason,
+) -> Option<IncompleteReason> {
+    match known {
+        Some(ModuleExports::Known { complete: true }) => None,
+        Some(ModuleExports::Known { complete: false }) => Some(partial),
+        Some(ModuleExports::Unresolved | ModuleExports::Unknown) | None => Some(unknown),
     }
 }
 
@@ -692,9 +716,10 @@ fn collect_in<'ast>(
                         );
                     }
                 }
-                // Anonymous function/class declarations still need a dedicated portable
-                // callable/class-signature representation; don't pretend they're complete.
-                _ => table.mark(IncompleteReason::UnsupportedDefaultExport),
+                // Every default-export form oxc has today is handled above, so this arm is
+                // not reached. It stays so that a form a later oxc adds leaves the list
+                // partial instead of being skipped silently.
+                _ => table.mark(IncompleteReason::UnsupportedDeclaration),
             },
             Statement::ExportNamedDeclaration(named) => {
                 for spec in &named.specifiers {
@@ -1152,8 +1177,12 @@ fn collect_in<'ast>(
     for source in stars {
         let imports = ctx.imports;
         let known = imports.map(|i| i.module_exports(&source));
-        if !matches!(known, Some(ModuleExports::Known { complete: true })) {
-            table.mark(IncompleteReason::StarFromPartialModule);
+        if let Some(reason) = star_reason(
+            known,
+            IncompleteReason::StarFromPartialModule,
+            IncompleteReason::StarFromUnknownModule,
+        ) {
+            table.mark(reason);
         }
         let local: std::collections::HashSet<String> = order
             .iter()
@@ -1182,8 +1211,12 @@ fn collect_in<'ast>(
     // their shapes into declarations owned by the barrel file.
     for (alias, source) in namespace_stars {
         let known = ctx.imports.map(|imports| imports.module_exports(&source));
-        if !matches!(known, Some(ModuleExports::Known { complete: true })) {
-            table.mark(IncompleteReason::NamespaceStarFromPartialModule);
+        if let Some(reason) = star_reason(
+            known,
+            IncompleteReason::NamespaceStarFromPartialModule,
+            IncompleteReason::NamespaceStarFromUnknownModule,
+        ) {
+            table.mark(reason);
         }
         let existing_names: std::collections::HashSet<String> =
             table.names.iter().map(|(name, _)| name.clone()).collect();
