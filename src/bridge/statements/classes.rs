@@ -162,7 +162,11 @@ pub(super) fn check_class_declaration(
                 };
 
                 bind_params(&method.value.params, &method_type.params, scoping, ctx);
-                let return_scope = ctx.enter_return_scope(Some(method_type.return_type), false);
+                let return_scope = ctx.enter_function_return_scope(
+                    Some(method_type.return_type),
+                    false,
+                    method.value.r#async,
+                );
                 let outer_narrow = std::mem::take(&mut ctx.narrow);
                 for body_stmt in &method_body.statements {
                     check_statement(body_stmt, scoping, ctx);
@@ -195,7 +199,8 @@ pub(super) fn check_class_declaration(
                     method.value.return_type.as_ref().and_then(|rt| {
                         resolve_type_annotation(rt, &mut ctx.namespace, &mut ctx.arena)
                     });
-                let return_scope = ctx.enter_return_scope(return_type, false);
+                let return_scope =
+                    ctx.enter_function_return_scope(return_type, false, method.value.r#async);
                 // `this` inside a static method is not the instance; tsc types
                 // it as the class's constructor type, which this checker does
                 // not model. Clearing current_class_instance to None for just

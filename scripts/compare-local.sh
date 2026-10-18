@@ -31,6 +31,8 @@ set -o pipefail
 #   ./scripts/compare-local.sh tests/fixtures --strict-only   # old flag set
 #   ./scripts/compare-local.sh tests/fixtures --json          # machine-readable
 #   ./scripts/compare-local.sh tests/fixtures --summary       # numbers only, no tables or JSON
+#   ./scripts/compare-local.sh tests/fixtures --background    # starts detached, returns at once
+#   ./scripts/compare-local.sh --status [run-folder]          # state, progress and the summary
 #   ./scripts/compare-local.sh path/to/project --module       # cross-file: tsc checks the
 #                                                             # directory as ONE project
 #
@@ -50,8 +52,18 @@ set -o pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}" || exit 2
 
-TARGET="${1:-tests/fixtures}"
-shift || true
+# --status only reads a background run's folder, so it needs neither the build nor tsc.
+if [ "${1:-}" = "--status" ]; then
+  exec node scripts/ts-diag-tool/compare.js "$@"
+fi
+
+# A first argument that is a flag leaves the target at its default.
+if [[ "${1:-}" == --* ]]; then
+  TARGET="tests/fixtures"
+else
+  TARGET="${1:-tests/fixtures}"
+  shift || true
+fi
 EXTRA_ARGS=("$@")
 
 DIAG_TOOL_DIR="scripts/ts-diag-tool"

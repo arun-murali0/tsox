@@ -84,7 +84,11 @@ pub(super) fn check_function_declaration(
     // No return annotation means the signature carries the placeholder `any` and the
     // body's returned types are collected to replace it (see declare_function).
     let infers_return = func.return_type.is_none();
-    let return_scope = ctx.enter_return_scope(Some(function_type.return_type), infers_return);
+    let return_scope = ctx.enter_function_return_scope(
+        Some(function_type.return_type),
+        infers_return,
+        func.r#async,
+    );
     hoist_function_declarations(&body.statements, ctx);
     for body_stmt in &body.statements {
         check_statement(body_stmt, scoping, ctx);
@@ -139,7 +143,11 @@ fn check_anonymous_function_body(
     let outer_narrow = std::mem::take(&mut ctx.narrow);
     let type_param_scope = ctx.namespace.push_type_params(&mut ctx.arena, func);
     let infers_return = func.return_type.is_none();
-    let return_scope = ctx.enter_return_scope(Some(function_type.return_type), infers_return);
+    let return_scope = ctx.enter_function_return_scope(
+        Some(function_type.return_type),
+        infers_return,
+        func.r#async,
+    );
     hoist_function_declarations(&body.statements, ctx);
     for body_stmt in &body.statements {
         check_statement(body_stmt, scoping, ctx);

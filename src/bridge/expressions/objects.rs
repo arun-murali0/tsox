@@ -1,4 +1,4 @@
-use oxc_ast::ast::{ObjectPropertyKind, PropertyKey};
+use oxc_ast::ast::{ObjectPropertyKind, PropertyKey, PropertyKind};
 use oxc_semantic::Scoping;
 
 use crate::arena::TypeId;
@@ -81,10 +81,23 @@ pub(super) fn infer_object_expression_type(
             None
         };
         let type_id = infer_expression_type(&property.value, scoping, ctx);
-        let type_id = if declared.iter().any(|d| holds_literal(ctx, *d)) {
-            type_id
+        // `{ get x() { ... } }` has a property x of the type the getter returns, and a setter
+        // one of the type it accepts. The function carrying either is not the property.
+        // A getter wins over a setter of the same name, whichever comes first.
+        let type_id = if property.kind == PropertyKind::Init {
+            if declared.iter().any(|d| holds_literal(ctx, *d)) {
+                type_id
+            } else {
+                crate::types::widen(&ctx.arena, type_id)
+            }
         } else {
-            crate::types::widen(&ctx.arena, type_id)
+            if property.kind == PropertyKind::Set && properties.iter().any(|p| &*p.name == name) {
+                continue;
+            }
+            match accessor_value_type(ctx, property.kind, type_id) {
+                Some(value_type) => value_type,
+                None => continue,
+            }
         };
         upsert_property(
             &mut properties,
@@ -102,6 +115,22 @@ pub(super) fn infer_object_expression_type(
         return ctx.arena.error();
     }
     ctx.arena.alloc(Type::Object(ObjectType::new(properties)))
+}
+
+// The type an accessor stands for: what a getter returns, what a setter takes first.
+fn accessor_value_type(
+    ctx: &CheckContext<'_, '_>,
+    kind: PropertyKind,
+    function: TypeId,
+) -> Option<TypeId> {
+    let Type::Function(function) = ctx.arena.get(function) else {
+        return None;
+    };
+    match kind {
+        PropertyKind::Get => Some(function.return_type),
+        PropertyKind::Set => function.params.first().map(|param| param.type_id),
+        PropertyKind::Init => None,
+    }
 }
 
 // The declared types of property `name` in `expected`: an object has it directly, a union

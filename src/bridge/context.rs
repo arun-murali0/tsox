@@ -56,6 +56,10 @@ pub struct CheckContext<'ast, 'src> {
     pub relation_cache: RelationCache,
 
     pub current_return_type: Option<TypeId>,
+    // True while the body of an `async` function is walked. What its `return` statements
+    // give is checked against the awaited type, since the annotation says Promise<T> but
+    // the body returns a T.
+    pub current_return_async: bool,
     // Problem: a function with no return annotation has no declared type to check its
     // `return` statements against, and none to give its callers.
     // Picked: while such a function's body is walked, every returned type lands here,
@@ -156,6 +160,7 @@ const CANCEL_CHECK_INTERVAL: u32 = 32;
 pub struct ReturnScope {
     outer_type: Option<TypeId>,
     outer_inferred: Option<Vec<TypeId>>,
+    outer_async: bool,
 }
 
 impl<'ast, 'src> CheckContext<'ast, 'src> {
@@ -166,13 +171,46 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
         ReturnScope {
             outer_type: std::mem::replace(&mut self.current_return_type, return_type),
             outer_inferred: std::mem::replace(&mut self.inferred_returns, infer.then(Vec::new)),
+            outer_async: std::mem::replace(&mut self.current_return_async, false),
         }
+    }
+
+    // enter_return_scope for a function that may be `async`. The annotation of an async
+    // function is Promise<T>, but its body returns a T, so the body is checked against T.
+    pub fn enter_function_return_scope(
+        &mut self,
+        declared: Option<TypeId>,
+        infer: bool,
+        is_async: bool,
+    ) -> ReturnScope {
+        let expected = declared.map(|ty| if is_async { self.promised_type(ty) } else { ty });
+        let scope = self.enter_return_scope(expected, infer);
+        self.current_return_async = is_async;
+        scope
+    }
+
+    // `Promise<T>` as T; any other type is left as it is.
+    pub fn promised_type(&self, declared: TypeId) -> TypeId {
+        match self.arena.app_parts(declared) {
+            Some(("Promise", [inner])) => *inner,
+            _ => declared,
+        }
+    }
+
+    // What `await` gives for a type: every Promise layer comes off.
+    pub fn awaited_type(&self, ty: TypeId) -> TypeId {
+        let mut ty = ty;
+        while let Some(("Promise", [inner])) = self.arena.app_parts(ty) {
+            ty = *inner;
+        }
+        ty
     }
 
     // Restores the enclosing function's state and hands back the types this function
     // returned (empty unless it was entered with `infer`).
     pub fn leave_return_scope(&mut self, scope: ReturnScope) -> Vec<TypeId> {
         self.current_return_type = scope.outer_type;
+        self.current_return_async = scope.outer_async;
         std::mem::replace(&mut self.inferred_returns, scope.outer_inferred).unwrap_or_default()
     }
 
@@ -189,6 +227,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             narrow: NarrowState::new(),
             relation_cache: RelationCache::default(),
             current_return_type: None,
+            current_return_async: false,
             inferred_returns: None,
             exported_function_types: FxHashMap::default(),
             current_class_instance: None,

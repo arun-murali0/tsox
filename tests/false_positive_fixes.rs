@@ -179,3 +179,44 @@ fn a_negative_literal_is_not_a_string() {
         "got: {diagnostics:?}"
     );
 }
+
+// Problem: an async function annotated Promise<T> was compared with Promise<T> itself, so
+// every `return value` in it was reported as not assignable.
+// Now: the body is checked against T, and a returned promise is awaited first.
+#[test]
+fn an_async_return_is_checked_against_the_awaited_type() {
+    let source = include_str!("fixtures/false-positive-fixes/async_return_is_awaited.ts");
+    assert_clean(&check(source, "async_return_is_awaited.ts"));
+}
+
+#[test]
+fn an_async_return_of_the_wrong_type_still_fails() {
+    let source = include_str!("fixtures/false-positive-fixes/async_return_mismatch.ts");
+    let diagnostics = check(source, "async_return_mismatch.ts");
+    let error = the_one_error(&diagnostics);
+    assert!(
+        error.message.contains("'string'") && error.message.contains("'number'"),
+        "got: {diagnostics:?}"
+    );
+}
+
+// Problem: `{ get x() { ... } }` gave the object a property x typed as the getter function,
+// so `const n: number = obj.x` was reported as `() => any` not assignable to number.
+// Now: a getter is the type it returns and a setter the type it accepts.
+#[test]
+fn an_object_literal_accessor_is_a_property() {
+    let source =
+        include_str!("fixtures/false-positive-fixes/object_literal_accessors_are_properties.ts");
+    assert_clean(&check(source, "object_literal_accessors_are_properties.ts"));
+}
+
+#[test]
+fn an_object_literal_getter_still_has_its_type() {
+    let source = include_str!("fixtures/false-positive-fixes/object_literal_accessor_mismatch.ts");
+    let diagnostics = check(source, "object_literal_accessor_mismatch.ts");
+    let error = the_one_error(&diagnostics);
+    assert!(
+        error.message.contains("'number'") && error.message.contains("'string'"),
+        "got: {diagnostics:?}"
+    );
+}

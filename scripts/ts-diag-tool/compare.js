@@ -71,6 +71,14 @@
 // is no peak per file; `avg_peak_mb_per_file` is the process peak divided by the file count,
 // a rough figure.
 //
+// --background starts the same comparison detached and returns at once, so a run over the
+// whole corpus does not hold the terminal. Everything after it behaves as given, except that
+// --summary is added when no output flag was named. The run gets its own folder under
+// .harness/runs/ with progress.log (the status lines), output.txt (what stdout would have
+// shown, a --json document included), command.txt, pid and, once it ends, exit-code.
+// --status [run-folder] reads one back: running, done or failed, the last progress line, and
+// the output itself when it is a short summary. Without a folder it reads the newest run.
+//
 // --flat runs tsox with its own --flat option: every file is checked on its own, with no
 // module graph, which is how tsc's test suite works (each case is its own Program, and
 // hundreds of cases declare the same global names). Without it tsox builds the module
@@ -81,12 +89,13 @@
 // --timeout S stops a tsox or tsc child that has run for S seconds and reports it, so
 // one hang names itself instead of freezing the whole comparison. The default is no limit.
 //
-// Usage: node compare.js <target-dir-or-file> <tsox-binary> [--strict-only] [--json | --json-stream | --summary] [--only-differ] [--differ] [--no-cache] [--module] [--flat] [--runs N] [--threads N] [--timeout S]
+// Usage: node compare.js --status [run-folder]
+//        node compare.js <target-dir-or-file> <tsox-binary> [--strict-only] [--json | --json-stream | --summary] [--background] [--only-differ] [--differ] [--no-cache] [--module] [--flat] [--runs N] [--threads N] [--timeout S]
 
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const ts = require("typescript");
 const {
   checkFiles,
@@ -131,10 +140,106 @@ const flatMode = args.includes("--flat");
 // Seconds before a child process is stopped; null means no limit.
 const timeoutSeconds = intFlag("--timeout");
 
+// === Background runs and their status ======================================
+
+const RUNS_DIR = path.join(".harness", "runs");
+
+function readIfExists(file) {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function printStatus(folderArg) {
+  let dir = folderArg;
+  if (!dir) {
+    const runs = fs.existsSync(RUNS_DIR) ? fs.readdirSync(RUNS_DIR).sort() : [];
+    if (runs.length === 0) {
+      console.error(`error: no background runs under ${RUNS_DIR}`);
+      process.exit(2);
+    }
+    dir = path.join(RUNS_DIR, runs[runs.length - 1]);
+  }
+  if (!fs.existsSync(dir)) {
+    console.error(`error: no such run folder: ${dir}`);
+    process.exit(2);
+  }
+  const exitCode = readIfExists(path.join(dir, "exit-code"));
+  const pid = Number((readIfExists(path.join(dir, "pid")) || "").trim());
+  let state;
+  if (exitCode !== null) state = exitCode.trim() === "0" ? "done" : "failed";
+  else if (pid && pidAlive(pid)) state = "running";
+  else state = "stopped without finishing";
+  const progress = (readIfExists(path.join(dir, "progress.log")) || "")
+    .split("\n")
+    .filter((line) => line.trim() !== "");
+  const outputPath = path.join(dir, "output.txt");
+  const outputSize = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
+  console.log(`run: ${dir}`);
+  console.log(`state: ${state}`);
+  if (exitCode !== null) console.log(`exit_code: ${exitCode.trim()}`);
+  console.log(`last_progress: ${progress.length ? progress[progress.length - 1] : "none yet"}`);
+  // A summary is a few lines and is shown here; JSON (a document or a stream) can be
+  // megabytes and is only named.
+  const output = outputSize > 0 && outputSize <= 8192 ? readIfExists(outputPath) : null;
+  if (state !== "running" && output !== null && !output.startsWith("{")) {
+    console.log("");
+    process.stdout.write(output);
+  } else {
+    console.log(`output: ${outputPath} (${outputSize} bytes)`);
+  }
+  process.exit(state === "failed" ? 1 : 0);
+}
+
+function startBackground() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dir = path.join(RUNS_DIR, stamp);
+  fs.mkdirSync(dir, { recursive: true });
+  const childArgs = args.filter((a) => a !== "--background");
+  if (!asJson && !jsonStream && !summaryOnly) childArgs.push("--summary");
+  fs.writeFileSync(
+    path.join(dir, "command.txt"),
+    `node ${[__filename, ...childArgs].join(" ")}\n`,
+  );
+  const out = fs.openSync(path.join(dir, "output.txt"), "w");
+  const err = fs.openSync(path.join(dir, "progress.log"), "w");
+  // The shell writes the exit code once node ends, which is how --status tells a finished
+  // run from one that was killed.
+  const child = spawn(
+    "sh",
+    ["-c", '"$@"; echo $? > "$EXIT_FILE"', "sh", process.execPath, __filename, ...childArgs],
+    {
+      detached: true,
+      stdio: ["ignore", out, err],
+      env: { ...process.env, EXIT_FILE: path.join(dir, "exit-code") },
+    },
+  );
+  fs.writeFileSync(path.join(dir, "pid"), `${child.pid}\n`);
+  child.unref();
+  console.log(`started in the background, pid ${child.pid}`);
+  console.log(`run: ${dir}`);
+  console.log("check with: ./scripts/compare-local.sh --status");
+  process.exit(0);
+}
+
+if (args.includes("--status")) printStatus(positional[0]);
+if (args.includes("--background")) startBackground();
+
 const [target, tsoxBin] = positional;
 if (!target || !tsoxBin) {
   console.error(
-    "usage: node compare.js <target-dir-or-file> <tsox-binary> [--strict-only] [--json | --json-stream | --summary] [--only-differ] [--differ] [--no-cache] [--module] [--flat] [--runs N] [--threads N] [--timeout S]",
+    "usage: node compare.js <target-dir-or-file> <tsox-binary> [--strict-only] [--json | --json-stream | --summary] [--background] [--only-differ] [--differ] [--no-cache] [--module] [--flat] [--runs N] [--threads N] [--timeout S]",
   );
   process.exit(2);
 }
