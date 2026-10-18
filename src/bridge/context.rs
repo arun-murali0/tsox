@@ -119,6 +119,9 @@ pub struct CheckContext<'ast, 'src> {
     // threaded through every checker function.
     pub cancel: Option<CancelToken>,
     pub cancelled: bool,
+    // Set once the stack guard has stopped a descent, so one file gives one diagnostic
+    // for it however many branches of the nesting hit the limit.
+    nesting_reported: bool,
     statements_seen: u32,
 
     // Where this file's imports come from, when it is checked as part of a project. None
@@ -198,6 +201,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             writes: WriteMap::default(),
             cancel: None,
             cancelled: false,
+            nesting_reported: false,
             statements_seen: 0,
             imports: None,
             importer: Importer::new(),
@@ -251,6 +255,21 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             text = out;
         }
         text
+    }
+
+    // Called where the stack guard says a recursive walk must stop: reports once per file
+    // and hands back the error type, so the caller carries on with an unknown type. It is a
+    // warning, like the other "not checked" notices, because the code is fine and has no tsc
+    // counterpart: an error would fail the run and show up as an extra error in a compare.
+    pub fn nesting_too_deep(&mut self, span: Span) -> TypeId {
+        if !self.nesting_reported {
+            self.nesting_reported = true;
+            self.warning(
+                crate::diagnostic_messages::messages::nesting_too_deep(),
+                span,
+            );
+        }
+        self.arena.error()
     }
 
     pub fn error(&mut self, message: DiagnosticMessage, span: Span) {

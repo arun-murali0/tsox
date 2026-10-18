@@ -1980,7 +1980,7 @@ static LIB_GLOBAL_TYPES: &[&str] = &[
 ];
 
 // True when `name` is a type the standard library provides without any declaration in
-// the file. ts-rust does not model these yet, so a reference to one is an unsupported
+// the file. tsox does not model these yet, so a reference to one is an unsupported
 // type, not a missing name.
 pub fn is_lib_global_type(name: &str) -> bool {
     LIB_GLOBAL_TYPES.binary_search(&name).is_ok()

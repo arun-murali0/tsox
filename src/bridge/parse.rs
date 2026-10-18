@@ -20,6 +20,16 @@ pub fn parse<'a>(
     let source_type = SourceType::from_path(file_name)
         .unwrap_or_else(|_| SourceType::default().with_typescript(true));
 
+    // The parser recurses once per level of nesting and cannot be stopped from walking into
+    // a stack overflow, so a file nested past the limit is refused before it is parsed.
+    let depth = crate::source_depth::max_bracket_depth(source);
+    if depth > crate::stack_guard::MAX_BRACKET_DEPTH {
+        return Err(CheckerError::Parse(format!(
+            "brackets nest {depth} levels deep, past the limit of {}; the file was not parsed",
+            crate::stack_guard::MAX_BRACKET_DEPTH
+        )));
+    }
+
     let result = Parser::new(allocator, source, source_type).parse();
 
     if result.diagnostics.has_errors() {

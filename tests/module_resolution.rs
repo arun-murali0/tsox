@@ -4,7 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use ts_rust::{
+use tsox::{
     FileId, FileOutcome, ModuleEdge, ModuleError, ModuleGraph, ModuleResolver, check_project,
 };
 
@@ -102,7 +102,7 @@ fn a_type_only_import_is_marked_and_resolved() {
     let import = edge(&graph, "basic/main.ts", "./point");
     assert!(import.is_type);
     assert!(import.is_import);
-    assert_eq!(import.kind, ts_rust::ModuleRequestKind::TypeImport);
+    assert_eq!(import.kind, tsox::ModuleRequestKind::TypeImport);
     assert_eq!(
         target_path(&graph, "basic/main.ts", "./point"),
         fixture("basic/point.ts")
@@ -366,7 +366,7 @@ fn adding_a_file_shifts_the_ids_after_it_and_nothing_else() {
 // A scratch project for the tests that have to change files. Each test gets its own
 // directory so they can run in parallel.
 fn scratch_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("ts-rust-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("tsox-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("scratch directory should be creatable");
     dir
@@ -456,7 +456,7 @@ fn complete_project_reports_do_not_depend_on_entry_order() {
     let second = build(&["cycles/ring_c.ts", "cycles/leaf.ts", "cycles/entry.ts"]);
     let first_report = check_project(&first);
     let second_report = check_project(&second);
-    let signature = |graph: &ModuleGraph, report: &ts_rust::ProjectReport| {
+    let signature = |graph: &ModuleGraph, report: &tsox::ProjectReport| {
         let mut rows = report
             .files
             .iter()
@@ -577,7 +577,7 @@ fn anonymous_default_function_exports_its_inferred_signature() {
 
 #[test]
 fn graph_retains_static_dynamic_side_effect_reexport_and_import_equals_kinds() {
-    use ts_rust::ModuleRequestKind as Kind;
+    use tsox::ModuleRequestKind as Kind;
     let graph = build(&["edge-kinds/entry.ts"]);
     assert_eq!(
         edge(&graph, "edge-kinds/entry.ts", "./polyfill").kind,
@@ -619,7 +619,7 @@ fn separate_ambient_module_blocks_union_their_export_tables() {
 
 #[test]
 fn module_augmentation_merges_into_the_resolved_target_module() {
-    use ts_rust::ModuleRequestKind as Kind;
+    use tsox::ModuleRequestKind as Kind;
     let graph = build(&["augmentations/consumer.ts"]);
     assert_eq!(
         edge(&graph, "augmentations/augmentation.ts", "./base").kind,

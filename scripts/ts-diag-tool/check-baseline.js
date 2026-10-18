@@ -7,7 +7,7 @@
 // unchanged and passed, and a wrong code or message on a line both sides report
 // (MISMATCH) was never looked at.
 // Picked: baseline.json lists the known differences from tsc, one entry per
-// (file, kind, tsc codes, ts-rust codes) with a count. Each run is compared to that
+// (file, kind, tsc codes, tsox codes) with a count. Each run is compared to that
 // list. Line numbers are left out of the key on purpose, so editing a fixture does
 // not invalidate its entry.
 //   - a FALSE POSITIVE or MISMATCH that is not listed fails the run
@@ -22,7 +22,7 @@
 // baseline.json is the list to pick from.
 //
 // Usage (see .github/workflows/ci.yml, job compare-tsc, for the full pipeline):
-//   node compare.js tests/fixtures target/release/ts-rust --json --differ --only-differ \
+//   node compare.js tests/fixtures target/release/tsox --json --differ --only-differ \
 //     | node check-baseline.js [--strict]
 //   ... | node check-baseline.js --update    # rewrite knownDifferences from this run
 //
@@ -41,7 +41,7 @@ const shownPath = path.relative(process.cwd(), baselinePath);
 
 const codesOf = (items) => items.map((text) => text.split(" ")[0]).join(",");
 const keyOf = (d) =>
-  [d.file, d.kind, codesOf(d.tsc), codesOf(d.tsRust)].join("|");
+  [d.file, d.kind, codesOf(d.tsc), codesOf(d.tsox)].join("|");
 
 let raw = "";
 process.stdin.setEncoding("utf8");
@@ -82,8 +82,8 @@ process.stdin.on("end", () => {
   const known = new Map();
   for (const e of baseline.knownDifferences) {
     known.set(
-      [e.file, e.kind, e.tsc, e.tsRust].join("|"),
-      (known.get([e.file, e.kind, e.tsc, e.tsRust].join("|")) || 0) +
+      [e.file, e.kind, e.tsc, e.tsox].join("|"),
+      (known.get([e.file, e.kind, e.tsc, e.tsox].join("|")) || 0) +
         (e.count || 1),
     );
   }
@@ -108,12 +108,12 @@ process.stdin.on("end", () => {
   const show = (d) => {
     console.log(`  ${d.file}:${d.line}  ${d.kind}`);
     for (const t of d.tsc) console.log(`    tsc:     ${t.split("\n")[0]}`);
-    for (const t of d.tsRust) console.log(`    ts-rust: ${t.split("\n")[0]}`);
+    for (const t of d.tsox) console.log(`    tsox: ${t.split("\n")[0]}`);
   };
 
   if (newGaps.length) {
     console.log(
-      `\nnew gap(s) not in ${shownPath} (tsc reports, ts-rust does not):`,
+      `\nnew gap(s) not in ${shownPath} (tsc reports, tsox does not):`,
     );
     newGaps.forEach(show);
   }
@@ -133,7 +133,7 @@ process.stdin.on("end", () => {
     );
     regressions.forEach(show);
     console.error(
-      "\nA false positive means ts-rust rejects code tsc accepts; a mismatch means the " +
+      "\nA false positive means tsox rejects code tsc accepts; a mismatch means the " +
         "code or message is wrong. Fix the checker, or if the divergence is deliberate " +
         `(this project's own documented recovery behaviour), run --update and explain it in ${shownPath}.`,
     );
@@ -160,8 +160,8 @@ function writeBaseline(result, baseline) {
   }
   const entries = [...counts]
     .map(([k, count]) => {
-      const [file, kind, tsc, tsRust] = k.split("|");
-      return { file, kind, tsc, tsRust, count };
+      const [file, kind, tsc, tsox] = k.split("|");
+      return { file, kind, tsc, tsox, count };
     })
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 

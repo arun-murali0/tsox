@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 
-use ts_rust::{Diagnostic, Severity, TypeChecker};
+use tsox::{Diagnostic, Severity, TypeChecker};
 
 fn check(source: &str, file_name: &str) -> Vec<Diagnostic> {
     let checker = TypeChecker::new();

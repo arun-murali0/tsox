@@ -34,7 +34,7 @@ pub(crate) fn report_unresolved_type_names<'ast>(
 }
 
 // True when `id` names no type anywhere: not declared in scope, not a top-level type of
-// this file, and not one of the library's global types (which ts-rust does not model yet,
+// this file, and not one of the library's global types (which tsox does not model yet,
 // so they are unsupported, not missing).
 pub(crate) fn is_unresolved_type_name(
     id: &IdentifierReference,

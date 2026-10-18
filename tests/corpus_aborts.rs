@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 // which are the three ways a run is lost. Any exit code the program chooses (0 clean,
 // 1 diagnostics, 2 a file it could not check) is a normal result and is not judged here.
 // Cost: a process per file. By default one file in 500 is run, which is a fixed sample of
-// about twenty and takes seconds; TS_RUST_CORPUS_STRIDE=1 runs all 10,083, and
-// TS_RUST_CORPUS_OFFSET shifts the sample so a different slice can be tried.
+// about twenty and takes seconds; TSOX_CORPUS_STRIDE=1 runs all 10,083, and
+// TSOX_CORPUS_OFFSET shifts the sample so a different slice can be tried.
 // Now: the eight cases that used to abort in project mode (known-crashers-6.0.3) are run
 // one at a time in every run, so a regression there fails the build.
 
@@ -59,7 +59,7 @@ fn run_alone(file: &Path, slot: &str) -> Run {
     fs::copy(file, dir.join(file.file_name().unwrap())).unwrap();
     fs::write(dir.join("tsconfig.json"), "{}").unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ts-rust"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tsox"))
         .arg("--project")
         .arg(dir.join("tsconfig.json"))
         .stdout(Stdio::null())
@@ -114,8 +114,8 @@ fn a_sample_of_the_corpus_runs_to_an_end_one_file_at_a_time() {
         !cases.is_empty(),
         "tests/typescript-testcases/typescript-6.0.3 has no .ts files"
     );
-    let stride = env_number("TS_RUST_CORPUS_STRIDE", 500).max(1);
-    let offset = env_number("TS_RUST_CORPUS_OFFSET", 0);
+    let stride = env_number("TSOX_CORPUS_STRIDE", 500).max(1);
+    let offset = env_number("TSOX_CORPUS_OFFSET", 0);
     let mut failures = Vec::new();
     let mut ran = 0;
     for (index, file) in cases.iter().enumerate() {

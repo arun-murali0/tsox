@@ -312,6 +312,16 @@ pub mod messages {
         )
     }
 
+    // Not a tsc diagnostic: the file nests expressions or declarations deeper than the
+    // checker's stack allows, so it stopped descending there and the types below that
+    // point are unknown. tsc has no limit of this kind; it would overflow its own stack.
+    pub fn nesting_too_deep() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::NestingTooDeep,
+            "This code is nested too deeply for the checker; the types below this point are not checked.",
+        )
+    }
+
     pub fn module_not_found(specifier: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::ModuleNotFound,
@@ -378,14 +388,14 @@ pub mod messages {
     pub fn unimplemented_call_expression_kind() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnimplementedCallExpressionKind,
-            "This kind of call expression is not yet checked by ts-rust.",
+            "This kind of call expression is not yet checked by tsox.",
         )
     }
 
     pub fn unimplemented_new_expression_target() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnimplementedNewExpressionTarget,
-            "`new` on anything other than a plain name is not yet checked by ts-rust.",
+            "`new` on anything other than a plain name is not yet checked by tsox.",
         )
     }
 
@@ -393,7 +403,7 @@ pub mod messages {
         DiagnosticMessage::new(
             DiagnosticCode::UntypedParameterSkipsArityCheck,
             format!(
-                "'{name}' has an untyped parameter, so ts-rust can't check this call's arity yet."
+                "'{name}' has an untyped parameter, so tsox can't check this call's arity yet."
             ),
         )
     }
@@ -402,7 +412,7 @@ pub mod messages {
         DiagnosticMessage::new(
             DiagnosticCode::UntypedParameterSkipsArityCheck,
             format!(
-                "'{name}' has a constructor with an untyped parameter, so ts-rust can't \
+                "'{name}' has a constructor with an untyped parameter, so tsox can't \
                  check arity for `new {name}(...)` yet."
             ),
         )
@@ -411,28 +421,28 @@ pub mod messages {
     pub fn unimplemented_computed_member_key() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnimplementedComputedMemberKey,
-            "Computed member access with a non-literal key is not yet checked by ts-rust.",
+            "Computed member access with a non-literal key is not yet checked by tsox.",
         )
     }
 
     pub fn unimplemented_optional_chain_link() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnimplementedOptionalChainLink,
-            "This kind of optional-chain link is not yet checked by ts-rust.",
+            "This kind of optional-chain link is not yet checked by tsox.",
         )
     }
 
     pub fn unimplemented_expression_kind() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnimplementedExpressionKind,
-            "This expression kind is not yet checked by ts-rust.",
+            "This expression kind is not yet checked by tsox.",
         )
     }
 
     pub fn unimplemented_static_accessor() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnimplementedStaticAccessor,
-            "Static getter/setter is not yet checked by ts-rust.",
+            "Static getter/setter is not yet checked by tsox.",
         )
     }
 
@@ -440,7 +450,7 @@ pub mod messages {
         DiagnosticMessage::new(
             DiagnosticCode::UnimplementedClassShape,
             format!(
-                "Class '{name}' uses a shape not yet checked by ts-rust: an unresolvable \
+                "Class '{name}' uses a shape not yet checked by tsox: an unresolvable \
                  field or method, or a superclass that isn't a plain class name."
             ),
         )
@@ -449,7 +459,7 @@ pub mod messages {
     pub fn unimplemented_destructuring_key() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnimplementedDestructuringKey,
-            "Computed or non-identifier destructuring keys are not yet checked by ts-rust.",
+            "Computed or non-identifier destructuring keys are not yet checked by tsox.",
         )
     }
 
@@ -457,14 +467,14 @@ pub mod messages {
         DiagnosticMessage::new(
             DiagnosticCode::UnimplementedRestDestructuring,
             "Rest destructuring (`...rest`) does not yet compute a precise type; \
-             the binding is not checked by ts-rust.",
+             the binding is not checked by tsox.",
         )
     }
 
     pub fn unimplemented_statement_kind(kind: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnimplementedStatementKind,
-            format!("This statement kind is not yet checked by ts-rust: {kind}."),
+            format!("This statement kind is not yet checked by tsox: {kind}."),
         )
     }
 
@@ -559,7 +569,7 @@ pub mod messages {
             DiagnosticCode::UnresolvableTypeAnnotation,
             format!(
                 "Type annotation for '{name}' could not be resolved (unknown name, \
-                 or its definition isn't fully understood by ts-rust yet)."
+                 or its definition isn't fully understood by tsox yet)."
             ),
         )
     }

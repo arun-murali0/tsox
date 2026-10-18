@@ -1,4 +1,4 @@
-use ts_rust::{Severity, TypeChecker};
+use tsox::{Severity, TypeChecker};
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -7,7 +7,7 @@ fn init_tracing() {
         .try_init();
 }
 
-fn check(fixture_source: &str, file_name: &str) -> Vec<ts_rust::Diagnostic> {
+fn check(fixture_source: &str, file_name: &str) -> Vec<tsox::Diagnostic> {
     init_tracing();
     let checker = TypeChecker::new();
     let result = checker.check_source(fixture_source, file_name);
@@ -310,7 +310,7 @@ fn property_assigned_only_inside_a_callback_is_flagged() {
     );
 }
 
-fn errors_of(diagnostics: &[ts_rust::Diagnostic]) -> Vec<&ts_rust::Diagnostic> {
+fn errors_of(diagnostics: &[tsox::Diagnostic]) -> Vec<&tsox::Diagnostic> {
     diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)

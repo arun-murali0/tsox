@@ -4,7 +4,7 @@
 # expected and do not count as a crash.
 set -uo pipefail
 
-binary="${1:-target/release/ts-rust}"
+binary="${1:-target/release/tsox}"
 fixture_root="${2:-tests/fixtures}"
 if [[ ! -x "$binary" ]]; then
   echo "error: checker binary is not executable: $binary" >&2

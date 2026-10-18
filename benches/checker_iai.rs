@@ -1,6 +1,6 @@
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use std::hint::black_box;
-use ts_rust::TypeChecker;
+use tsox::TypeChecker;
 
 #[path = "support/complex_fixtures.rs"]
 mod complex_fixtures;

@@ -35,7 +35,7 @@ const sha = (text) => crypto.createHash("sha1").update(text).digest("hex");
 //
 // Problem: tsc over the full suite takes several minutes, and almost none of
 // it is needed on any given merge -- a fixture's diagnostics only depend on its
-// own text (and on the files it imports), not on the ts-rust change being tested.
+// own text (and on the files it imports), not on the tsox change being tested.
 // Picked: each file's diagnostics are stored with the sha1 of the file and of every
 // non-lib file its isolated Program pulled in. A later run reuses the entry when all
 // of those hashes still match. The whole cache is dropped when the TypeScript
@@ -248,21 +248,21 @@ function defaultCachePath() {
 //
 // Problem: checkFiles gives every file its own Program, which is right for fixtures that
 // share top-level names but is not what a real `tsc -p` run does, and it re-reads the lib
-// files for every file. Against ts-rust, which now checks a project through its module
+// files for every file. Against tsox, which now checks a project through its module
 // graph in one process, that makes tsc look slower and heavier than it is.
 // Picked: one Program over every root file of a directory, so imports resolve across files
-// and the lib is parsed once. Roots are chosen the way bin/ts-rust.rs chooses its entries
+// and the lib is parsed once. Roots are chosen the way bin/tsox.rs chooses its entries
 // (.ts/.tsx, no .d.ts, no node_modules/dist/build/out/coverage, no dot directories), so
 // both sides check the same files. Only diagnostics in those files are kept; a package's
-// declaration file is read and never reported, as in ts-rust.
+// declaration file is read and never reported, as in tsox.
 // Module settings: Preserve with Bundler resolution is the closest TypeScript has to what
 // oxc_resolver does (the `types`/`import` conditions, extension aliases), and it allows
-// `import x = require()` and default imports of `export =` modules, which ts-rust binds.
+// `import x = require()` and default imports of `export =` modules, which tsox binds.
 // moduleDetection is Force, so a file with no import or export is still its own module and
 // a directory of independent scripts (tests/fixtures) does not report duplicate names from
 // a shared global scope. On tests/fixtures this gives the same diagnostics as the per-file
 // mode. Cost: a script that relied on a real global (a `declare global`-free top-level `var`
-// seen from another file) would no longer see it, which no project of ts-rust's is doing.
+// seen from another file) would no longer see it, which no project of tsox's is doing.
 const PROJECT_SKIPPED_DIRS = new Set([
   "node_modules",
   "dist",
@@ -298,7 +298,7 @@ function projectOptions(strictOnly) {
     ...(strictOnly ? baseOptions : { ...baseOptions, ...strictExtras }),
     module: ts.ModuleKind.Preserve,
     moduleResolution: ts.ModuleResolutionKind.Bundler,
-    // Every file is its own module, even one with no import or export. ts-rust checks files
+    // Every file is its own module, even one with no import or export. tsox checks files
     // in a project one by one, so a script's top-level names never meet another file's; left
     // to tsc's own detection they would share one global scope and report duplicates
     // (TS2451, TS2393, TS2300) that say nothing about type checking.
@@ -373,7 +373,7 @@ if (require.main === module) {
 
   // --project: one Program over the whole directory (see checkProject). Prints one JSON
   // document on stdout; compare.js --module runs this as a child process so it can read the
-  // child's wall time and peak memory the same way it does for ts-rust.
+  // child's wall time and peak memory the same way it does for tsox.
   if (args.includes("--project")) {
     if (!fs.statSync(target).isDirectory()) {
       console.error("error: --project needs a directory");

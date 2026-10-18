@@ -1,4 +1,4 @@
-use ts_rust::{FileId, Severity, UnitContext, Worker};
+use tsox::{FileId, Severity, UnitContext, Worker};
 
 // A class with no constructor of its own takes the parameters of the class it extends.
 // Found in part-04 of the TypeScript corpus (errorForwardReferenceForwadingConstructor,

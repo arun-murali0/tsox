@@ -84,7 +84,7 @@ fn write_project(root: &Path) {
 }
 
 fn run(root: &Path, threads: usize) -> (Option<i32>, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_ts-rust"))
+    let output = Command::new(env!("CARGO_BIN_EXE_tsox"))
         .arg("--project")
         .arg(root.join("tsconfig.json"))
         .env("RAYON_NUM_THREADS", threads.to_string())

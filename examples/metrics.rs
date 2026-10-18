@@ -3,7 +3,7 @@
 //   cargo run --example metrics -- path/to/file.ts
 use std::{env, fs, process};
 
-use ts_rust::{FileId, TypeChecker};
+use tsox::{FileId, TypeChecker};
 
 fn main() {
     let Some(path) = env::args().nth(1) else {

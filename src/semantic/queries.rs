@@ -107,7 +107,7 @@ impl<'a> SemanticQueries<'a> {
     /// Whether a value of type `source` can be used where `target` is
     /// expected. Currently identical to `is_subtype`: TypeScript's real
     /// assignability rules (excess property checks, `const` assertions,
-    /// etc.) diverge from plain subtyping in cases ts-rust doesn't
+    /// etc.) diverge from plain subtyping in cases tsox doesn't
     /// implement yet. `is_assignable` is kept as its own method so bridge
     /// code calls the concept it actually means, and so that divergence
     /// can be added here later without touching any call site.

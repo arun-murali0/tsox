@@ -1,4 +1,4 @@
-use ts_rust::{FileId, Severity, UnitContext, Worker};
+use tsox::{FileId, Severity, UnitContext, Worker};
 
 // The code and head line tsc chooses for a mismatch, not only whether a line is reported.
 

@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ts_rust::{Diagnostic, FileOutcome, ModuleGraph, ModuleResolver, Severity, check_project};
+use tsox::{Diagnostic, FileOutcome, ModuleGraph, ModuleResolver, Severity, check_project};
 
 // Step 8: a package's declaration file is read for what it exports. It gets a Package key
 // (name, version, path inside the package), its exports cross into the project, and it is
@@ -12,7 +12,7 @@ use ts_rust::{Diagnostic, FileOutcome, ModuleGraph, ModuleResolver, Severity, ch
 struct Checked {
     root: PathBuf,
     graph: ModuleGraph,
-    report: ts_rust::ProjectReport,
+    report: tsox::ProjectReport,
 }
 
 fn run(test: &str, files: &[(&str, &str)], entries: &[&str]) -> Checked {
@@ -133,7 +133,7 @@ fn a_package_file_gets_a_package_key_from_its_manifest() {
         .module_key(id.expect("the package file is in the graph"));
     assert_eq!(
         key,
-        Some(ts_rust::ModuleKey::package(
+        Some(tsox::ModuleKey::package(
             "left-pad",
             "1.3.0",
             "index.d.ts"

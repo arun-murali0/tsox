@@ -1,4 +1,4 @@
-use ts_rust::{FileId, Severity, UnitContext, Worker};
+use tsox::{FileId, Severity, UnitContext, Worker};
 
 // A `namespace N { ... }` is a scope for the names written in it, a place its exported
 // types live (`N.I`), and, when every exported value in it has a type, an object value.

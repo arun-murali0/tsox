@@ -3,7 +3,7 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use ts_rust::{
+use tsox::{
     FileId, IncrementalDatabase, ModuleGraph, ModuleResolver, SourceKind, WorkerScratch, source_len,
 };
 

@@ -1,4 +1,4 @@
-# ts-rust work queue 
+# tsox work queue 
 
 Each item lists tests that would flip to MATCH if that one thing were fixed exactly (code, message and line).
 
@@ -4330,7 +4330,7 @@ Each item lists tests that would flip to MATCH if that one thing were fixed exac
 - compiler/genericReversingTypeParameters: killed by SIGKILL
 - compiler/genericReversingTypeParameters2: killed by SIGKILL
 - compiler/nonInferrableTypePropagation1: killed by SIGKILL
-- compiler/promiseTypeInference: spawn error: spawnSync target/release/ts-rust ENOBUFS
+- compiler/promiseTypeInference: spawn error: spawnSync target/release/tsox ENOBUFS
 - compiler/taggedTemplatesWithIncompleteTemplateExpressions4: Debug Failure. Expected -1 >= 0
 - compiler/taggedTemplatesWithIncompleteTemplateExpressions5: Debug Failure. Expected -1 >= 0
 - compiler/typeArgumentDefaultUsesConstraintOnCircularDefault: killed by SIGABRT

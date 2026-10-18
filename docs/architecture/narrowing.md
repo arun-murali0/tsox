@@ -34,7 +34,7 @@ NarrowState
 
 ## 3. Why Oxc semantic symbols are consumed
 
-Oxc already resolves identifiers to symbols/scopes. ts-rust consumes that result instead of rebuilding lexical binding analysis.
+Oxc already resolves identifiers to symbols/scopes. tsox consumes that result instead of rebuilding lexical binding analysis.
 
 ```text
 IdentifierReference

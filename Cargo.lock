@@ -1689,7 +1689,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ts-rust"
+name = "tsox"
 version = "0.1.0"
 dependencies = [
  "bumpalo",

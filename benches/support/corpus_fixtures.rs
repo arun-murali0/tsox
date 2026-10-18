@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 // somebody actually wrote.
 // Picked: a fixed slice of the TypeScript 6.0.3 corpus. The files are sorted by path and
 // every `stride`-th one is taken, so the same checkout always gives the same slice.
-// TS_RUST_CORPUS_STRIDE and TS_RUST_CORPUS_OFFSET are the same variables
+// TSOX_CORPUS_STRIDE and TSOX_CORPUS_OFFSET are the same variables
 // tests/corpus_aborts.rs reads, so one setting picks the same files for both.
 // Cost: files are checked one at a time on their own (the flat mode of the binary), and a
 // file that does not read as UTF-8 is skipped.
@@ -47,8 +47,8 @@ fn from_env(name: &str, default: usize) -> usize {
 // `default_stride` is per caller: the callgrind run is far slower than a timed one, so it
 // takes a smaller slice.
 pub fn corpus_slice(default_stride: usize) -> Vec<CorpusFile> {
-    let stride = from_env("TS_RUST_CORPUS_STRIDE", default_stride).max(1);
-    let offset = from_env("TS_RUST_CORPUS_OFFSET", 0);
+    let stride = from_env("TSOX_CORPUS_STRIDE", default_stride).max(1);
+    let offset = from_env("TSOX_CORPUS_OFFSET", 0);
     let root = corpus_dir();
     let slice: Vec<CorpusFile> = ts_files(&root)
         .into_iter()

@@ -1,6 +1,6 @@
-use ts_rust::{Severity, TypeChecker};
+use tsox::{Severity, TypeChecker};
 
-fn diagnostics(fixture: &str, file_name: &str) -> Vec<ts_rust::Diagnostic> {
+fn diagnostics(fixture: &str, file_name: &str) -> Vec<tsox::Diagnostic> {
     let result = TypeChecker::new().check_source(fixture, file_name);
     assert!(result.is_ok(), "fixture should parse: {result:?}");
     result.unwrap().diagnostics

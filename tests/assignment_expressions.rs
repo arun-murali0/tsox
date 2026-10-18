@@ -1,4 +1,4 @@
-use ts_rust::{Diagnostic, DiagnosticCode, Severity, TypeChecker};
+use tsox::{Diagnostic, DiagnosticCode, Severity, TypeChecker};
 
 fn check(fixture_source: &str, file_name: &str) -> Vec<Diagnostic> {
     let checker = TypeChecker::new();

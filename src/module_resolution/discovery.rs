@@ -44,6 +44,13 @@ pub struct ModuleScan {
 }
 
 pub fn scan_module_requests(source: &str, file_name: &str) -> ModuleScan {
+    // The same refusal the checker makes, before the parser can recurse into an overflow.
+    if crate::source_depth::max_bracket_depth(source) > crate::stack_guard::MAX_BRACKET_DEPTH {
+        return ModuleScan {
+            requests: Vec::new(),
+            parse_failed: true,
+        };
+    }
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(file_name)
         .unwrap_or_else(|_| SourceType::default().with_typescript(true));

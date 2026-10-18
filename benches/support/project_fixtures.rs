@@ -20,7 +20,7 @@ impl Project {
     // Removed on drop. The process id keeps two benchmark processes apart.
     pub fn new(name: &str) -> Self {
         let root =
-            std::env::temp_dir().join(format!("ts-rust-bench-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tsox-bench-{name}-{}", std::process::id()));
         Self::at(root, false)
     }
 
@@ -28,7 +28,7 @@ impl Project {
     // the measured function, so a project that deleted itself on drop would count the
     // deletion; the argument is just the entry paths and the directory outlives them.
     pub fn persistent(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("ts-rust-iai-{name}"));
+        let root = std::env::temp_dir().join(format!("tsox-iai-{name}"));
         Self::at(root, true)
     }
 

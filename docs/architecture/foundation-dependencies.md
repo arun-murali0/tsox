@@ -17,7 +17,7 @@ It does not move a single type, query or diagnostic onto Salsa, and it does not 
 | `module-resolution` (existing) | `petgraph` | `ModuleTopology`, `ModuleGraph::topology` |
 | `incremental` | `salsa` | `IncrementalDatabase`, `SourceFile`, `source_len` |
 | `scratchpad` | `bumpalo` | `WorkerScratch` |
-| `mimalloc` | `mimalloc` (not on wasm32) | the global allocator of the `ts-rust` binary |
+| `mimalloc` | `mimalloc` (not on wasm32) | the global allocator of the `tsox` binary |
 
 Every one is off by default. A default build, the WASM build and the binary that CI builds and compares against tsc have the same dependencies as before.
 
@@ -59,7 +59,7 @@ Salsa-interned names are not included. ADR-1 chose per-file bump arenas over Sal
 
 ## 6. The allocator belongs to the binary
 
-mimalloc is the global allocator on native targets (ADR-2). It is set in `bin/ts-rust.rs` behind the `mimalloc` feature and not in the library, because a library that chose a global allocator would change it for every program that links the crate.
+mimalloc is the global allocator on native targets (ADR-2). It is set in `bin/tsox.rs` behind the `mimalloc` feature and not in the library, because a library that chose a global allocator would change it for every program that links the crate.
 
 The feature is off by default so the binary CI builds does not change. A release build opts in with `--features mimalloc`, and moving that into the CI build command is a one-line change when the timings are ready to be compared. LLD 2.3 applies: compare benchmark results only between runs that use the same allocator. The dependency is declared for non-wasm targets only, so the WASM build does not resolve it.
 

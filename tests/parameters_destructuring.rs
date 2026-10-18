@@ -1,4 +1,4 @@
-use ts_rust::{DiagnosticCode, TypeChecker};
+use tsox::{DiagnosticCode, TypeChecker};
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -7,7 +7,7 @@ fn init_tracing() {
         .try_init();
 }
 
-fn check(fixture_source: &str, file_name: &str) -> Vec<ts_rust::Diagnostic> {
+fn check(fixture_source: &str, file_name: &str) -> Vec<tsox::Diagnostic> {
     init_tracing();
     let checker = TypeChecker::new();
     let result = checker.check_source(fixture_source, file_name);

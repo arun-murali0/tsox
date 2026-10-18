@@ -1,14 +1,14 @@
 // Writes src/lib_global_types.rs: every global type name tsc knows with the same options
 // compare.js uses (--strict, target ES2020, the default libs, which include the DOM).
 //
-// Problem: ts-rust has no lib declarations yet, so a reference to `Date`, `Map` or
+// Problem: tsox has no lib declarations yet, so a reference to `Date`, `Map` or
 // `HTMLElement` looks exactly like a reference to a name that does not exist. The check
 // that reports TS2304 for an unknown type name would flag all of them, and the old
 // hand-written list of "names lib.d.ts provides" covered a few dozen of the ~1,000.
 // Picked: ask tsc. The list is generated from the same compiler the comparison runs, so
 // it cannot drift from it, and `node dump-global-types.js` regenerates it after a
 // TypeScript upgrade.
-// Cost: a name on this list is treated as "a lib type ts-rust does not model", which is
+// Cost: a name on this list is treated as "a lib type tsox does not model", which is
 // right for the false-error question and says nothing about what the type contains.
 //
 // Usage: node dump-global-types.js            (from scripts/ts-diag-tool)
@@ -52,7 +52,7 @@ ${sorted.map((n) => `    "${n}",`).join("\n")}
 ];
 
 // True when \`name\` is a type the standard library provides without any declaration in
-// the file. ts-rust does not model these yet, so a reference to one is an unsupported
+// the file. tsox does not model these yet, so a reference to one is an unsupported
 // type, not a missing name.
 pub fn is_lib_global_type(name: &str) -> bool {
     LIB_GLOBAL_TYPES.binary_search(&name).is_ok()

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use ts_rust::{
+use tsox::{
     FileId, IncompleteReason, ModuleGraph, ModuleKey, ModuleResolver, UnitContext, Worker,
     check_project,
 };
@@ -223,7 +223,7 @@ fn the_cli_prints_the_partial_files_and_why_with_the_partial_flag() {
         ],
     );
     let run = |extra: &[&str]| {
-        let output = Command::new(env!("CARGO_BIN_EXE_ts-rust"))
+        let output = Command::new(env!("CARGO_BIN_EXE_tsox"))
             .arg("--project")
             .arg(root.join("tsconfig.json"))
             .args(extra)

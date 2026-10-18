@@ -1,13 +1,13 @@
-//! Compares ts-rust's own diagnostics against a real `tsc` run, in-process.
+//! Compares tsox's own diagnostics against a real `tsc` run, in-process.
 //!
 //! Unlike scripts/harness.sh and scripts/compare-local.sh, this binary never
-//! shells out to ts-rust as a subprocess; it calls `TypeChecker::check_source`
-//! directly, the same entry point bin/ts-rust.rs uses, and only shells out to
+//! shells out to tsox as a subprocess; it calls `TypeChecker::check_source`
+//! directly, the same entry point bin/tsox.rs uses, and only shells out to
 //! `tsc` itself (there is no Rust API for that side of the comparison).
 //!
 //! Matching is by line number alone, errors only, and by *presence*: a line
 //! agrees when both sides report at least one error on it, or neither does.
-//! How many errors a side reports on a line is not compared, since ts-rust
+//! How many errors a side reports on a line is not compared, since tsox
 //! deliberately reports one error where tsc reports several in places. This is
 //! the same rule scripts/compare-local.sh uses, so the two tools agree. Severity
 //! is a filter applied before comparison (only Severity::Error diagnostics ever
@@ -16,19 +16,19 @@
 //!
 //! A file that does not fully agree is one of three kinds, and they are not
 //! equally bad. A GAP has a line where only tsc reports an error: a check
-//! ts-rust does not have yet. A FALSE POSITIVE has a line where only ts-rust
-//! reports one: ts-rust rejecting code tsc accepts. MIXED has both. Only false
+//! tsox does not have yet. A FALSE POSITIVE has a line where only tsox
+//! reports one: tsox rejecting code tsc accepts. MIXED has both. Only false
 //! positives (and MIXED, which contains one) make the exit code nonzero; gaps are
-//! reported but expected while the checker is still being built. ts-rust's own code (TSR####, see diagnostic_codes.rs) is its own
+//! reported but expected while the checker is still being built. tsox's own code (TSR####, see diagnostic_codes.rs) is its own
 //! namespace, not tsc's TS#### numbering, and message wording is
 //! independently written, so comparing message text or code text
 //! verbatim against tsc's own would report near-constant false mismatches
 //! even on a real agreement. Both codes are still shown side by side in the
 //! table, as context for a human, just not used for the pass/fail check
 //! itself. Warnings are excluded entirely, not just from the check: every
-//! warning ts-rust currently emits is a "not yet checked" implementation-
+//! warning tsox currently emits is a "not yet checked" implementation-
 //! status marker (see bridge/statements/support.rs), which has no tsc
-//! equivalent at all, so a warning never becomes an Entry on the ts-rust
+//! equivalent at all, so a warning never becomes an Entry on the tsox
 //! side and is filtered out of tsc's own output the same way.
 //!
 //! Fixtures live under tests/tsc-conformance/, a directory dedicated to this
@@ -40,15 +40,15 @@
 //!
 //! ## Flag-set policy
 //!
-//! ts-rust targets tsc run with `--strict` PLUS these checks, which are real
+//! tsox targets tsc run with `--strict` PLUS these checks, which are real
 //! and commonly enabled but are NOT part of `--strict` itself:
 //! `allowUnreachableCode: false`, `noUncheckedIndexedAccess`,
 //! `noImplicitOverride`, `exactOptionalPropertyTypes`,
 //! `noPropertyAccessFromIndexSignature`, `noFallthroughCasesInSwitch`,
 //! `noImplicitReturns`. Without these, tsc silently never reports several
-//! things ts-rust deliberately implements (e.g. unreachable-code detection),
+//! things tsox deliberately implements (e.g. unreachable-code detection),
 //! and a comparison run under plain `--strict` would misreport those as
-//! false positives when they are not; ts-rust just implements a slightly
+//! false positives when they are not; tsox just implements a slightly
 //! stricter default than plain `--strict` ships with.
 //!
 //! KNOWN INCONSISTENCY: this binary currently invokes `tsc` with only
@@ -64,7 +64,7 @@
 //! comparison in the meantime.
 //!
 //! IMPORTANT: this binary cannot yet point at a real multi-file project
-//! (e.g. zustand). ts-rust has no cross-file import/export resolution yet,
+//! (e.g. zustand). tsox has no cross-file import/export resolution yet,
 //! so every file in a multi-file project would report spurious "cannot see
 //! this import" noise; see the module resolution design work for why.
 //! Single-file conformance fixtures are the only meaningful input today.
@@ -77,7 +77,7 @@ use std::{
     process::{Command, ExitCode},
 };
 
-use ts_rust::{LineIndex, Severity, TypeChecker};
+use tsox::{LineIndex, Severity, TypeChecker};
 
 const REFERENCE_FILE: &str = "tests/tsc-reference.txt";
 const CONFORMANCE_DIR: &str = "tests/tsc-conformance";
@@ -154,11 +154,11 @@ enum Verdict {
 }
 
 impl Verdict {
-    fn of(ts_rust_side: &SideDiagnostics, tsc_side: &SideDiagnostics) -> Self {
-        let ts_rust_lines = ts_rust_side.lines();
+    fn of(tsox_side: &SideDiagnostics, tsc_side: &SideDiagnostics) -> Self {
+        let tsox_lines = tsox_side.lines();
         let tsc_lines = tsc_side.lines();
-        let false_positive = ts_rust_lines.difference(&tsc_lines).next().is_some();
-        let gap = tsc_lines.difference(&ts_rust_lines).next().is_some();
+        let false_positive = tsox_lines.difference(&tsc_lines).next().is_some();
+        let gap = tsc_lines.difference(&tsox_lines).next().is_some();
         match (false_positive, gap) {
             (false, false) => Self::Match,
             (false, true) => Self::Gap,
@@ -231,20 +231,20 @@ fn run() -> Result<bool, String> {
             .map_err(|error| format!("failed to read {}: {error}", case.display()))?;
         let file_name = case.to_string_lossy().into_owned();
 
-        let ts_rust_side = ts_rust_diagnostics(&checker, &source, &file_name)?;
+        let tsox_side = tsox_diagnostics(&checker, &source, &file_name)?;
         let tsc_side = tsc_diagnostics(&tsc_bin, case)?;
         let relative = case.strip_prefix(root).unwrap_or(case);
-        let verdict = Verdict::of(&ts_rust_side, &tsc_side);
+        let verdict = Verdict::of(&tsox_side, &tsc_side);
         counts.record(verdict);
 
-        print_case(&style, relative, verdict, &ts_rust_side, &tsc_side);
+        print_case(&style, relative, verdict, &tsox_side, &tsc_side);
         println!();
     }
 
     print_summary(&style, &counts, &expected_version);
 
     // Gaps are expected while the checker is incomplete; a false positive is
-    // ts-rust rejecting code tsc accepts, and is the only thing that fails a run.
+    // tsox rejecting code tsc accepts, and is the only thing that fails a run.
     Ok(counts.false_positive_files == 0)
 }
 
@@ -292,7 +292,7 @@ fn print_case(
     style: &Style,
     relative: &Path,
     verdict: Verdict,
-    ts_rust_side: &SideDiagnostics,
+    tsox_side: &SideDiagnostics,
     tsc_side: &SideDiagnostics,
 ) {
     let title = relative.display().to_string();
@@ -308,7 +308,7 @@ fn print_case(
     println!(
         "  │ {:<lw$} │ {:<mw$} │ {:<mw$} │",
         "line",
-        "ts-rust",
+        "tsox",
         "tsc",
         lw = LINE_COL_WIDTH,
         mw = MSG_COL_WIDTH,
@@ -316,23 +316,23 @@ fn print_case(
     println!("  {}", style.dim(&box_line('├', '┼', '┤')));
 
     let mut by_line: BTreeMap<u32, (Vec<&Entry>, Vec<&Entry>)> = BTreeMap::new();
-    for entry in &ts_rust_side.entries {
+    for entry in &tsox_side.entries {
         by_line.entry(entry.line).or_default().0.push(entry);
     }
     for entry in &tsc_side.entries {
         by_line.entry(entry.line).or_default().1.push(entry);
     }
 
-    for (group_index, (line, (ts_rust_entries, tsc_entries))) in by_line.iter().enumerate() {
+    for (group_index, (line, (tsox_entries, tsc_entries))) in by_line.iter().enumerate() {
         if group_index > 0 {
             println!("  {}", style.dim(&box_line('├', '┼', '┤')));
         }
 
-        let both_present = !ts_rust_entries.is_empty() && !tsc_entries.is_empty();
-        let rows = ts_rust_entries.len().max(tsc_entries.len()).max(1);
+        let both_present = !tsox_entries.is_empty() && !tsc_entries.is_empty();
+        let rows = tsox_entries.len().max(tsc_entries.len()).max(1);
 
         for row in 0..rows {
-            let left = ts_rust_entries
+            let left = tsox_entries
                 .get(row)
                 .map(|e| {
                     let with_code = match &e.code {
@@ -378,10 +378,10 @@ fn print_case(
 
         if !both_present {
             let diagnosis = if tsc_entries.is_empty() {
-                "ts-rust flagged an error tsc did not -- likely a false positive, or a \
+                "tsox flagged an error tsc did not -- likely a false positive, or a \
                  check that's stricter than real TS semantics here"
             } else {
-                "tsc flagged an error ts-rust did not -- likely a detection gap: this \
+                "tsc flagged an error tsox did not -- likely a detection gap: this \
                  construct may not be checked yet"
             };
             // Spans the two message columns as one wide cell; the merged
@@ -425,10 +425,10 @@ fn print_summary(style: &Style, counts: &Counts, expected_version: &str) {
         println!("{} {headline}", style.red("✗"));
     }
     println!(
-        "  {gap_files} with a gap (tsc reports an error ts-rust does not -- a check not built yet)"
+        "  {gap_files} with a gap (tsc reports an error tsox does not -- a check not built yet)"
     );
     println!(
-        "  {false_positive_files} with a false positive (ts-rust reports an error tsc does not)"
+        "  {false_positive_files} with a false positive (tsox reports an error tsc does not)"
     );
 }
 
@@ -492,10 +492,10 @@ fn print_usage() {
     println!(
         "Usage: cargo run --bin compare-tsc -- [--case <fixture>] [--tsc <command>]\n\
          \n\
-         Compares ts-rust's diagnostics against tsc for every fixture under\n\
+         Compares tsox's diagnostics against tsc for every fixture under\n\
          {CONFORMANCE_DIR}/, by line only, errors only -- see the module doc\n\
          comment in bin/compare-tsc.rs for why. A gap (tsc-only error) is\n\
-         reported but does not fail the run; a false positive (ts-rust-only\n\
+         reported but does not fail the run; a false positive (tsox-only\n\
          error) does.\n\
          \n\
          The installed tsc must report the exact version pinned in\n\
@@ -557,14 +557,14 @@ fn case_matches(path: &Path, requested: &str) -> bool {
 
 // --- collecting each side's diagnostics -----------------------------------
 
-fn ts_rust_diagnostics(
+fn tsox_diagnostics(
     checker: &TypeChecker,
     source: &str,
     file_name: &str,
 ) -> Result<SideDiagnostics, String> {
     let result = checker
         .check_source(source, file_name)
-        .map_err(|error| format!("{file_name}: ts-rust failed to parse: {error}"))?;
+        .map_err(|error| format!("{file_name}: tsox failed to parse: {error}"))?;
     let line_index = LineIndex::new(source);
 
     let mut entries = Vec::new();

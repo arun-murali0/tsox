@@ -7,12 +7,12 @@
 // no regex against pretty-printed CLI text, no risk of a type name
 // containing a paren or colon confusing a line parser.
 //
-// The ts-rust side is still parsed from its CLI text output, since that
+// The tsox side is still parsed from its CLI text output, since that
 // format is small, fully controlled by this project, and already
 // unambiguous: `file:line:col: severity: CODE message` (see
 // Diagnostic::format_with_position in src/diagnostics.rs).
 //
-// Output is staged, not buffered: ts-rust runs first (one pass, printed as
+// Output is staged, not buffered: tsox runs first (one pass, printed as
 // it happens), then tsc checks files one at a time via checkFiles'
 // options.onFile callback, and each file's comparison prints immediately as
 // it's computed -- so on a large fixture set you see results appear as they
@@ -27,61 +27,61 @@
 // document, so don't pipe --json-stream output into something expecting a
 // single JSON.parse().
 //
-// --differ shows the same side-by-side table, but only the lines where ts-rust and tsc
-// are not an exact match: "tsc extra (gap)" (tsc only), "ts-rust extra (fp)" (ts-rust
+// --differ shows the same side-by-side table, but only the lines where tsox and tsc
+// are not an exact match: "tsc extra (gap)" (tsc only), "tsox extra (fp)" (tsox
 // only), "code differs" or "message differs" (both report an error there, but the tsc
 // code or the message text is not the same). It is the quick way to see exactly what is
 // left to align; the summary still follows. In --json, those lines are the `differences`
 // list: kind GAP / FALSE POSITIVE / MISMATCH (what check-baseline.js reads), plus
 // `mismatch` ("message" | "code") on a MISMATCH.
 //
-// The ts-rust column shows ts-rust's own TSR#### code (e.g. `TSR1004 Type 'number' ...`).
+// The tsox column shows tsox's own TSR#### code (e.g. `TSR1004 Type 'number' ...`).
 // The comparison itself is on the tsc code it maps to, so the two sides can be matched; that
-// mapping stays in --json: `tsRust` has the mapped TS#### strings, `tsRustTsr` the TSR codes.
+// mapping stays in --json: `tsox` has the mapped TS#### strings, `tsoxTsr` the TSR codes.
 //
 // A file's verdict is MATCH only when every line has the same tsc code and message on both
 // sides. Same error lines but different wording is MESSAGE DIFFERS; a different tsc code is
 // CODE DIFFERS; GAP, FALSE POSITIVE and MIXED are as before.
 //
-// The summary ends with the wall time and peak memory of ts-rust and of tsc. tsc's time is
+// The summary ends with the wall time and peak memory of tsox and of tsc. tsc's time is
 // stored in its result cache with each file, so a cached run still reports what tsc cost;
 // pass --no-cache to measure it afresh.
 //
-// --module compares a whole project instead of independent files, which is how ts-rust now
+// --module compares a whole project instead of independent files, which is how tsox now
 // checks (through its module graph, imports resolved across files). The target must be a
-// directory. ts-rust runs as before; tsc checks every file of the directory in ONE Program
+// directory. tsox runs as before; tsc checks every file of the directory in ONE Program
 // (check-fixtures.js checkProject), run as a child process so its wall time and peak memory
-// are measured the same way ts-rust's are, instead of one isolated Program per file. The
+// are measured the same way tsox's are, instead of one isolated Program per file. The
 // per-file tsc cache is not used, since a project result depends on every file in it. Every
 // file is treated as its own module (moduleDetection: force), so independent scripts do not
 // collide in one global scope; on tests/fixtures the diagnostics equal the per-file mode's.
 //
-// --runs N repeats the measured runs of ts-rust (and, with --module, of tsc) N times and
+// --runs N repeats the measured runs of tsox (and, with --module, of tsc) N times and
 // reports the median time and median peak memory, so one noisy run does not decide the
 // figures. The default is 5 with --module and 1 otherwise (per-file tsc results come from a
-// cache, so repeating them would measure the cache). --threads N runs ts-rust with N worker
+// cache, so repeating them would measure the cache). --threads N runs tsox with N worker
 // threads (RAYON_NUM_THREADS); tsc is single-threaded, so --threads 1 is the like-for-like
 // figure and the default (every core) is what a user gets.
 //
 // --summary prints only numbers and no per-file tables or JSON: how many files were
 // compared, how many MATCH / MESSAGE DIFFERS / CODE DIFFERS / GAP / FALSE POSITIVE / MIXED,
-// the error counts on both sides, and the wall time and peak memory of ts-rust and of tsc.
+// the error counts on both sides, and the wall time and peak memory of tsox and of tsc.
 // Every line is `name: value` with the unit after the number (ms or MB), so it is easy to
-// diff two runs or grep. ts-rust and tsc each run as one process over every file, so there
+// diff two runs or grep. tsox and tsc each run as one process over every file, so there
 // is no peak per file; `avg_peak_mb_per_file` is the process peak divided by the file count,
 // a rough figure.
 //
-// --flat runs ts-rust with its own --flat option: every file is checked on its own, with no
+// --flat runs tsox with its own --flat option: every file is checked on its own, with no
 // module graph, which is how tsc's test suite works (each case is its own Program, and
-// hundreds of cases declare the same global names). Without it ts-rust builds the module
+// hundreds of cases declare the same global names). Without it tsox builds the module
 // graph over the whole directory, and on a directory of thousands of unrelated scripts that
 // run can take far longer than the same files in chunks. Use --flat for the TypeScript
 // repo's tests/cases and leave it off for projects whose files import each other.
 //
-// --timeout S stops a ts-rust or tsc child that has run for S seconds and reports it, so
+// --timeout S stops a tsox or tsc child that has run for S seconds and reports it, so
 // one hang names itself instead of freezing the whole comparison. The default is no limit.
 //
-// Usage: node compare.js <target-dir-or-file> <ts-rust-binary> [--strict-only] [--json | --json-stream | --summary] [--only-differ] [--differ] [--no-cache] [--module] [--flat] [--runs N] [--threads N] [--timeout S]
+// Usage: node compare.js <target-dir-or-file> <tsox-binary> [--strict-only] [--json | --json-stream | --summary] [--only-differ] [--differ] [--no-cache] [--module] [--flat] [--runs N] [--threads N] [--timeout S]
 
 const fs = require("fs");
 const os = require("os");
@@ -126,15 +126,15 @@ const noCache = args.includes("--no-cache");
 const moduleMode = args.includes("--module");
 const runs = intFlag("--runs") ?? (moduleMode ? 5 : 1);
 const threads = intFlag("--threads");
-// ts-rust checks each file alone, with no module graph (see the doc comment above).
+// tsox checks each file alone, with no module graph (see the doc comment above).
 const flatMode = args.includes("--flat");
 // Seconds before a child process is stopped; null means no limit.
 const timeoutSeconds = intFlag("--timeout");
 
-const [target, tsRustBin] = positional;
-if (!target || !tsRustBin) {
+const [target, tsoxBin] = positional;
+if (!target || !tsoxBin) {
   console.error(
-    "usage: node compare.js <target-dir-or-file> <ts-rust-binary> [--strict-only] [--json | --json-stream | --summary] [--only-differ] [--differ] [--no-cache] [--module] [--flat] [--runs N] [--threads N] [--timeout S]",
+    "usage: node compare.js <target-dir-or-file> <tsox-binary> [--strict-only] [--json | --json-stream | --summary] [--only-differ] [--differ] [--no-cache] [--module] [--flat] [--runs N] [--threads N] [--timeout S]",
   );
   process.exit(2);
 }
@@ -189,9 +189,9 @@ function fmtKb(kb) {
   return kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`;
 }
 
-// === Stage 1: run ts-rust once over the whole target ========================
+// === Stage 1: run tsox once over the whole target ========================
 
-status(`[1/2] Running ts-rust over ${target} ...`);
+status(`[1/2] Running tsox over ${target} ...`);
 
 const stat = fs.statSync(target);
 if (moduleMode && stat.isFile()) {
@@ -200,22 +200,22 @@ if (moduleMode && stat.isFile()) {
   );
   process.exit(2);
 }
-const scratchDir = fs.mkdtempSync("/tmp/ts-rust-compare-");
-let tsRustProjectRoot;
+const scratchDir = fs.mkdtempSync("/tmp/tsox-compare-");
+let tsoxProjectRoot;
 
 if (stat.isFile()) {
-  // Isolate exactly this one file, so ts-rust's own directory walk never
+  // Isolate exactly this one file, so tsox's own directory walk never
   // silently widens scope to sibling fixtures.
   fs.mkdirSync(scratchDir, { recursive: true });
   fs.copyFileSync(target, path.join(scratchDir, path.basename(target)));
-  tsRustProjectRoot = scratchDir;
+  tsoxProjectRoot = scratchDir;
 } else {
-  tsRustProjectRoot = target;
+  tsoxProjectRoot = target;
 }
-const tsconfigPath = path.join(tsRustProjectRoot, ".compare-tsconfig.json");
+const tsconfigPath = path.join(tsoxProjectRoot, ".compare-tsconfig.json");
 fs.writeFileSync(tsconfigPath, "");
 
-// Runs ts-rust once and reports how long it took and, when the OS lets us ask, its peak
+// Runs tsox once and reports how long it took and, when the OS lets us ask, its peak
 // memory. Node cannot read a child's peak RSS by itself, so `measure` wraps the command in
 // /usr/bin/time (-v on Linux, -l on macOS) or, failing that, a few lines of python3. If
 // neither exists the run is still made and memory is simply reported as unavailable.
@@ -259,7 +259,7 @@ function spawnMeasured(cmd, wrapper, env) {
   return res;
 }
 
-// `label` names the program in error messages. Both ts-rust and the tsc child exit 0, or 1
+// `label` names the program in error messages. Both tsox and the tsc child exit 0, or 1
 // when they found errors; anything else with no output is a real failure.
 function runMeasured(cmd, { measure, label, env }) {
   let res;
@@ -315,7 +315,7 @@ function runMeasured(cmd, { measure, label, env }) {
     );
     process.exit(2);
   }
-  // ts-rust exits 1 when it found real type errors -- expected, and its
+  // tsox exits 1 when it found real type errors -- expected, and its
   // diagnostics are still on stdout. Anything else with no output is a real failure.
   if (!res.stdout && res.status !== 0 && res.status !== 1) {
     console.error(
@@ -326,30 +326,30 @@ function runMeasured(cmd, { measure, label, env }) {
   return { stdout: res.stdout || "", wallMs, maxRssKb, how };
 }
 
-function runTsRust(extraArgs, { measure }) {
+function runTsox(extraArgs, { measure }) {
   const flatArgs = flatMode ? ["--flat"] : [];
   return runMeasured(
-    [tsRustBin, "--project", tsconfigPath, ...flatArgs, ...extraArgs],
+    [tsoxBin, "--project", tsconfigPath, ...flatArgs, ...extraArgs],
     {
       measure,
-      label: "the ts-rust binary",
-      // rayon reads this; without it ts-rust uses every core.
+      label: "the tsox binary",
+      // rayon reads this; without it tsox uses every core.
       env: threads ? { RAYON_NUM_THREADS: String(threads) } : undefined,
     },
   );
 }
 
-// Same run twice, because ts-rust prints one code per diagnostic: its own TSR#### by default,
+// Same run twice, because tsox prints one code per diagnostic: its own TSR#### by default,
 // or the tsc code it maps to with --tsc-codes. The comparison needs the tsc code; the report
 // shows both, so a TSR code is never lost behind its mapping. Both runs list the same
 // diagnostics in the same order (checked below).
-const rawRun = runTsRust([], { measure: false });
+const rawRun = runTsox([], { measure: false });
 // The measured runs. The first one's output is what is compared (every run prints the same
 // diagnostics); time and peak memory are the median over all of them, written onto
 // `mappedRun` so everything below reads one pair of figures.
 const mappedRuns = [];
 for (let i = 0; i < runs; i++)
-  mappedRuns.push(runTsRust(["--tsc-codes"], { measure: true }));
+  mappedRuns.push(runTsox(["--tsc-codes"], { measure: true }));
 const mappedRun = mappedRuns[0];
 mappedRun.wallMs = median(mappedRuns.map((r) => r.wallMs));
 mappedRun.maxRssKb = median(mappedRuns.map((r) => r.maxRssKb));
@@ -359,17 +359,17 @@ fs.rmSync(scratchDir, { recursive: true, force: true });
 // Keys must match the tsc side, which uses paths relative to the cwd.
 const normalizePath = (f) => path.relative(process.cwd(), path.resolve(f));
 
-// ts-rust's own CLI line shape: `file:line:col: severity: CODE message`.
-// Only error-severity lines are kept -- ts-rust's warnings are all
+// tsox's own CLI line shape: `file:line:col: severity: CODE message`.
+// Only error-severity lines are kept -- tsox's warnings are all
 // "not yet checked" implementation-status markers with no tsc equivalent
 // (see bin/compare-tsc.rs's module doc comment), so comparing them is noise.
-const TS_RUST_LINE = /^(.+):(\d+):(\d+): (error|warning): (\S+) (.+)$/;
+const TSOX_LINE = /^(.+):(\d+):(\d+): (error|warning): (\S+) (.+)$/;
 
-function parseTsRust(raw) {
+function parseTsox(raw) {
   const diags = []; // { file, line, code, message }
   let lastDiag = null;
   for (const rawLine of raw.split("\n")) {
-    const m = TS_RUST_LINE.exec(rawLine);
+    const m = TSOX_LINE.exec(rawLine);
     if (!m) {
       // A message that is a chain of reasons continues on indented lines, the way
       // tsc prints it; they belong to the diagnostic above.
@@ -394,21 +394,21 @@ function parseTsRust(raw) {
   return diags;
 }
 
-const tsRustDiags = parseTsRust(mappedRun.stdout);
-const tsRustTsrDiags = parseTsRust(rawRun.stdout);
+const tsoxDiags = parseTsox(mappedRun.stdout);
+const tsoxTsrDiags = parseTsox(rawRun.stdout);
 let tsrCodesAvailable =
-  tsRustTsrDiags.length === tsRustDiags.length &&
-  tsRustDiags.every(
+  tsoxTsrDiags.length === tsoxDiags.length &&
+  tsoxDiags.every(
     (d, i) =>
-      d.file === tsRustTsrDiags[i].file && d.line === tsRustTsrDiags[i].line,
+      d.file === tsoxTsrDiags[i].file && d.line === tsoxTsrDiags[i].line,
   );
 if (tsrCodesAvailable) {
-  tsRustDiags.forEach((d, i) => {
-    d.tsr = tsRustTsrDiags[i].code;
+  tsoxDiags.forEach((d, i) => {
+    d.tsr = tsoxTsrDiags[i].code;
   });
 } else {
   status(
-    "      warning: ts-rust's own codes could not be paired with the tsc codes it maps to; showing tsc codes only.",
+    "      warning: tsox's own codes could not be paired with the tsc codes it maps to; showing tsc codes only.",
   );
 }
 
@@ -421,17 +421,17 @@ function byLine(diags) {
   return perLine;
 }
 
-const tsRustByFile = new Map(); // file -> Map(line -> [entries])
-for (const d of tsRustDiags) {
-  if (!tsRustByFile.has(d.file)) tsRustByFile.set(d.file, []);
-  tsRustByFile.get(d.file).push(d);
+const tsoxByFile = new Map(); // file -> Map(line -> [entries])
+for (const d of tsoxDiags) {
+  if (!tsoxByFile.has(d.file)) tsoxByFile.set(d.file, []);
+  tsoxByFile.get(d.file).push(d);
 }
-for (const [file, diags] of tsRustByFile) tsRustByFile.set(file, byLine(diags));
+for (const [file, diags] of tsoxByFile) tsoxByFile.set(file, byLine(diags));
 
 // The unmeasured run above exists only for the TSR codes; its time is not used.
-const tsRustWallMs = mappedRun.wallMs ?? rawRun.wallMs;
+const tsoxWallMs = mappedRun.wallMs ?? rawRun.wallMs;
 status(
-  `      ts-rust reported ${tsRustDiags.length} error(s) in ${fmtMs(tsRustWallMs)}` +
+  `      tsox reported ${tsoxDiags.length} error(s) in ${fmtMs(tsoxWallMs)}` +
     (mappedRun.maxRssKb !== null
       ? `, peak memory ${fmtKb(mappedRun.maxRssKb)}.`
       : " (peak memory unavailable: no /usr/bin/time or python3)."),
@@ -473,7 +473,7 @@ function displayName(file, t) {
 
 const report = []; // per-file structured verdicts, for --json
 const differences = []; // --differ: one entry per line where the two sides disagree
-// Beyond "is there an error on this line": a line is `exact` when ts-rust and tsc
+// Beyond "is there an error on this line": a line is `exact` when tsox and tsc
 // report the same codes and the same message text on it, in the same order.
 let exactFiles = 0,
   exactLines = 0,
@@ -539,9 +539,9 @@ function fileCell(name) {
   return { content: name, wrapOnWordBoundary: false };
 }
 
-// ts-rust's cells show the TSR code it really emits, and only that. The tsc code it maps to
-// is still what the comparison uses and is still in the JSON (`tsRust` holds the mapped
-// "TS####" strings, `tsRustTsr` the TSR codes), so a viewer such as an IDE can later turn a
+// tsox's cells show the TSR code it really emits, and only that. The tsc code it maps to
+// is still what the comparison uses and is still in the JSON (`tsox` holds the mapped
+// "TS####" strings, `tsoxTsr` the TSR codes), so a viewer such as an IDE can later turn a
 // TSR code into a link to its tsc code. tsc's own diagnostics have no TSR code.
 function codeLabel(d) {
   return d.tsr || d.code;
@@ -549,7 +549,7 @@ function codeLabel(d) {
 
 function newTierTable() {
   return new Table({
-    head: ["file", "line", "ts-rust", "tsc", "verdict"],
+    head: ["file", "line", "tsox", "tsc", "verdict"],
     colWidths: [FILE_W, LINE_W, TSRUST_W, TSC_W, VERDICT_W],
     wordWrap: true,
     style: { head: [], border: NO_COLOR ? [] : ["grey"] },
@@ -577,7 +577,7 @@ function ensureTierHeader() {
   }
 }
 
-function renderFile(file, tsRustLines, tscLines) {
+function renderFile(file, tsoxLines, tscLines) {
   const t = tier(file);
 
   if (t !== currentTier) {
@@ -589,7 +589,7 @@ function renderFile(file, tsRustLines, tscLines) {
     currentTier = t;
   }
 
-  if (tsRustLines.size === 0 && tscLines.size === 0) {
+  if (tsoxLines.size === 0 && tscLines.size === 0) {
     totalAgree++;
     exactFiles++;
     verdictCounts.MATCH++;
@@ -610,18 +610,18 @@ function renderFile(file, tsRustLines, tscLines) {
   }
 
   const allLineNumbers = [
-    ...new Set([...tsRustLines.keys(), ...tscLines.keys()]),
+    ...new Set([...tsoxLines.keys(), ...tscLines.keys()]),
   ].sort((a, b) => a - b);
 
   // Per line: exact | message (same codes, wording differs) | code (different codes)
-  // | gap (tsc only) | fp (ts-rust only).
+  // | gap (tsc only) | fp (tsox only).
   const lineResult = new Map();
   let hasFp = false,
     hasGap = false,
     hasCode = false,
     hasMessage = false;
   for (const ln of allLineNumbers) {
-    const r = lineResultOf(tsRustLines.get(ln) || [], tscLines.get(ln) || []);
+    const r = lineResultOf(tsoxLines.get(ln) || [], tscLines.get(ln) || []);
     lineResult.set(ln, r);
     comparedLines++;
     if (r === "exact") exactLines++;
@@ -637,7 +637,7 @@ function renderFile(file, tsRustLines, tscLines) {
     for (const ln of allLineNumbers) {
       const r = lineResult.get(ln);
       if (r === "exact") continue;
-      const left = tsRustLines.get(ln) || [];
+      const left = tsoxLines.get(ln) || [];
       const right = tscLines.get(ln) || [];
       // `kind` and the leading TS code of each string are what check-baseline.js keys on,
       // so they stay as they were; the extra fields are for people reading the JSON.
@@ -647,8 +647,8 @@ function renderFile(file, tsRustLines, tscLines) {
         kind: r === "gap" ? "GAP" : r === "fp" ? "FALSE POSITIVE" : "MISMATCH",
         ...(r === "message" || r === "code" ? { mismatch: r } : {}),
         tsc: right.map((d) => `${d.code} ${d.message}`),
-        tsRust: left.map((d) => `${d.code} ${d.message}`),
-        tsRustTsr: left.map((d) => d.tsr || null),
+        tsox: left.map((d) => `${d.code} ${d.message}`),
+        tsoxTsr: left.map((d) => d.tsr || null),
       });
     }
   }
@@ -689,10 +689,10 @@ function renderFile(file, tsRustLines, tscLines) {
         line: ln,
         exact: lineResult.get(ln) === "exact",
         result: lineResult.get(ln),
-        tsRust: (tsRustLines.get(ln) || []).map(
+        tsox: (tsoxLines.get(ln) || []).map(
           (d) => `${d.code} ${d.message}`,
         ),
-        tsRustTsr: (tsRustLines.get(ln) || []).map((d) => d.tsr || null),
+        tsoxTsr: (tsoxLines.get(ln) || []).map((d) => d.tsr || null),
         tsc: (tscLines.get(ln) || []).map((d) => `${d.code} ${d.message}`),
       })),
     };
@@ -712,7 +712,7 @@ function renderFile(file, tsRustLines, tscLines) {
 
   // Per-row status: every row gets one -- "match" when both sides agree exactly, "message
   // differs" / "code differs" when both report an error on the line but the text or the
-  // code is not the same, and "tsc extra (gap)" / "ts-rust extra (fp)" for a line only one
+  // code is not the same, and "tsc extra (gap)" / "tsox extra (fp)" for a line only one
   // side reported. The file's overall verdict still gets its own line after the last row,
   // since that summarizes the whole file, not one line of it.
   const reasonFor = (r) =>
@@ -721,7 +721,7 @@ function renderFile(file, tsRustLines, tscLines) {
       message: `${c.yellow}message differs${c.reset}`,
       code: `${c.red}code differs${c.reset}`,
       gap: `${c.yellow}tsc extra (gap)${c.reset}`,
-      fp: `${c.red}ts-rust extra (fp)${c.reset}`,
+      fp: `${c.red}tsox extra (fp)${c.reset}`,
     })[r];
 
   // --differ: same side-by-side table, but only the lines that are not an exact match.
@@ -731,7 +731,7 @@ function renderFile(file, tsRustLines, tscLines) {
 
   let firstRow = true;
   for (const ln of shownLines) {
-    const left = tsRustLines.get(ln) || [];
+    const left = tsoxLines.get(ln) || [];
     const right = tscLines.get(ln) || [];
     const rows = Math.max(left.length, right.length, 1);
 
@@ -757,7 +757,7 @@ function renderFile(file, tsRustLines, tscLines) {
   ]);
 }
 
-// Merges one file's tsc diagnostics with ts-rust's and renders the result.
+// Merges one file's tsc diagnostics with tsox's and renders the result.
 let tscErrorCount = 0;
 function onTscFile(fsPath, fileResults) {
   tscErrorCount += fileResults.filter((d) => d.category === "Error").length;
@@ -772,13 +772,13 @@ function onTscFile(fsPath, fileResults) {
         message: d.message,
       })),
   );
-  const tsRustLines = tsRustByFile.get(file) || new Map();
-  renderFile(file, tsRustLines, tscLines);
+  const tsoxLines = tsoxByFile.get(file) || new Map();
+  renderFile(file, tsoxLines, tscLines);
 }
 
 // --module: tsc checks the directory as one Program in a child process, so its wall time
-// and peak memory come from the same wrappers as ts-rust's. The time is the whole process
-// (Node and TypeScript start-up included), the way ts-rust's includes its own start-up;
+// and peak memory come from the same wrappers as tsox's. The time is the whole process
+// (Node and TypeScript start-up included), the way tsox's includes its own start-up;
 // `programMs` is the part spent building and checking the Program, shown next to it.
 function runTscProject() {
   const cmd = [
@@ -788,7 +788,7 @@ function runTscProject() {
     "--project",
     ...(strictOnly ? ["--strict-only"] : []),
   ];
-  // Repeated like ts-rust's runs, and reported as the median, so the two sides are summarized
+  // Repeated like tsox's runs, and reported as the median, so the two sides are summarized
   // the same way. The first run's diagnostics are the ones compared.
   const results = [];
   for (let i = 0; i < runs; i++) {
@@ -849,10 +849,10 @@ if (!noCache && !moduleMode)
 const tscWallMs = stats.ranMs + stats.cachedMs;
 const performance = {
   runs,
-  tsRust: {
+  tsox: {
     files: files.length,
     threads: threads ?? os.cpus().length,
-    wallMs: Math.round(tsRustWallMs * 10) / 10,
+    wallMs: Math.round(tsoxWallMs * 10) / 10,
     maxRssKb: mappedRun.maxRssKb,
     memoryMeasuredWith: mappedRun.how,
   },
@@ -869,8 +869,8 @@ const performance = {
     memoryMeasuredThisRun: perf.measuredThisRun,
   },
   timesFaster:
-    tsRustWallMs > 0 && tscWallMs > 0
-      ? Math.round(tscWallMs / tsRustWallMs)
+    tsoxWallMs > 0 && tscWallMs > 0
+      ? Math.round(tscWallMs / tsoxWallMs)
       : null,
   timesLessMemory:
     mappedRun.maxRssKb && perf.maxRssKb
@@ -880,7 +880,7 @@ const performance = {
 
 function printPerformance() {
   const p = performance;
-  const rustMem = p.tsRust.maxRssKb !== null ? fmtKb(p.tsRust.maxRssKb) : "n/a";
+  const rustMem = p.tsox.maxRssKb !== null ? fmtKb(p.tsox.maxRssKb) : "n/a";
   const tscMem =
     p.tsc.maxRssKb !== null
       ? fmtKb(p.tsc.maxRssKb) + (p.tsc.memoryMeasuredThisRun ? "" : " *")
@@ -892,7 +892,7 @@ function printPerformance() {
       : fmtMs(p.tsc.wallMs);
   const rows = [
     ["", "time", "peak memory"],
-    ["ts-rust", fmtMs(p.tsRust.wallMs), rustMem],
+    ["tsox", fmtMs(p.tsox.wallMs), rustMem],
     ["tsc", tscTime, tscMem],
   ];
   const w = [0, 1, 2].map((i) => Math.max(...rows.map((r) => r[i].length)));
@@ -904,18 +904,18 @@ function printPerformance() {
   });
   if (p.timesFaster && tscTime !== "n/a")
     log(
-      `  ts-rust is ~${p.timesFaster.toLocaleString("en-US")}x faster` +
+      `  tsox is ~${p.timesFaster.toLocaleString("en-US")}x faster` +
         (p.timesLessMemory
           ? ` and uses ~${p.timesLessMemory}x less memory`
           : "") +
         " than tsc",
     );
   log(
-    `${c.dim}  ts-rust: one process over every file, ${p.tsRust.threads} thread(s)${threads ? "" : " (all cores)"}, time includes process start-up.${c.reset}`,
+    `${c.dim}  tsox: one process over every file, ${p.tsox.threads} thread(s)${threads ? "" : " (all cores)"}, time includes process start-up.${c.reset}`,
   );
   if (runs > 1)
     log(
-      `${c.dim}  Times and peak memory are the median of ${runs} runs${moduleMode ? " for both" : " for ts-rust"}.${c.reset}`,
+      `${c.dim}  Times and peak memory are the median of ${runs} runs${moduleMode ? " for both" : " for tsox"}.${c.reset}`,
     );
   if (project) {
     log(
@@ -941,9 +941,9 @@ function printPerformance() {
     log(
       `${c.dim}  * tsc memory is from the last run that checked files, not this one.${c.reset}`,
     );
-  if (p.tsRust.maxRssKb === null)
+  if (p.tsox.maxRssKb === null)
     log(
-      `${c.dim}  ts-rust memory needs /usr/bin/time or python3 on PATH.${c.reset}`,
+      `${c.dim}  tsox memory needs /usr/bin/time or python3 on PATH.${c.reset}`,
     );
 }
 
@@ -1014,12 +1014,12 @@ if (summaryOnly) {
     ["files_differ_on_error_lines", totalDiffer],
     ["lines_exact", exactLines],
     ["lines_compared", comparedLines],
-    ["ts_rust_errors", tsRustDiags.length],
+    ["tsox_errors", tsoxDiags.length],
     ["tsc_errors", tscErrorCount],
-    ["ts_rust_time", ms(p.tsRust.wallMs)],
-    ["ts_rust_time_per_file", perFile(p.tsRust.wallMs)],
-    ["ts_rust_peak_mb", mb(p.tsRust.maxRssKb)],
-    ["ts_rust_avg_peak_mb_per_file", avgMb(p.tsRust.maxRssKb)],
+    ["tsox_time", ms(p.tsox.wallMs)],
+    ["tsox_time_per_file", perFile(p.tsox.wallMs)],
+    ["tsox_peak_mb", mb(p.tsox.maxRssKb)],
+    ["tsox_avg_peak_mb_per_file", avgMb(p.tsox.maxRssKb)],
     ["tsc_time", ms(p.tsc.wallMs)],
     ["tsc_time_per_file", perFile(p.tsc.wallMs)],
     ["tsc_peak_mb", mb(p.tsc.maxRssKb)],
@@ -1047,10 +1047,10 @@ log(
   `  ${v["CODE DIFFERS"]} CODE DIFFERS     (error on the same lines, but a different tsc code)`,
 );
 log(
-  `  ${v.GAP} GAP             (tsc reports an error ts-rust does not -- a check not built yet)`,
+  `  ${v.GAP} GAP             (tsc reports an error tsox does not -- a check not built yet)`,
 );
 log(
-  `  ${v["FALSE POSITIVE"]} FALSE POSITIVE  (ts-rust reports an error tsc does not)`,
+  `  ${v["FALSE POSITIVE"]} FALSE POSITIVE  (tsox reports an error tsc does not)`,
 );
 if (v.MIXED > 0)
   log(`  ${v.MIXED} MIXED           (both of the above in one file)`);

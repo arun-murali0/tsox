@@ -58,6 +58,12 @@ pub fn resolve_ts_type(
     namespace: &mut TypeNamespace,
     arena: &mut TypeArena,
 ) -> Option<TypeId> {
+    // A type written as `number[][][]...` nests as deep as the file lets it, and each level
+    // is a call here. Past the stack budget the type is unknown and the file says so once.
+    if crate::stack_guard::exhausted() {
+        namespace.note_depth_cut();
+        return Some(arena.error());
+    }
     match ty {
         TSType::TSNumberKeyword(_) => Some(arena.number()),
         TSType::TSStringKeyword(_) => Some(arena.string()),

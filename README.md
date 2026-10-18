@@ -1,16 +1,16 @@
-# ts-rust
+# Tsoxide (tsox)
 
 > A Rust-based experimental TypeScript type checker built on top of Oxc.
 
 ## ⚠️ Experimental, not production-ready
 
-**ts-rust is experimental software. Do not use it as a production TypeScript compiler**
+**Tsoxide (tsox) is experimental software. Do not use it as a production TypeScript compiler**
 
 The project is actively evolving. TypeScript compatibility is incomplete (there are no tuples, `keyof`, mapped or conditional types, and classes, enums and overloads do not yet cross files), and the compatibility harness is an experimental comparison tool rather than a correctness proof.
 
-## What is ts-rust?
+## What is Tsoxide?
 
-ts-rust explores how much of the TypeScript type system can be implemented in Rust while reusing the mature front-end infrastructure provided by [Oxc](https://oxc.rs/).
+Tsoxide (tsox) explores how much of the TypeScript type system can be implemented in Rust while reusing the mature front-end infrastructure provided by [Oxc](https://oxc.rs/).
 
 We deliberately do **not** try to rebuild everything.
 
@@ -22,7 +22,7 @@ Oxc handles the expensive front-end pieces:
 - source information
 - module resolution where adopted
 
-ts-rust owns the part that is the reason this project exists:
+tsox owns the part that is the reason this project exists:
 
 - semantic type representation
 - `TypeId` and arena-backed type storage
@@ -50,7 +50,7 @@ The design goal is a clean boundary:
                            │
                            ▼
                     ┌─────────────┐
-                    │  ts-rust    │
+                    │  tsox       │
                     │   bridge    │
                     └──────┬──────┘
                            │
@@ -230,7 +230,7 @@ BUILD.md                 # current build order, derived from checklist.md
 
 ## Architecture direction
 
-The current implementation deliberately builds on Oxc instead of recreating its parser or front end. ts-rust owns the TypeScript semantic layer.
+The current implementation deliberately builds on Oxc instead of recreating its parser or front end. tsox owns the TypeScript semantic layer.
 
 The next architectural boundary is the small `semantic::queries` API. It is intentionally read-only and narrow today. As generic inference, indexed access, overloads, and advanced type operations grow, semantic queries can expand without forcing AST-facing feature modules to know how the underlying algorithms are stored.
 
@@ -325,7 +325,7 @@ Each milestone document explains the semantic rule, implementation choice, and p
 
 ## Compatibility harness
 
-The repository contains an experimental harness for comparing ts-rust with TypeScript implementations such as `tsc` and `tsgo`.
+The repository contains an experimental harness for comparing tsox with TypeScript implementations such as `tsc` and `tsgo`.
 
 It records information such as:
 
@@ -347,7 +347,7 @@ A matching result does not prove that two compilers implement the same TypeScrip
 ./scripts/harness.sh
 ```
 
-This clones a fixture project (Zustand, by default), installs its dependencies, builds `ts-rust` in release mode if needed, and benchmarks whichever of `tsc`/`tsgo`/`ts-rust` are available. Results are written to `.harness/results/<timestamp>/summary.json`.
+This clones a fixture project (Zustand, by default), installs its dependencies, builds `tsox` in release mode if needed, and benchmarks whichever of `tsc`/`tsgo`/`tsox` are available. Results are written to `.harness/results/<timestamp>/summary.json`.
 
 Common variations:
 
@@ -373,7 +373,7 @@ It can be run on demand from GitHub Actions instead: go to **Actions → Compati
 
 ### Fixture-level three-way report (on demand)
 
-`scripts/harness.sh` above benchmarks against one real project (Zustand, by default). `scripts/ts-diag-tool/compare3.js` applies the same three-way idea (`tsc`, `tsgo`, `ts-rust`) to `tests/fixtures/` instead — per-fixture diagnostics, timing, and memory, plus a browsable HTML report. Like the harness above, this is on-demand tooling, not part of the fast, CI-gated loop described under "Fixture-level diagnostic comparison" below.
+`scripts/harness.sh` above benchmarks against one real project (Zustand, by default). `scripts/ts-diag-tool/compare3.js` applies the same three-way idea (`tsc`, `tsgo`, `tsox`) to `tests/fixtures/` instead — per-fixture diagnostics, timing, and memory, plus a browsable HTML report. Like the harness above, this is on-demand tooling, not part of the fast, CI-gated loop described under "Fixture-level diagnostic comparison" below.
 
 ```bash
 # tsgo needs its own scratch install -- see "Fixture-level diagnostic
@@ -382,9 +382,9 @@ It can be run on demand from GitHub Actions instead: go to **Actions → Compati
 # typescript@6.0.3 install pinned in scripts/ts-diag-tool/
 mkdir -p /tmp/tsgo-scratch && cd /tmp/tsgo-scratch && npm init -y && npm install typescript@7
 
-cd /path/to/ts-rust
+cd /path/to/tsox
 node scripts/ts-diag-tool/compare3.js tests/fixtures \
-  target/release/ts-rust \
+  target/release/tsox \
   /tmp/tsgo-scratch/node_modules/.bin/tsc \
   --html report.html
 ```
@@ -399,7 +399,7 @@ Memory figures need [GNU time](https://www.gnu.org/software/time/) (`/usr/bin/ti
 
 ## Fixture-level diagnostic comparison (`scripts/ts-diag-tool/`)
 
-Where the harness above answers "is ts-rust roughly as fast/compatible as tsc on a real project", this fast, CI-gated tool answers a narrower, more precise question asked continuously: "for each individual fixture under `tests/fixtures/`, which exact diagnostic (code, line, message) does ts-rust produce versus tsc, and where do they disagree?"
+Where the harness above answers "is tsox roughly as fast/compatible as tsc on a real project", this fast, CI-gated tool answers a narrower, more precise question asked continuously: "for each individual fixture under `tests/fixtures/`, which exact diagnostic (code, line, message) does tsox produce versus tsc, and where do they disagree?"
 
 It uses the real TypeScript compiler API (not text-parsing) for `tsc`, so diagnostics are read as structured `ts.Diagnostic` objects — no regex against pretty-printed CLI output, which broke down on type names containing parens or colons in an earlier version of this tooling.
 
@@ -419,13 +419,13 @@ This pins `typescript@6.0.3` deliberately: the plain `typescript` package now re
 ./scripts/compare-local.sh tests/fixtures/generics-tier1 # one folder
 ./scripts/compare-local.sh path/to/one_file.ts           # one file
 ./scripts/compare-local.sh tests/fixtures --only-differ  # hide fixtures where both sides fully agree
-./scripts/compare-local.sh tests/fixtures --differ       # list only the lines where ts-rust and tsc disagree (gap / false positive / mismatch)
+./scripts/compare-local.sh tests/fixtures --differ       # list only the lines where tsox and tsc disagree (gap / false positive / mismatch)
 ./scripts/compare-local.sh tests/fixtures --json         # structured output, e.g. for scripting
 ```
 
-Prints one table per fixture folder: file, line, ts-rust's diagnostic, tsc's diagnostic, and a per-line/per-file verdict (`match`, `tsc extra (gap)`, `ts-rust extra (fp)`). A **gap** (tsc catches something ts-rust doesn't yet) is expected on a checker still being built out feature by feature. A **false positive** (ts-rust rejects code tsc accepts) is the more damaging kind, since it breaks valid code rather than under-checking it.
+Prints one table per fixture folder: file, line, tsox's diagnostic, tsc's diagnostic, and a per-line/per-file verdict (`match`, `tsc extra (gap)`, `tsox extra (fp)`). A **gap** (tsc catches something tsox doesn't yet) is expected on a checker still being built out feature by feature. A **false positive** (tsox rejects code tsc accepts) is the more damaging kind, since it breaks valid code rather than under-checking it.
 
-Builds `target/release/ts-rust` automatically if it isn't already there, and `npm install`s on first run if needed.
+Builds `target/release/tsox` automatically if it isn't already there, and `npm install`s on first run if needed.
 
 ### Running it in CI
 

@@ -1,7 +1,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::Duration;
-use ts_rust::{FileId, TypeChecker};
+use tsox::{FileId, TypeChecker};
 
 #[path = "support/complex_fixtures.rs"]
 mod complex_fixtures;
@@ -168,7 +168,7 @@ fn bench_parse_and_bind(c: &mut Criterion) {
 
     c.bench_function("parse_and_bind_only/large_1000_functions", |b| {
         b.iter(|| {
-            let result = ts_rust::parse_and_bind_only(black_box(&large), "bench_large.ts");
+            let result = tsox::parse_and_bind_only(black_box(&large), "bench_large.ts");
 
             assert!(
                 result.is_ok(),

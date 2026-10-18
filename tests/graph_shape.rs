@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ts_rust::{FileId, ModuleGraph, ModuleResolver};
+use tsox::{FileId, ModuleGraph, ModuleResolver};
 
 // The shape of the module graph: which imports order files, how cycles are found and
 // keyed. Every test writes a small project into its own directory under the target tree.

@@ -1,4 +1,4 @@
-use ts_rust::{Diagnostic, DiagnosticCode, Severity, TypeChecker};
+use tsox::{Diagnostic, DiagnosticCode, Severity, TypeChecker};
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()

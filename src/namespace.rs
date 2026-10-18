@@ -106,6 +106,9 @@ pub struct TypeNamespace<'a> {
 
     entries: FxHashMap<String, TypeEntry<'a>>,
 
+    // Set when the stack guard cut a resolution short, so the check can report it once.
+    depth_cut: bool,
+
     // The namespaces the checker is currently inside, as full prefixes, outermost first.
     // A declaration registered now is stored under its qualified name (`N.I`), and an
     // unqualified name is looked up innermost prefix first. Empty at the top of a file.
@@ -279,6 +282,7 @@ impl<'a> TypeNamespace<'a> {
         Self {
             file_id,
             entries: FxHashMap::default(),
+            depth_cut: false,
             scope: Vec::new(),
             active_type_params: Vec::new(),
             merged_interface_parts: FxHashMap::default(),
@@ -963,7 +967,26 @@ impl<'a> TypeNamespace<'a> {
     // resolving flag detects a declaration that references itself while still
     // being resolved (for example, two type aliases that refer to each other),
     // reporting it as Circular instead of recursing forever.
+    /// Records that the stack guard cut a walk short, for the check to report once.
+    pub(crate) fn note_depth_cut(&mut self) {
+        self.depth_cut = true;
+    }
+
+    /// True once, if the stack guard cut a resolution short while checking this file.
+    pub fn take_depth_cut(&mut self) -> bool {
+        std::mem::take(&mut self.depth_cut)
+    }
+
     pub fn resolve(&mut self, name: &str, arena: &mut TypeArena) -> Resolution {
+        // A chain of declarations that each name the next can be as long as the file, and
+        // each link is a recursive call. Past the stack budget the answer is the error
+        // type, an unknown that is cached like any other result. Answering "circular"
+        // instead was not cached, so every later declaration in the chain walked it all
+        // again until the budget ran out: minutes for a chain of a few tens of thousands.
+        if crate::stack_guard::exhausted() {
+            self.depth_cut = true;
+            return Resolution::Resolved(arena.error());
+        }
         let registered = self.canonical(name).into_owned();
         // The declaration is read in the scope it was written in, whoever asks.
         let entry_scope = match self.entries.get(&registered) {

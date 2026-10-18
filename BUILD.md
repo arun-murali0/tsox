@@ -1,4 +1,4 @@
-# ts-rust - Build Stages (Real-World-First Order)
+# tsox - Build Stages (Real-World-First Order)
 
 Derived from checklist.md. Reordered to prioritize the type-system features and
 real-world code patterns most commonly hit in everyday TypeScript, ahead of
@@ -7,7 +7,7 @@ theoretically "foundational" but less-frequently-used advanced type operators.
 Module resolution uses `oxc_resolver` for path/specifier resolution (node_modules
 walk, package.json exports/main/types, tsconfig paths/baseUrl, extension probing).
 Everything checker-side (symbol tables, cross-file lookup, .d.ts parsing,
-import-cycle handling) is ts-rust's own work. Cross-file lookup and cycle handling are
+import-cycle handling) is tsox's own work. Cross-file lookup and cycle handling are
 done for annotated and inferred exports (docs/architecture/cross-file-types.md); .d.ts
 parsing is not.
 

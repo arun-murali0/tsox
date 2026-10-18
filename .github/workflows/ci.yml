@@ -50,7 +50,7 @@ jobs:
       - name: fmt + test
         run: bash ./scripts/ci.sh
 
-  # Staging gate: ts-rust vs real tsc over tests/fixtures, gated by the baseline.
+  # Staging gate: tsox vs real tsc over tests/fixtures, gated by the baseline.
   # Runs once per merge into main, never per branch push.
   compare-tsc:
     name: Compare against real tsc
@@ -79,8 +79,8 @@ jobs:
           cache: npm
           cache-dependency-path: scripts/ts-diag-tool/package-lock.json
 
-      - name: Build ts-rust (release)
-        run: cargo build --locked --release --bin ts-rust
+      - name: Build tsox (release)
+        run: cargo build --locked --release --bin tsox
 
       - name: Install ts-diag-tool dependencies
         working-directory: scripts/ts-diag-tool
@@ -98,9 +98,9 @@ jobs:
           restore-keys: |
             tsc-diag-${{ hashFiles('scripts/ts-diag-tool/package-lock.json', 'scripts/ts-diag-tool/check-fixtures.js') }}-
 
-      - name: Compare ts-rust against real tsc over tests/fixtures
+      - name: Compare tsox against real tsc over tests/fixtures
         run: |
-          node scripts/ts-diag-tool/compare.js tests/fixtures target/release/ts-rust --json --differ --only-differ \
+          node scripts/ts-diag-tool/compare.js tests/fixtures target/release/tsox --json --differ --only-differ \
             > /tmp/tsc-drift-result.json
 
       - name: Enforce known-differences baseline
@@ -137,7 +137,7 @@ jobs:
             if (!list.length) continue;
             console.log(`\n<details><summary>${kind} (${list.length})</summary>\n`);
             for (const x of list)
-              console.log(`- \`${x.file}:${x.line}\` tsc: ${x.tsc.map((t) => t.split("\n")[0]).join("; ") || "-"} / ts-rust: ${x.tsRust.map((t) => t.split("\n")[0]).join("; ") || "-"}`);
+              console.log(`- \`${x.file}:${x.line}\` tsc: ${x.tsc.map((t) => t.split("\n")[0]).join("; ") || "-"} / tsox: ${x.tsox.map((t) => t.split("\n")[0]).join("; ") || "-"}`);
             console.log("\n</details>");
           }
           JS

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Three-way comparison: tsc (via compiler API), tsgo (native Go port, CLI
-// only -- see below), and ts-rust. Extends compare.js's two-way idea (see
+// only -- see below), and tsox. Extends compare.js's two-way idea (see
 // that file's own doc comment) to all three compilers at once, and adds
 // what compare.js does not attempt: wall-clock time and peak memory per
 // compiler, plus a self-contained HTML report you can open in a browser.
@@ -19,7 +19,7 @@
 //
 // tsgo's own CLI diagnostic format (confirmed by hand) is the classic
 // non---pretty tsc shape: `file(line,col): error TSxxxx: message` -- NOT
-// the `file:line:col:` shape ts-rust uses, so it gets its own regex below.
+// the `file:line:col:` shape tsox uses, so it gets its own regex below.
 //
 // Memory measurement uses `/usr/bin/time -v` (GNU time, reports "Maximum
 // resident set size") when available, and silently omits memory figures
@@ -27,14 +27,14 @@
 // every machine this script runs on, so its absence is a soft degrade, not
 // an error.
 //
-// ts-rust's cells show its own TSR#### code and message. To tell "same error" from "same line,
-// different wording", ts-rust is also run once with --tsc-codes and paired with the first run;
-// ts-rust vs tsc then gets a verdict per line and per file -- exact (ALL AGREE),
+// tsox's cells show its own TSR#### code and message. To tell "same error" from "same line,
+// different wording", tsox is also run once with --tsc-codes and paired with the first run;
+// tsox vs tsc then gets a verdict per line and per file -- exact (ALL AGREE),
 // MESSAGE DIFFERS (same tsc code, different text) or CODE DIFFERS -- on top of the line-presence
-// agreement. The mapped TS codes are in the JSON as `tsRustTs`, for tooling that links TSR to TS.
+// agreement. The mapped TS codes are in the JSON as `tsoxTs`, for tooling that links TSR to TS.
 //
 // Usage:
-//   node compare3.js <target-dir-or-file> <ts-rust-binary> <tsgo-binary> \
+//   node compare3.js <target-dir-or-file> <tsox-binary> <tsgo-binary> \
 //     [--strict-only] [--json] [--html <path>] [--only-differ]
 //
 // tsgo-binary is typically node_modules/.bin/tsc from the `typescript@7`
@@ -56,10 +56,10 @@ const onlyDiffer = args.includes("--only-differ");
 const htmlIdx = args.indexOf("--html");
 const htmlPath = htmlIdx !== -1 ? args[htmlIdx + 1] : null;
 
-const [target, tsRustBin, tsgoBin] = positional;
-if (!target || !tsRustBin || !tsgoBin) {
+const [target, tsoxBin, tsgoBin] = positional;
+if (!target || !tsoxBin || !tsgoBin) {
   console.error(
-    "usage: node compare3.js <target-dir-or-file> <ts-rust-binary> <tsgo-binary> " +
+    "usage: node compare3.js <target-dir-or-file> <tsox-binary> <tsgo-binary> " +
       "[--strict-only] [--json] [--html <path>] [--only-differ]",
   );
   process.exit(2);
@@ -129,28 +129,28 @@ if (!hasGnuTime()) {
   status("Note: GNU time (/usr/bin/time -v) not found -- memory figures will be omitted.");
 }
 
-// === Run ts-rust (one process, whole target) =================================
+// === Run tsox (one process, whole target) =================================
 
-status(`[1/3] Running ts-rust over ${target} ...`);
+status(`[1/3] Running tsox over ${target} ...`);
 
 const stat = fs.statSync(target);
-const scratchDir = fs.mkdtempSync("/tmp/ts-rust-compare3-");
-let tsRustProjectRoot;
+const scratchDir = fs.mkdtempSync("/tmp/tsox-compare3-");
+let tsoxProjectRoot;
 if (stat.isFile()) {
   fs.mkdirSync(scratchDir, { recursive: true });
   fs.copyFileSync(target, path.join(scratchDir, path.basename(target)));
-  tsRustProjectRoot = scratchDir;
+  tsoxProjectRoot = scratchDir;
 } else {
-  tsRustProjectRoot = target;
+  tsoxProjectRoot = target;
 }
-const tsconfigPath = path.join(tsRustProjectRoot, ".compare-tsconfig.json");
+const tsconfigPath = path.join(tsoxProjectRoot, ".compare-tsconfig.json");
 fs.writeFileSync(tsconfigPath, "");
 
-const tsRustRun = runMeasured(tsRustBin, ["--project", tsconfigPath]);
+const tsoxRun = runMeasured(tsoxBin, ["--project", tsconfigPath]);
 // Second, unmeasured run: same diagnostics in the same order, printed under the tsc code each
-// TSR code maps to. Only used to compare against tsc; never shown as ts-rust's own code.
-const tsRustMappedRun = spawnSync(
-  tsRustBin,
+// TSR code maps to. Only used to compare against tsc; never shown as tsox's own code.
+const tsoxMappedRun = spawnSync(
+  tsoxBin,
   ["--project", tsconfigPath, "--tsc-codes"],
   { encoding: "utf8", maxBuffer: 1 << 30 },
 );
@@ -160,12 +160,12 @@ fs.rmSync(scratchDir, { recursive: true, force: true });
 // Keys must match the tsc side, which uses paths relative to the cwd.
 const normalizePath = (f) => path.relative(process.cwd(), path.resolve(f));
 
-const TS_RUST_LINE = /^(.+):(\d+):(\d+): (error|warning): (\S+) (.+)$/;
-function parseTsRust(text) {
+const TSOX_LINE = /^(.+):(\d+):(\d+): (error|warning): (\S+) (.+)$/;
+function parseTsox(text) {
   const diags = []; // { file, line, code, message }
   let last = null;
   for (const rawLine of text.split("\n")) {
-    const m = TS_RUST_LINE.exec(rawLine);
+    const m = TSOX_LINE.exec(rawLine);
     if (!m) {
       // A chained message continues on indented lines, the way tsc prints it.
       if (last && /^ {2,}\S/.test(rawLine)) last.message += "\n" + rawLine;
@@ -188,26 +188,26 @@ function parseTsRust(text) {
   return diags;
 }
 
-const tsRustDiags = parseTsRust(tsRustRun.stdout);
-const tsRustMapped = parseTsRust(tsRustMappedRun.stdout || "");
+const tsoxDiags = parseTsox(tsoxRun.stdout);
+const tsoxMapped = parseTsox(tsoxMappedRun.stdout || "");
 const tsCodesPaired =
-  tsRustMapped.length === tsRustDiags.length &&
-  tsRustDiags.every(
-    (d, i) => d.file === tsRustMapped[i].file && d.line === tsRustMapped[i].line,
+  tsoxMapped.length === tsoxDiags.length &&
+  tsoxDiags.every(
+    (d, i) => d.file === tsoxMapped[i].file && d.line === tsoxMapped[i].line,
   );
 if (tsCodesPaired) {
-  tsRustDiags.forEach((d, i) => {
-    d.tsCode = tsRustMapped[i].code;
+  tsoxDiags.forEach((d, i) => {
+    d.tsCode = tsoxMapped[i].code;
   });
 } else {
   status(
-    "      warning: could not pair ts-rust's codes with their tsc mapping; ts-rust vs tsc is compared by line only.",
+    "      warning: could not pair tsox's codes with their tsc mapping; tsox vs tsc is compared by line only.",
   );
 }
 
 status(
-  `      ts-rust: ${tsRustDiags.length} error(s), ${tsRustRun.elapsedMs}ms` +
-    (tsRustRun.peakRssKb != null ? `, peak RSS ${(tsRustRun.peakRssKb / 1024).toFixed(1)} MB` : ""),
+  `      tsox: ${tsoxDiags.length} error(s), ${tsoxRun.elapsedMs}ms` +
+    (tsoxRun.peakRssKb != null ? `, peak RSS ${(tsoxRun.peakRssKb / 1024).toFixed(1)} MB` : ""),
 );
 
 // === Run tsc (in-process via compiler API, file by file) ====================
@@ -222,7 +222,7 @@ const tscElapsedMs = Date.now() - tscStart;
 const memAfterKb = Math.round(process.memoryUsage().rss / 1024);
 // This is this Node process's own peak RSS, which also includes the tool's
 // own overhead (V8, cli-table3, etc.) -- not a clean isolated tsc number the
-// way ts-rust's and tsgo's subprocess measurements are. Reported anyway,
+// way tsox's and tsgo's subprocess measurements are. Reported anyway,
 // clearly labeled, since it's the only number available without shelling
 // out to `tsc` as a subprocess per file (which would reintroduce the exact
 // text-parsing problem this whole toolset was built to avoid).
@@ -291,12 +291,12 @@ function byLine(diags) {
   return m;
 }
 
-const tsRustByFile = new Map();
-for (const d of tsRustDiags) {
-  if (!tsRustByFile.has(d.file)) tsRustByFile.set(d.file, []);
-  tsRustByFile.get(d.file).push(d);
+const tsoxByFile = new Map();
+for (const d of tsoxDiags) {
+  if (!tsoxByFile.has(d.file)) tsoxByFile.set(d.file, []);
+  tsoxByFile.get(d.file).push(d);
 }
-for (const [f, diags] of tsRustByFile) tsRustByFile.set(f, byLine(diags));
+for (const [f, diags] of tsoxByFile) tsoxByFile.set(f, byLine(diags));
 
 const tscByFile = new Map();
 for (const d of tscDiagsAll) {
@@ -314,14 +314,14 @@ for (const [f, diags] of tsgoDiagsByFile) tsgoByFileLines.set(f, byLine(diags));
 let filesAllAgree = 0,
   filesAnyDiverge = 0;
 const pair = {
-  tsRustVsTsc: { agree: 0, tsRustOnly: 0, tscOnly: 0, exact: 0, messageDiffers: 0, codeDiffers: 0 },
-  tsRustVsTsgo: { agree: 0, tsRustOnly: 0, tsgoOnly: 0 },
+  tsoxVsTsc: { agree: 0, tsoxOnly: 0, tscOnly: 0, exact: 0, messageDiffers: 0, codeDiffers: 0 },
+  tsoxVsTsgo: { agree: 0, tsoxOnly: 0, tsgoOnly: 0 },
   tscVsTsgo: { agree: 0, tscOnly: 0, tsgoOnly: 0 },
 };
 let linesAllThreeAgree = 0,
   linesPartial = 0;
 
-// ts-rust vs tsc on one line: exact | message (same tsc code, text differs) | code | gap | fp.
+// tsox vs tsc on one line: exact | message (same tsc code, text differs) | code | gap | fp.
 // Without the TSR->TS pairing there is nothing to compare beyond presence, so both-present
 // counts as exact.
 const lineKey = (d) => `${d.tsCode || d.code} ${d.message}`;
@@ -340,7 +340,7 @@ const RESULT_LABEL = {
   message: "message differs",
   code: "code differs",
   gap: "tsc extra (gap)",
-  fp: "ts-rust extra (fp)",
+  fp: "tsox extra (fp)",
 };
 const verdictCounts = { "ALL AGREE": 0, "MESSAGE DIFFERS": 0, "CODE DIFFERS": 0, DIVERGES: 0 };
 
@@ -348,7 +348,7 @@ const fileReports = [];
 
 for (const fsPath of files) {
   const file = stat.isFile() ? target : path.relative(process.cwd(), fsPath);
-  const a = tsRustByFile.get(file) || new Map();
+  const a = tsoxByFile.get(file) || new Map();
   const b = tscByFile.get(file) || new Map();
   const g = tsgoByFileLines.get(file) || new Map();
 
@@ -369,23 +369,23 @@ for (const fsPath of files) {
       hasG = g.has(ln);
 
     const result = lineResultOf(a.get(ln) || [], b.get(ln) || []);
-    if (result === "exact") pair.tsRustVsTsc.exact++;
+    if (result === "exact") pair.tsoxVsTsc.exact++;
     if (result === "message") {
-      pair.tsRustVsTsc.messageDiffers++;
+      pair.tsoxVsTsc.messageDiffers++;
       anyMessage = true;
     }
     if (result === "code") {
-      pair.tsRustVsTsc.codeDiffers++;
+      pair.tsoxVsTsc.codeDiffers++;
       anyCode = true;
     }
 
-    if (hasA && hasB) pair.tsRustVsTsc.agree++;
-    else if (hasA) pair.tsRustVsTsc.tsRustOnly++;
-    else if (hasB) pair.tsRustVsTsc.tscOnly++;
+    if (hasA && hasB) pair.tsoxVsTsc.agree++;
+    else if (hasA) pair.tsoxVsTsc.tsoxOnly++;
+    else if (hasB) pair.tsoxVsTsc.tscOnly++;
 
-    if (hasA && hasG) pair.tsRustVsTsgo.agree++;
-    else if (hasA) pair.tsRustVsTsgo.tsRustOnly++;
-    else if (hasG) pair.tsRustVsTsgo.tsgoOnly++;
+    if (hasA && hasG) pair.tsoxVsTsgo.agree++;
+    else if (hasA) pair.tsoxVsTsgo.tsoxOnly++;
+    else if (hasG) pair.tsoxVsTsgo.tsgoOnly++;
 
     if (hasB && hasG) pair.tscVsTsgo.agree++;
     else if (hasB) pair.tscVsTsgo.tscOnly++;
@@ -400,8 +400,8 @@ for (const fsPath of files) {
     lineReports.push({
       line: ln,
       result,
-      tsRust: (a.get(ln) || []).map((d) => `${d.code} ${d.message}`),
-      tsRustTs: (a.get(ln) || []).map((d) => d.tsCode || null),
+      tsox: (a.get(ln) || []).map((d) => `${d.code} ${d.message}`),
+      tsoxTs: (a.get(ln) || []).map((d) => d.tsCode || null),
       tsc: (b.get(ln) || []).map((d) => `${d.code} ${d.message}`),
       tsgo: (g.get(ln) || []).map((d) => `${d.code} ${d.message}`),
     });
@@ -435,7 +435,7 @@ const summary = {
   pairwise: pair,
   verdicts: verdictCounts,
   performance: {
-    tsRust: { totalMs: tsRustRun.elapsedMs, peakRssKb: tsRustRun.peakRssKb, model: "single process, whole target" },
+    tsox: { totalMs: tsoxRun.elapsedMs, peakRssKb: tsoxRun.peakRssKb, model: "single process, whole target" },
     tsc: {
       totalMs: tscElapsedMs,
       inProcessRssKb: memAfterKb,
@@ -447,7 +447,7 @@ const summary = {
       model: "one subprocess per file -- totalMs is the sum, peakRssKb is the max across files",
     },
   },
-  errorCounts: { tsRust: tsRustDiags.length, tsc: tscDiagsAll.length, tsgo: tsgoDiagCount },
+  errorCounts: { tsox: tsoxDiags.length, tsc: tscDiagsAll.length, tsgo: tsgoDiagCount },
   strictOnly,
   onlyDiffer,
 };
@@ -456,7 +456,7 @@ if (asJson) {
   console.log(JSON.stringify({ summary, files: fileReports }, null, 2));
 } else {
   console.log("");
-  console.log(`${c.bold}== Three-way summary: ts-rust vs tsc vs tsgo ==${c.reset}`);
+  console.log(`${c.bold}== Three-way summary: tsox vs tsc vs tsgo ==${c.reset}`);
   console.log("");
 
   const statsTable = new Table({
@@ -467,10 +467,10 @@ if (asJson) {
   });
   statsTable.push(
     [
-      "ts-rust",
-      String(summary.errorCounts.tsRust),
-      `${tsRustRun.elapsedMs}ms`,
-      tsRustRun.peakRssKb != null ? `${(tsRustRun.peakRssKb / 1024).toFixed(1)} MB` : c.dim + "n/a" + c.reset,
+      "tsox",
+      String(summary.errorCounts.tsox),
+      `${tsoxRun.elapsedMs}ms`,
+      tsoxRun.peakRssKb != null ? `${(tsoxRun.peakRssKb / 1024).toFixed(1)} MB` : c.dim + "n/a" + c.reset,
       "single process, whole target",
     ],
     [
@@ -497,8 +497,8 @@ if (asJson) {
     colWidths: [22, 10, 16, 16],
   });
   agreeTable.push(
-    ["ts-rust vs tsc", String(pair.tsRustVsTsc.agree), String(pair.tsRustVsTsc.tsRustOnly), String(pair.tsRustVsTsc.tscOnly)],
-    ["ts-rust vs tsgo", String(pair.tsRustVsTsgo.agree), String(pair.tsRustVsTsgo.tsRustOnly), String(pair.tsRustVsTsgo.tsgoOnly)],
+    ["tsox vs tsc", String(pair.tsoxVsTsc.agree), String(pair.tsoxVsTsc.tsoxOnly), String(pair.tsoxVsTsc.tscOnly)],
+    ["tsox vs tsgo", String(pair.tsoxVsTsgo.agree), String(pair.tsoxVsTsgo.tsoxOnly), String(pair.tsoxVsTsgo.tsgoOnly)],
     ["tsc vs tsgo", String(pair.tscVsTsgo.agree), String(pair.tscVsTsgo.tscOnly), String(pair.tscVsTsgo.tsgoOnly)],
   );
   console.log(agreeTable.toString());
@@ -510,17 +510,17 @@ if (asJson) {
   );
   console.log(`Line-level: ${linesAllThreeAgree} line(s) all three agree on, ${linesPartial} line(s) with a split.`);
   console.log(
-    `ts-rust vs tsc, same line reported by both: ${pair.tsRustVsTsc.exact} exact, ` +
-      `${pair.tsRustVsTsc.messageDiffers} message differs, ${pair.tsRustVsTsc.codeDiffers} code differs`,
+    `tsox vs tsc, same line reported by both: ${pair.tsoxVsTsc.exact} exact, ` +
+      `${pair.tsoxVsTsc.messageDiffers} message differs, ${pair.tsoxVsTsc.codeDiffers} code differs`,
   );
   console.log(
     `File verdicts: ${verdictCounts["ALL AGREE"]} ALL AGREE, ${verdictCounts["MESSAGE DIFFERS"]} MESSAGE DIFFERS, ` +
       `${verdictCounts["CODE DIFFERS"]} CODE DIFFERS, ${verdictCounts.DIVERGES} DIVERGES (a line only some compilers report)`,
   );
-  if (tsRustRun.elapsedMs > 0 && tscElapsedMs > 0)
+  if (tsoxRun.elapsedMs > 0 && tscElapsedMs > 0)
     console.log(
-      `ts-rust is ~${Math.round(tscElapsedMs / tsRustRun.elapsedMs).toLocaleString("en-US")}x faster than tsc` +
-        (tsRustRun.peakRssKb ? ` and uses ~${((memAfterKb / tsRustRun.peakRssKb)).toFixed(1)}x less memory (tsc figure includes this tool's own process)` : ""),
+      `tsox is ~${Math.round(tscElapsedMs / tsoxRun.elapsedMs).toLocaleString("en-US")}x faster than tsc` +
+        (tsoxRun.peakRssKb ? ` and uses ~${((memAfterKb / tsoxRun.peakRssKb)).toFixed(1)}x less memory (tsc figure includes this tool's own process)` : ""),
     );
 }
 
@@ -534,9 +534,9 @@ if (htmlPath) {
       const lineRows = f.lines
         .map(
           (l) => `
-        <tr class="${l.tsRust.length && l.tsc.length && l.tsgo.length ? (l.result === "message" || l.result === "code" ? "differs" : "agree") : "split"}">
+        <tr class="${l.tsox.length && l.tsc.length && l.tsgo.length ? (l.result === "message" || l.result === "code" ? "differs" : "agree") : "split"}">
           <td class="line">${l.line}</td>
-          <td>${l.tsRust.map(esc).join("<br>") || "<span class=dim>—</span>"}</td>
+          <td>${l.tsox.map(esc).join("<br>") || "<span class=dim>—</span>"}</td>
           <td>${l.tsc.map(esc).join("<br>") || "<span class=dim>—</span>"}</td>
           <td>${l.tsgo.map(esc).join("<br>") || "<span class=dim>—</span>"}</td>
           <td>${esc(RESULT_LABEL[l.result])}</td>
@@ -547,7 +547,7 @@ if (htmlPath) {
       <details ${f.verdict === "ALL AGREE" ? "" : "open"} class="${f.verdict === "ALL AGREE" ? "file-agree" : f.verdict === "DIVERGES" ? "file-split" : "file-differs"}">
         <summary>${esc(f.file)} <span class="badge">${f.verdict}</span></summary>
         <table class="lines">
-          <thead><tr><th>line</th><th>ts-rust</th><th>tsc</th><th>tsgo</th><th>ts-rust vs tsc</th></tr></thead>
+          <thead><tr><th>line</th><th>tsox</th><th>tsc</th><th>tsgo</th><th>tsox vs tsc</th></tr></thead>
           <tbody>${lineRows}</tbody>
         </table>
       </details>`;
@@ -558,7 +558,7 @@ if (htmlPath) {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>ts-rust vs tsc vs tsgo -- comparison report</title>
+<title>tsox vs tsc vs tsgo -- comparison report</title>
 <style>
   :root { color-scheme: dark; }
   body { background:#0d1117; color:#c9d1d9; font-family: ui-monospace, "SF Mono", Consolas, monospace; margin: 2rem; }
@@ -591,15 +591,15 @@ if (htmlPath) {
 </style>
 </head>
 <body>
-  <h1>ts-rust vs tsc vs tsgo</h1>
+  <h1>tsox vs tsc vs tsgo</h1>
   <div class="subtitle">Generated ${esc(new Date().toISOString())} -- target: ${esc(target)}${strictOnly ? " -- --strict only" : " -- --strict + extras"}</div>
 
   <div class="stats-grid">
     <div class="stat-card">
-      <h3>ts-rust</h3>
-      <div class="big">${summary.errorCounts.tsRust} error(s)</div>
-      <div class="row"><span>time</span><span>${tsRustRun.elapsedMs}ms</span></div>
-      <div class="row"><span>peak memory</span><span>${tsRustRun.peakRssKb != null ? (tsRustRun.peakRssKb / 1024).toFixed(1) + " MB" : "n/a"}</span></div>
+      <h3>tsox</h3>
+      <div class="big">${summary.errorCounts.tsox} error(s)</div>
+      <div class="row"><span>time</span><span>${tsoxRun.elapsedMs}ms</span></div>
+      <div class="row"><span>peak memory</span><span>${tsoxRun.peakRssKb != null ? (tsoxRun.peakRssKb / 1024).toFixed(1) + " MB" : "n/a"}</span></div>
     </div>
     <div class="stat-card">
       <h3>tsc (compiler API)</h3>
@@ -614,14 +614,14 @@ if (htmlPath) {
       <div class="row"><span>peak memory (max)</span><span>${tsgoPeakRssKb != null ? (tsgoPeakRssKb / 1024).toFixed(1) + " MB" : "n/a"}</span></div>
     </div>
   </div>
-  <p style="color:#8b949e;font-size:.8rem;">* tsc's memory figure includes this comparison tool's own process overhead (V8, etc.) since there's no isolated subprocess for it -- see compare3.js's module doc comment. ts-rust's and tsgo's figures are real per-process peak RSS.</p>
+  <p style="color:#8b949e;font-size:.8rem;">* tsc's memory figure includes this comparison tool's own process overhead (V8, etc.) since there's no isolated subprocess for it -- see compare3.js's module doc comment. tsox's and tsgo's figures are real per-process peak RSS.</p>
 
   <h2>Pairwise line agreement</h2>
   <table>
     <thead><tr><th>pair</th><th>agree</th><th>left-only</th><th>right-only</th></tr></thead>
     <tbody>
-      <tr><td>ts-rust vs tsc</td><td>${pair.tsRustVsTsc.agree} (${pair.tsRustVsTsc.exact} exact, ${pair.tsRustVsTsc.messageDiffers} message differs, ${pair.tsRustVsTsc.codeDiffers} code differs)</td><td>${pair.tsRustVsTsc.tsRustOnly}</td><td>${pair.tsRustVsTsc.tscOnly}</td></tr>
-      <tr><td>ts-rust vs tsgo</td><td>${pair.tsRustVsTsgo.agree}</td><td>${pair.tsRustVsTsgo.tsRustOnly}</td><td>${pair.tsRustVsTsgo.tsgoOnly}</td></tr>
+      <tr><td>tsox vs tsc</td><td>${pair.tsoxVsTsc.agree} (${pair.tsoxVsTsc.exact} exact, ${pair.tsoxVsTsc.messageDiffers} message differs, ${pair.tsoxVsTsc.codeDiffers} code differs)</td><td>${pair.tsoxVsTsc.tsoxOnly}</td><td>${pair.tsoxVsTsc.tscOnly}</td></tr>
+      <tr><td>tsox vs tsgo</td><td>${pair.tsoxVsTsgo.agree}</td><td>${pair.tsoxVsTsgo.tsoxOnly}</td><td>${pair.tsoxVsTsgo.tsgoOnly}</td></tr>
       <tr><td>tsc vs tsgo</td><td>${pair.tscVsTsgo.agree}</td><td>${pair.tscVsTsgo.tscOnly}</td><td>${pair.tscVsTsgo.tsgoOnly}</td></tr>
     </tbody>
   </table>

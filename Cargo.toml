@@ -1,11 +1,11 @@
 [package]
-name = "ts-rust"
+name = "tsox"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.98.1"
 description = "A Rust-based TypeScript type checker built on Oxc."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/arun-murali0/ts-rust"
+repository = "https://github.com/arun-murali0/tsox"
 readme = "README.md"
 keywords = ["typescript", "type-checker", "compiler", "oxc", "wasm"]
 categories = ["development-tools", "wasm"]
@@ -18,7 +18,7 @@ exclude = [
 ]
 
 [lib]
-name = "ts_rust"
+name = "tsox"
 crate-type = ["cdylib", "rlib"]
 
 [lints.clippy]
@@ -59,8 +59,8 @@ criterion = "0.8.2"
 iai-callgrind = "0.16.1"
 
 [[bin]]
-name = "ts-rust"
-path = "bin/ts-rust.rs"
+name = "tsox"
+path = "bin/tsox.rs"
 
 [[bin]]
 name = "compare-tsc"
@@ -119,7 +119,7 @@ incremental = ["dep:salsa"]
 # Worker-local bump allocation for scratch data that does not outlive a job.
 scratchpad = ["dep:bumpalo"]
 
-# mimalloc as the global allocator of the ts-rust binary. Off by default so the binary
+# mimalloc as the global allocator of the tsox binary. Off by default so the binary
 # CI builds and compares against tsc does not change; release builds opt in.
 mimalloc = ["dep:mimalloc"]
 
@@ -140,7 +140,7 @@ codegen-units = 1
 # two builds differ. wasm-pack always passes --release, so it cannot select this;
 # build with cargo and run wasm-bindgen on the result:
 #   cargo build --profile wasm-release --lib --target wasm32-unknown-unknown --features wasm
-#   wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/wasm-release/ts_rust.wasm
+#   wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/wasm-release/tsox.wasm
 # Release speed with symbols kept, for heap and CPU profilers that need to name frames.
 #   cargo run --profile profiling --features dhat-heap --example dhat_heap
 # Add module-resolution to the features to include the multi-file project workloads.

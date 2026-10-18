@@ -1,4 +1,4 @@
-use ts_rust::{Diagnostic, Severity, TypeChecker};
+use tsox::{Diagnostic, Severity, TypeChecker};
 
 #[allow(dead_code)]
 #[path = "../benches/support/complex_fixtures.rs"]

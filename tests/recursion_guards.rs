@@ -4,8 +4,8 @@
 // down what the checker is allowed to say about the input.
 //
 // All of them were found by running TypeScript's own test suite (v6.0.3) through
-// ts-rust: 8 of its 10,091 single-file cases aborted before these guards existed.
-use ts_rust::{Diagnostic, TypeChecker};
+// tsox: 8 of its 10,091 single-file cases aborted before these guards existed.
+use tsox::{Diagnostic, TypeChecker};
 
 fn check(source: &str, file_name: &str) -> Vec<Diagnostic> {
     TypeChecker::new()
@@ -103,7 +103,7 @@ fn short_messages_are_not_truncated() {
 #[cfg(feature = "module-resolution")]
 #[test]
 fn very_long_operator_chain_does_not_overflow_a_worker_stack() {
-    let dir = std::env::temp_dir().join(format!("ts_rust_deep_chain_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("tsox_deep_chain_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("tsconfig.json"), "{}").unwrap();
@@ -117,7 +117,7 @@ fn very_long_operator_chain_does_not_overflow_a_worker_stack() {
     .unwrap();
     std::fs::write(dir.join("other.ts"), "export const n: number = 1;\n").unwrap();
 
-    let status = std::process::Command::new(env!("CARGO_BIN_EXE_ts-rust"))
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_tsox"))
         .arg("--project")
         .arg(dir.join("tsconfig.json"))
         // The workaround this replaces; it must not be needed any more.

@@ -412,7 +412,7 @@ fn cycle_round_cap(members: usize) -> usize {
 // that for good means a depth limit in the parser or an iterative walk, which is
 // oxc's to provide; this only removes the gap between the main thread and the
 // workers. The old workaround was to export RUST_MIN_STACK before running.
-const WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
+const WORKER_STACK_BYTES: usize = crate::stack_guard::BIG_STACK_BYTES;
 
 // Determinism stress hook. Compiled only into unit tests: it changes completion order
 // without changing checker inputs, so a test can prove reports do not depend on which
@@ -428,6 +428,7 @@ fn worker_pool() -> Option<&'static rayon::ThreadPool> {
     POOL.get_or_init(|| {
         rayon::ThreadPoolBuilder::new()
             .stack_size(WORKER_STACK_BYTES)
+            .start_handler(|_| crate::stack_guard::set_thread_stack(WORKER_STACK_BYTES))
             .build()
             .ok()
     })
@@ -897,7 +898,7 @@ mod determinism_tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("ts-rust-delay-determinism-{nonce}"));
+        let root = std::env::temp_dir().join(format!("tsox-delay-determinism-{nonce}"));
         fs::create_dir_all(&root).unwrap();
         let sources = [
             (

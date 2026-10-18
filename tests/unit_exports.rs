@@ -1,4 +1,4 @@
-use ts_rust::{DeclKey, DeclKind, FileId, ModuleKey, UnitContext, UnitOutput, Worker};
+use tsox::{DeclKey, DeclKind, FileId, ModuleKey, UnitContext, UnitOutput, Worker};
 
 // A unit run with a module key hands back the file's annotated exports as
 // portable declarations, plus a name -> DeclKey table for the importer to look names up in.
@@ -123,7 +123,7 @@ fn an_unexported_declaration_nothing_reaches_stays_in_the_file() {
 
 // The exports are read after the bodies are checked, so what was inferred is
 // what is exported.
-fn body_of<'a>(out: &'a UnitOutput, name: &str) -> &'a ts_rust::PortableType {
+fn body_of<'a>(out: &'a UnitOutput, name: &str) -> &'a tsox::PortableType {
     &out.exports
         .iter()
         .find(|d| &*d.name == name)
@@ -133,7 +133,7 @@ fn body_of<'a>(out: &'a UnitOutput, name: &str) -> &'a ts_rust::PortableType {
 
 #[test]
 fn an_unannotated_const_is_exported_with_its_inferred_literal_type() {
-    use ts_rust::{PNode, Prim};
+    use tsox::{PNode, Prim};
     let out = run("export const n = 1; export const s = 'a';");
     assert!(!out.incomplete, "{out:?}");
     assert!(matches!(body_of(&out, "n").nodes[0], PNode::NumLit(_)));
@@ -147,7 +147,7 @@ fn an_unannotated_const_is_exported_with_its_inferred_literal_type() {
 
 #[test]
 fn a_function_without_a_return_annotation_is_exported_with_the_inferred_return() {
-    use ts_rust::{PNode, Prim};
+    use tsox::{PNode, Prim};
     let out = run("export function f(a: number) { return a + 1; }");
     assert!(!out.incomplete, "{out:?}");
     let body = body_of(&out, "f");
@@ -162,7 +162,7 @@ fn a_function_without_a_return_annotation_is_exported_with_the_inferred_return()
 
 #[test]
 fn an_inferred_object_literal_is_exported_widened() {
-    use ts_rust::PNode;
+    use tsox::PNode;
     let out = run("export const o = { a: 1, b: 'x' };");
     assert!(!out.incomplete, "{out:?}");
     let body = body_of(&out, "o");
@@ -235,7 +235,7 @@ fn exported_overloads_preserve_all_public_signatures_and_omit_the_implementation
 
 #[test]
 fn a_function_body_refers_to_the_exported_interface_by_its_key() {
-    use ts_rust::PNode;
+    use tsox::PNode;
     let out = run("export interface User { name: string }
          export function greet(u: User): string { return u.name; }");
     assert!(!out.incomplete, "{out:?}");
@@ -251,7 +251,7 @@ fn a_function_body_refers_to_the_exported_interface_by_its_key() {
 
 #[test]
 fn a_type_parameter_is_keyed_to_the_declaration_that_declares_it() {
-    use ts_rust::PNode;
+    use tsox::PNode;
     let out = run("export interface Box<T> { value: T }");
     let decl = &out.exports[0];
     assert!(
@@ -339,7 +339,7 @@ fn a_default_exported_function_is_listed_under_default() {
 
 #[test]
 fn named_default_function_exports_the_inferred_body_return_type() {
-    use ts_rust::{PNode, Prim};
+    use tsox::{PNode, Prim};
     let out = run("export default function render(value: number) { return value + 1; }");
     assert!(!out.incomplete, "{out:?}");
     assert!(
@@ -399,20 +399,20 @@ fn anonymous_default_class_exports_instance_and_constructor_sides() {
 
 #[test]
 fn default_expression_exports_its_inferred_type() {
-    use ts_rust::PNode;
+    use tsox::PNode;
     let out = run("export default 1 + 2;");
     assert!(!out.incomplete, "{out:?}");
     assert!(out.export_names.iter().any(|(name, _)| name == "default"));
     let body = body_of(&out, "default");
     assert!(matches!(
         body.nodes[body.root as usize],
-        PNode::Prim(ts_rust::Prim::Number)
+        PNode::Prim(tsox::Prim::Number)
     ));
 }
 
 #[test]
 fn anonymous_default_function_exports_inferred_return_type() {
-    use ts_rust::{PNode, Prim};
+    use tsox::{PNode, Prim};
     let out = run("export default function (a: number) { return a + 1; }");
     assert!(!out.incomplete, "{out:?}");
     let body = body_of(&out, "default");
@@ -551,7 +551,7 @@ fn a_default_exported_identifier_is_listed_under_default() {
 // The key of a nested generic signature must not depend on where in the file it was
 // written: an edit above a declaration moves every offset below it, and a hash that moved
 // with them would tell a dependent that an unchanged signature had changed.
-fn signature_of(source: &str, name: &str) -> ts_rust::SigHash {
+fn signature_of(source: &str, name: &str) -> tsox::SigHash {
     let out = run(source);
     out.exports
         .iter()
@@ -598,7 +598,7 @@ fn two_nested_signatures_in_one_declaration_keep_distinct_keys() {
 
 #[test]
 fn default_expression_is_exported_under_default() {
-    use ts_rust::PNode;
+    use tsox::PNode;
     let out = run("export default 42;");
     assert!(!out.incomplete, "{out:?}");
     assert_eq!(

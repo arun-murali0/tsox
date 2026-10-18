@@ -123,6 +123,6 @@ Correctness comes first. Once a semantic operation is stable, profiling should i
 
 `tsz` is useful as a reference for semantic algorithms, scaling problems, solver boundaries, and architectural lessons.
 
-It is not the architecture specification for ts-rust.
+It is not the architecture specification for tsox.
 
-Oxc remains the front-end foundation. ts-rust owns the semantic layer built on top of Oxc.
+Oxc remains the front-end foundation. tsox owns the semantic layer built on top of Oxc.

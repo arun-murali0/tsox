@@ -1,4 +1,4 @@
-use ts_rust::{FileId, Severity, UnitContext, Worker};
+use tsox::{FileId, Severity, UnitContext, Worker};
 
 // A generic function is instantiated against the signature it is compared with before
 // the two are related, as tsc does, so `<T>(x: T) => T` fits `(x: number) => number`.

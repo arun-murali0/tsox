@@ -2,7 +2,7 @@ name: Compatibility Harness
 
 # Manual only: this is a measurement, not a pass/fail gate. It hits the
 # network (clones a fixture repo, installs its dependencies) and is
-# expected to report ts-rust diagnostics that disagree with tsc/tsgo, so
+# expected to report tsox diagnostics that disagree with tsc/tsgo, so
 # it must never run automatically on push/PR and must never fail the build.
 on:
   workflow_dispatch:
@@ -38,8 +38,8 @@ jobs:
       - name: Install GNU time (for compare3.js memory figures)
         run: sudo apt-get update && sudo apt-get install -y time
 
-      - name: Build ts-rust (release)
-        run: cargo build --release --bin ts-rust
+      - name: Build tsox (release)
+        run: cargo build --release --bin tsox
 
       # `typescript` now ships two different things depending on version:
       # 5.x is the classic compiler with the real `tsc` binary; 7.x replaced
@@ -69,10 +69,10 @@ jobs:
         run: |
           chmod +x scripts/*.sh
           ./scripts/harness.sh || true
-        # `|| true`: a nonzero exit from ts-rust finding diagnostics on the
+        # `|| true`: a nonzero exit from tsox finding diagnostics on the
         # fixture is expected right now and must not fail this workflow.
 
-      # Fixture-level three-way comparison: same tsc/tsgo/ts-rust trio as
+      # Fixture-level three-way comparison: same tsc/tsgo/tsox trio as
       # the harness step above, but per-fixture diagnostics + an HTML
       # report, instead of one aggregate timing number against Zustand.
       # See compare3.js's own module doc comment and this repo's README
@@ -82,11 +82,11 @@ jobs:
         working-directory: scripts/ts-diag-tool
         run: npm ci
 
-      - name: Fixture-level three-way comparison (tsc/tsgo/ts-rust)
+      - name: Fixture-level three-way comparison (tsc/tsgo/tsox)
         run: |
           mkdir -p .harness
           node scripts/ts-diag-tool/compare3.js tests/fixtures \
-            target/release/ts-rust \
+            target/release/tsox \
             "${TSGO_BIN}" \
             --html .harness/fixture-report.html \
             --json > .harness/fixture-report.json || true

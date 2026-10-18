@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ts_rust::{Diagnostic, DiagnosticCode, Severity, TypeChecker};
+use tsox::{Diagnostic, DiagnosticCode, Severity, TypeChecker};
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -1,7 +1,7 @@
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::Duration;
-use ts_rust::TypeChecker;
+use tsox::TypeChecker;
 
 #[path = "support/corpus_fixtures.rs"]
 mod corpus_fixtures;

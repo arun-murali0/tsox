@@ -49,6 +49,9 @@ pub fn infer_expression_type(
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
     let expected = ctx.contextual.take();
+    if crate::stack_guard::exhausted() {
+        return ctx.nesting_too_deep(expr.span());
+    }
     match expr {
         Expression::NumericLiteral(n) => ctx.arena.alloc(Type::NumberLiteral(n.value)),
         Expression::StringLiteral(s) => ctx.arena.alloc(Type::StringLiteral(s.value.to_string())),

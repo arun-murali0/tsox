@@ -24,7 +24,7 @@ enum AnnotationOutcome {
     /// A type annotation was written and resolved successfully.
     Resolved(TypeId),
     /// A type annotation was written but could not be resolved (unknown
-    /// name, or a definition ts-rust doesn't fully understand yet).
+    /// name, or a definition tsox doesn't fully understand yet).
     Unresolvable,
 }
 

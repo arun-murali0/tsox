@@ -4,8 +4,8 @@ This document is the forward-looking companion to the historical semantic milest
 
 The project has two deliberate architectural boundaries:
 
-1. **Oxc is the front-end foundation.** ts-rust consumes Oxc parsing, AST, spans, and semantic infrastructure where those components fit.
-2. **ts-rust owns TypeScript semantic behavior.** Type representation, assignability, narrowing, generic inference, and future typed IR belong to this project.
+1. **Oxc is the front-end foundation.** tsox consumes Oxc parsing, AST, spans, and semantic infrastructure where those components fit.
+2. **tsox owns TypeScript semantic behavior.** Type representation, assignability, narrowing, generic inference, and future typed IR belong to this project.
 
 The goal is not to recreate another complete TypeScript front end. The goal is to build a clean semantic layer that can grow into tooling and, later, compilation.
 
@@ -183,7 +183,7 @@ Other Rust TypeScript implementations are useful references for difficult semant
 
 It is a **reference implementation, not our architecture specification**.
 
-The rule is simple: adopt an idea because it solves a problem in ts-rust, not because another compiler happens to contain a similarly named module.
+The rule is simple: adopt an idea because it solves a problem in tsox, not because another compiler happens to contain a similarly named module.
 
 ## Non-goals
 

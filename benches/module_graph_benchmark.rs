@@ -1,7 +1,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::Duration;
-use ts_rust::{ModuleGraph, ModuleResolver, check_project};
+use tsox::{ModuleGraph, ModuleResolver, check_project};
 
 #[path = "support/project_fixtures.rs"]
 mod project_fixtures;
@@ -219,7 +219,7 @@ fn bench_thread_scaling(c: &mut Criterion) {
     group.finish();
 }
 
-// What `ts-rust --project` does for one invocation: a cold resolver, the graph, then
+// What `tsox --project` does for one invocation: a cold resolver, the graph, then
 // every file checked. The numbers above split this into its parts.
 fn bench_end_to_end(c: &mut Criterion) {
     let layered = layered();

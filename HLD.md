@@ -1,7 +1,7 @@
-# ts-rust: High-Level Design (Draft 1)
+# tsox: High-Level Design (Draft 1)
 
 **Status:** design before code. Nothing here is implemented yet.
-**Companion:** `ts-rust-LLD.md` holds the detailed design for every decision below.
+**Companion:** `tsox-LLD.md` holds the detailed design for every decision below.
 **Scope:** the checker, cross-file semantics, memory, threading and the incremental query layer. The runtime, typed IR, backends, LSP and emit are out of scope, except in section 4 where they appear as future challenges.
 
 Items marked **[VERIFY]** depend on library behavior that should be confirmed with a small spike before building on it (spikes are listed in section 6).
@@ -246,7 +246,7 @@ The rustc ideas adopted: record what each query read; fingerprint outputs; if a 
 
 ## 5. Evidence from reference designs
 
-| | ts-rust today | tsz | rustc | tsgo |
+| | tsox today | tsz | rustc | tsgo |
 |---|---|---|---|---|
 | Type storage | one `Vec`, digest interning for some variants | sharded concurrent interner, thread-local cache in front | arena-allocated, interned, compared by pointer | one type universe per checker instance |
 | Mutation after creation | yes (`set()`) | no (lazy definition references) | no | not applicable |
@@ -255,7 +255,7 @@ The rustc ideas adopted: record what each query read; fingerprint outputs; if a 
 | Incremental | none | none that I found | query system with a red-green dependency graph and 128-bit fingerprints | none (fast full check) |
 | Parallelism | none | worker threads over shared interner | parallel front end work in progress | multiple checkers over file subsets |
 
-The ts-rust and tsz columns come from reading their source. The rustc and tsgo columns are from general knowledge and should be treated as **[VERIFY]**.
+The tsox and tsz columns come from reading their source. The rustc and tsgo columns are from general knowledge and should be treated as **[VERIFY]**.
 
 ---
 
