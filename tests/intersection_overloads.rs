@@ -1,4 +1,4 @@
-use ts_rust::{DiagnosticCode, Severity, TypeChecker};
+use tsox::{DiagnosticCode, Severity, TypeChecker};
 
 // The rest of the intersection work (LLD 1.13), each fixture compared with the exact code and
 // text tsc prints and also run against real tsc by scripts/ts-diag-tool/compare.js:

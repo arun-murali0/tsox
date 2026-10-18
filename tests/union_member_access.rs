@@ -1,11 +1,11 @@
-use ts_rust::{DiagnosticCode, TypeChecker};
+use tsox::{DiagnosticCode, TypeChecker};
 
 // Reading a property on a union follows tsc: it is allowed when every member has
 // the property, and its type is the union of the members' property types. The
 // discriminated-union narrowing tests depend on this, because `shape.kind` is read
 // from the un-narrowed union before any narrowing happens.
 
-fn check(source: &str) -> Vec<ts_rust::Diagnostic> {
+fn check(source: &str) -> Vec<tsox::Diagnostic> {
     let checked = TypeChecker::new().check_source(source, "union_member_access.ts");
     assert!(checked.is_ok(), "source should at least parse: {checked:?}");
     checked

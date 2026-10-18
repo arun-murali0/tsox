@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ts_rust::{
+use tsox::{
     Diagnostic, FileOutcome, ModuleGraph, ModuleResolver, Severity, check_project,
     check_project_bounded,
 };
@@ -15,7 +15,7 @@ use ts_rust::{
 
 struct Checked {
     graph: ModuleGraph,
-    report: ts_rust::ProjectReport,
+    report: tsox::ProjectReport,
 }
 
 fn write(test: &str, files: &[(&str, &str)]) -> (PathBuf, Vec<PathBuf>) {
@@ -715,7 +715,7 @@ fn an_inferred_return_type_crosses_a_cycle_once_it_settles() {
 }
 
 // Two functions whose return types are each inferred from the other have no answer. tsc
-// reports TS7023 on both. ts-rust reads them as any, which loses that error but never
+// reports TS7023 on both. tsox reads them as any, which loses that error but never
 // invents one, and the cycle still settles instead of running out of rounds.
 #[test]
 fn mutually_inferred_return_types_read_as_any_and_the_cycle_settles() {
@@ -840,7 +840,7 @@ fn a_file_that_imports_a_cycle_sees_the_settled_exports() {
 
 // Step 7g: the report says which declarations of other files a file's check read, which
 // is what an incremental run needs to know a file does not depend on a change.
-fn reads_of(project: &Checked, file: &str) -> Vec<ts_rust::DeclKey> {
+fn reads_of(project: &Checked, file: &str) -> Vec<tsox::DeclKey> {
     for report in &project.report.files {
         let path = project.graph.files().path(report.file_id).unwrap();
         if path.file_name().unwrap().to_string_lossy() == file {
@@ -850,12 +850,12 @@ fn reads_of(project: &Checked, file: &str) -> Vec<ts_rust::DeclKey> {
     panic!("{file} is not in the report");
 }
 
-fn key_in(project: &Checked, file: &str, name: &str, kind: ts_rust::DeclKind) -> ts_rust::DeclKey {
+fn key_in(project: &Checked, file: &str, name: &str, kind: tsox::DeclKind) -> tsox::DeclKey {
     for report in &project.report.files {
         let path = project.graph.files().path(report.file_id).unwrap();
         if path.file_name().unwrap().to_string_lossy() == file {
             let module = project.graph.module_key(report.file_id).unwrap();
-            return ts_rust::DeclKey::new(module, name, kind, 0);
+            return tsox::DeclKey::new(module, name, kind, 0);
         }
     }
     panic!("{file} is not in the report");
@@ -881,13 +881,13 @@ fn a_file_reads_only_the_declarations_it_imports() {
         &project,
         "a.ts",
         "User",
-        ts_rust::DeclKind::Interface
+        tsox::DeclKind::Interface
     )));
     assert!(!reads.contains(&key_in(
         &project,
         "a.ts",
         "Unused",
-        ts_rust::DeclKind::Interface
+        tsox::DeclKind::Interface
     )));
     assert!(reads_of(&project, "a.ts").is_empty());
 }
@@ -905,12 +905,12 @@ fn a_file_reads_the_declarations_its_imports_reach() {
         ],
     );
     let reads = reads_of(&project, "b.ts");
-    assert!(reads.contains(&key_in(&project, "a.ts", "f", ts_rust::DeclKind::Function)));
+    assert!(reads.contains(&key_in(&project, "a.ts", "f", tsox::DeclKind::Function)));
     assert!(reads.contains(&key_in(
         &project,
         "a.ts",
         "Hidden",
-        ts_rust::DeclKind::Interface
+        tsox::DeclKind::Interface
     )));
 }
 

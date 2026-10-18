@@ -28,7 +28,7 @@
 // benches are the place for speed.
 //
 // `corpus_slice` checks the same slice of the TypeScript corpus as benches/corpus_benchmark.rs
-// (TS_RUST_CORPUS_STRIDE and TS_RUST_CORPUS_OFFSET pick it) and adds one line with the file
+// (TSOX_CORPUS_STRIDE and TSOX_CORPUS_OFFSET pick it) and adds one line with the file
 // count and how many files the checker refused.
 //
 // With `module-resolution` there are also project workloads, which write a project
@@ -45,7 +45,7 @@ use std::hint::black_box;
 use std::process;
 use std::time::Instant;
 
-use ts_rust::TypeChecker;
+use tsox::TypeChecker;
 
 #[path = "../benches/support/complex_fixtures.rs"]
 mod complex_fixtures;
@@ -156,7 +156,7 @@ fn print_stats(
 #[cfg(feature = "module-resolution")]
 #[cfg_attr(not(feature = "dhat-heap"), allow(unused_variables))]
 fn run_project_and_report(label: &str, project: &project_fixtures::Project, report_peak: bool) {
-    use ts_rust::{ModuleGraph, ModuleResolver, check_project};
+    use tsox::{ModuleGraph, ModuleResolver, check_project};
 
     let resolver = ModuleResolver::new();
 
@@ -312,7 +312,7 @@ fn run_foundation(wanted: &dyn Fn(&str) -> bool) {
 
     #[cfg(feature = "module-resolution")]
     {
-        use ts_rust::{ModuleGraph, ModuleResolver};
+        use tsox::{ModuleGraph, ModuleResolver};
 
         if wanted("topology_layered_201_files") {
             let project = project_fixtures::Project::new("heap-topology").layered(20, 10, 3);
@@ -338,7 +338,7 @@ fn run_foundation(wanted: &dyn Fn(&str) -> bool) {
 
     #[cfg(feature = "scratchpad")]
     {
-        use ts_rust::WorkerScratch;
+        use tsox::WorkerScratch;
 
         if wanted("scratchpad_1000_values") {
             let mut scratch = WorkerScratch::with_capacity(16 * 1024);

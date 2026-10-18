@@ -1,4 +1,4 @@
-use ts_rust::{DiagnosticCode, Severity, TypeChecker};
+use tsox::{DiagnosticCode, Severity, TypeChecker};
 
 // Problem: an unknown name in a type annotation was reported only where a variable or a
 // parameter happened to carry it. In an alias body, an interface member, a return type, a
@@ -8,7 +8,7 @@ use ts_rust::{DiagnosticCode, Severity, TypeChecker};
 // The names the standard library provides (`Date`, `Map`, `HTMLElement`, ...), type
 // parameters and types declared inside a function are not unknown.
 //
-// Only errors are compared: ts-rust also says, as a warning, that an annotation could not be
+// Only errors are compared: tsox also says, as a warning, that an annotation could not be
 // resolved when something uses an alias whose body holds an unknown name. tsc prints no such
 // line, and scripts/ts-diag-tool/compare.js counts errors, so those are left out here too.
 

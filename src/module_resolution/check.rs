@@ -898,7 +898,7 @@ mod determinism_tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("ts-rust-delay-determinism-{nonce}"));
+        let root = std::env::temp_dir().join(format!("tsox-delay-determinism-{nonce}"));
         fs::create_dir_all(&root).unwrap();
         let sources = [
             (

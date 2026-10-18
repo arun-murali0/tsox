@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ts_rust::{
+use tsox::{
     DeclKey, DeclProvider, FileId, ImportSource, ModuleKey, PortableDecl, Severity, UnitContext,
     UnitOutput, Worker,
 };
@@ -325,7 +325,7 @@ fn a_file_may_export_a_function_that_names_an_imported_type() {
     assert!(
         b.exports[0].body.nodes.iter().any(|n| matches!(
             n,
-            ts_rust::PNode::DeclRef { key, .. } if *key == user_key
+            tsox::PNode::DeclRef { key, .. } if *key == user_key
         )),
         "{:?}",
         b.exports[0]

@@ -1,6 +1,6 @@
 # Architecture and Maintainability
 
-ts-rust is a semantic checker built on top of Oxc. The architecture deliberately avoids rebuilding the TypeScript parser/front end and avoids copying the scale or internal structure of larger TypeScript compiler projects.
+tsox is a semantic checker built on top of Oxc. The architecture deliberately avoids rebuilding the TypeScript parser/front end and avoids copying the scale or internal structure of larger TypeScript compiler projects.
 
 ## Design goal
 
@@ -61,7 +61,7 @@ Oxc is responsible for the infrastructure we deliberately do not want to recreat
 - source spans and syntax data;
 - semantic symbols, scopes, and references where consumed.
 
-ts-rust should interact with these through a narrow bridge.
+tsox should interact with these through a narrow bridge.
 
 ### Bridge owns AST-facing behavior
 
@@ -115,7 +115,7 @@ This separation makes semantic algorithms reusable by future tooling and typed-I
 | `bridge/imports.rs`, `bridge/exports.rs` | Bind the names a file imports; collect what it exports as portable declarations |
 | `bridge/unresolved_names.rs`, `bridge/unreachable_code.rs` | One pass for unknown type names, one for unreachable code |
 | `diagnostics.rs` | The public `Diagnostic`/`Severity` representation consumers see |
-| `diagnostic_codes.rs` | Stable `TSR####` identifiers, ts-rust's own namespace |
+| `diagnostic_codes.rs` | Stable `TSR####` identifiers, tsox's own namespace |
 | `diagnostic_messages.rs` | Pairs a code with its message text, one constructor per diagnostic kind |
 | `diagnostic_view.rs` | Converts raw byte offsets into line/column for display |
 | `fxhash.rs` | In-tree FxHash reimplementation, used where a non-DoS-resistant hasher is acceptable |
@@ -179,10 +179,10 @@ diagnostics.rs           -> the public Diagnostic/Severity shape itself
 
 **Codes are their own namespace.** `diagnostic_codes.rs` assigns every diagnostic a
 stable `TSR####` identifier. This is deliberately *not* TypeScript's own `TS####`
-numbering — even where a ts-rust diagnostic describes a condition `tsc` also
+numbering — even where a tsox diagnostic describes a condition `tsc` also
 reports (an argument arity mismatch, say), the number is not meant to imply
 parity with a specific `TS####` code. Keeping the identifier space separate means
-ts-rust's diagnostic catalog can grow, split, or renumber without silently
+tsox's diagnostic catalog can grow, split, or renumber without silently
 claiming compatibility it hasn't earned. The compatibility harnesses
 (`bin/compare-tsc.rs`, `scripts/compare-local.sh`) compare by line presence, not
 by code equality, precisely because of this.
@@ -406,4 +406,4 @@ Larger Rust TypeScript implementations such as `tsz` are valuable references for
 
 They are references, not specifications.
 
-The project should adopt an idea because it solves a demonstrated ts-rust problem, not because another compiler has a similarly named module.
+The project should adopt an idea because it solves a demonstrated tsox problem, not because another compiler has a similarly named module.

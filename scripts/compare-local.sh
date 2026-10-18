@@ -6,9 +6,9 @@ set -o pipefail
 # tests/fixtures/ suite by default, or a narrower path when given one.
 #
 # All of the actual comparison logic (running tsc via the TypeScript
-# compiler API, merging it against ts-rust's own output, rendering the
+# compiler API, merging it against tsox's own output, rendering the
 # MATCH/GAP/FALSE-POSITIVE table) lives in scripts/ts-diag-tool/compare.js.
-# This script only builds ts-rust and invokes that.
+# This script only builds tsox and invokes that.
 #
 # Why the compiler API instead of shelling `tsc` and text-parsing its
 # output: a type name can itself contain parens or colons, which broke the
@@ -34,7 +34,7 @@ set -o pipefail
 #   ./scripts/compare-local.sh path/to/project --module       # cross-file: tsc checks the
 #                                                             # directory as ONE project
 #
-# --module is for projects whose files import each other. ts-rust checks them through its
+# --module is for projects whose files import each other. tsox checks them through its
 # module graph, so tsc has to as well to give a fair time and peak memory: it checks every
 # file of the directory in one Program, in its own process, instead of one isolated Program
 # per file (which is right for tests/fixtures, where files reuse names, and stays the
@@ -42,7 +42,7 @@ set -o pipefail
 # works on tests/fixtures, where it gives the same diagnostics as the per-file mode.
 #
 # Environment:
-#   TS_RUST_BIN    ts-rust command override (default: target/release/ts-rust,
+#   TSOX_BIN    tsox command override (default: target/release/tsox,
 #                  falls back to a debug build if release is missing)
 #   NO_COLOR       set to disable colored output (also auto-disabled when
 #                  stdout is not a terminal)
@@ -68,21 +68,21 @@ if [ "${want_ts}" != "${have_ts}" ]; then
   }
 fi
 
-if [ -z "${TS_RUST_BIN:-}" ]; then
-  if [ -x "target/release/ts-rust" ]; then
-    TS_RUST_BIN="target/release/ts-rust"
+if [ -z "${TSOX_BIN:-}" ]; then
+  if [ -x "target/release/tsox" ]; then
+    TSOX_BIN="target/release/tsox"
   else
-    echo "No release build found; building target/release/ts-rust..." >&2
-    cargo build --release --bin ts-rust || {
+    echo "No release build found; building target/release/tsox..." >&2
+    cargo build --release --bin tsox || {
       echo "error: cargo build failed" >&2
       exit 2
     }
-    TS_RUST_BIN="target/release/ts-rust"
+    TSOX_BIN="target/release/tsox"
   fi
 fi
 
-if [ ! -x "${TS_RUST_BIN}" ]; then
-  echo "error: ts-rust binary not found or not executable at ${TS_RUST_BIN}" >&2
+if [ ! -x "${TSOX_BIN}" ]; then
+  echo "error: tsox binary not found or not executable at ${TSOX_BIN}" >&2
   exit 2
 fi
 
@@ -91,4 +91,4 @@ if [ ! -e "${TARGET}" ]; then
   exit 2
 fi
 
-exec node "${DIAG_TOOL_DIR}/compare.js" "${TARGET}" "${TS_RUST_BIN}" "${EXTRA_ARGS[@]}"
+exec node "${DIAG_TOOL_DIR}/compare.js" "${TARGET}" "${TSOX_BIN}" "${EXTRA_ARGS[@]}"

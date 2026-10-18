@@ -1,4 +1,4 @@
-use ts_rust::{DiagnosticCode, Severity, TypeChecker};
+use tsox::{DiagnosticCode, Severity, TypeChecker};
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -7,7 +7,7 @@ fn init_tracing() {
         .try_init();
 }
 
-fn check(fixture_source: &str, file_name: &str) -> Vec<ts_rust::Diagnostic> {
+fn check(fixture_source: &str, file_name: &str) -> Vec<tsox::Diagnostic> {
     init_tracing();
     let checker = TypeChecker::new();
     let result = checker.check_source(fixture_source, file_name);
@@ -110,7 +110,7 @@ fn any_typed_value_is_callable() {
         diagnostics[0].message.contains("arithmetic operation"),
         "expected the `1 - \"x\"` mismatch inside the call, got: {diagnostics:?}"
     );
-    assert_eq!(diagnostics[0].severity, ts_rust::Severity::Error);
+    assert_eq!(diagnostics[0].severity, tsox::Severity::Error);
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn function_expression_does_not_inherit_this() {
         "`this` inside the nested function expression must not resolve to Counter's instance \
          type; it is an implicit any, and that is the one error. Got: {diagnostics:?}"
     );
-    assert_eq!(diagnostics[0].severity, ts_rust::Severity::Error);
+    assert_eq!(diagnostics[0].severity, tsox::Severity::Error);
     assert!(
         diagnostics[0]
             .message
@@ -389,7 +389,7 @@ fn computed_member_access_with_dynamic_key_is_reported_as_unsupported() {
         1,
         "expected exactly one diagnostic, got: {diagnostics:?}"
     );
-    assert_eq!(diagnostics[0].severity, ts_rust::Severity::Error);
+    assert_eq!(diagnostics[0].severity, tsox::Severity::Error);
     assert!(
         diagnostics[0]
             .message
@@ -409,7 +409,7 @@ fn computed_member_access_with_an_any_key_is_implicit_any() {
         1,
         "expected exactly one diagnostic, got: {diagnostics:?}"
     );
-    assert_eq!(diagnostics[0].severity, ts_rust::Severity::Error);
+    assert_eq!(diagnostics[0].severity, tsox::Severity::Error);
     assert!(
         diagnostics[0]
             .message
@@ -432,7 +432,7 @@ fn computed_member_access_with_a_literal_typed_key_is_still_reported_as_unsuppor
         1,
         "expected exactly one diagnostic, got: {diagnostics:?}"
     );
-    assert_eq!(diagnostics[0].severity, ts_rust::Severity::Warning);
+    assert_eq!(diagnostics[0].severity, tsox::Severity::Warning);
     assert!(
         diagnostics[0].message.contains("not yet checked"),
         "got: {diagnostics:?}"
@@ -538,7 +538,7 @@ fn enum_constant_expression_initializer_is_evaluated() {
         1,
         "`1 << 0` is a constant, so Weird resolves and returning it as a string is a mismatch, got: {diagnostics:?}"
     );
-    assert_eq!(diagnostics[0].severity, ts_rust::Severity::Error);
+    assert_eq!(diagnostics[0].severity, tsox::Severity::Error);
     assert!(
         diagnostics[0].message.contains("is not assignable to type"),
         "got: {diagnostics:?}"
@@ -584,7 +584,7 @@ fn while_loop_body_mismatch_is_caught() {
         1,
         "expected exactly one diagnostic, got: {diagnostics:?}"
     );
-    assert_eq!(diagnostics[0].severity, ts_rust::Severity::Error);
+    assert_eq!(diagnostics[0].severity, tsox::Severity::Error);
     assert!(
         diagnostics[0].message.contains("not assignable"),
         "got: {diagnostics:?}"

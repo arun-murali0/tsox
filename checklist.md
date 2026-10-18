@@ -2,7 +2,7 @@
 
 Complete semantic surface of the TypeScript type system (language types + checking rules).  
 Use for any checker aiming at `tsc`-level type coverage.  
-Marks below reflect **ts-rust today** (`[x]` done, `[~]` partial, `[ ]` missing); strip marks for a blank tracker.
+Marks below reflect **tsox today** (`[x]` done, `[~]` partial, `[ ]` missing); strip marks for a blank tracker.
 
 ---
 
@@ -143,7 +143,7 @@ Marks below reflect **ts-rust today** (`[x]` done, `[~]` partial, `[ ]` missing)
 - [ ] `abstract`
 - [ ] `static` members (full type model)
 - [ ] Class static blocks (type effects)
-- [ ] Generic classes `[x]` (ts-rust)
+- [ ] Generic classes `[x]` (tsox)
 - [ ] Generic inheritance constraints
 - [ ] Decorators (type side, stage 3 / legacy)
 - [ ] Mixins (constructor type patterns)
@@ -360,7 +360,7 @@ These are regression-tested in `tests/module_resolution.rs`. They are about find
 
 ---
 
-## Summary (ts-rust snapshot)
+## Summary (tsox snapshot)
 
 | Area | Coverage |
 |------|----------|

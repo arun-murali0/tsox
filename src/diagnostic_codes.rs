@@ -1,7 +1,7 @@
-/// Stable identifiers for every diagnostic ts-rust can currently emit.
+/// Stable identifiers for every diagnostic tsox can currently emit.
 ///
-/// This is ts-rust's own namespace ("TSR####"), not TypeScript's TS####
-/// numbering: ts-rust never emits tsc's codes as its own. What it does keep is a
+/// This is tsox's own namespace ("TSR####"), not TypeScript's TS####
+/// numbering: tsox never emits tsc's codes as its own. What it does keep is a
 /// one-to-one map to them. Every variant here stands for exactly one tsc
 /// diagnostic (`tsc_code`), which is why a condition tsc reports under several codes
 /// (a missing property is TS2741, a missing list TS2739, ...) has several variants

@@ -1,6 +1,6 @@
-# ts-rust Documentation
+# tsox Documentation
 
-This directory is the maintained technical guide for ts-rust.
+This directory is the maintained technical guide for tsox.
 
 The repository uses **semantic milestone names** instead of opaque numeric development labels. A contributor should be able to understand what a test suite or document covers from its name alone.
 
@@ -96,7 +96,7 @@ diagnostics + future semantic facts
 tooling / typed IR
 ```
 
-Oxc remains the front-end foundation. ts-rust implements the semantic behavior that sits on top of it.
+Oxc remains the front-end foundation. tsox implements the semantic behavior that sits on top of it.
 
 ## Roadmap
 
@@ -119,8 +119,8 @@ Read [testing.md](testing.md) for:
 
 Read [purpose-and-overdesign.md](purpose-and-overdesign.md) for:
 
-- why ts-rust builds on Oxc;
-- what ts-rust owns;
+- why tsox builds on Oxc;
+- what tsox owns;
 - what it deliberately does not rebuild;
 - how larger projects such as tsz are used as references;
 - why premature abstraction and premature multithreading are avoided.

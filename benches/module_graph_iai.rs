@@ -1,7 +1,7 @@
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use std::hint::black_box;
 use std::path::PathBuf;
-use ts_rust::{ModuleGraph, ModuleResolver, check_project};
+use tsox::{ModuleGraph, ModuleResolver, check_project};
 
 #[path = "support/project_fixtures.rs"]
 mod project_fixtures;

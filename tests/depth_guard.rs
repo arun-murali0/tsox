@@ -33,7 +33,7 @@ fn run(name: &str, source: &str) -> Outcome {
     fs::write(dir.join("a.ts"), source).unwrap();
     fs::write(dir.join("tsconfig.json"), "{}").unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ts-rust"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tsox"))
         .arg("--project")
         .arg(dir.join("tsconfig.json"))
         .stdout(Stdio::piped())

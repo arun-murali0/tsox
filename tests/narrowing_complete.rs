@@ -1,4 +1,4 @@
-use ts_rust::{DiagnosticCode, TypeChecker};
+use tsox::{DiagnosticCode, TypeChecker};
 
 // `in`, `instanceof` and loop-exit narrowing. Each fixture is valid TypeScript unless
 // its file notes one deliberate error, so any other diagnostic is a false positive.
@@ -9,7 +9,7 @@ macro_rules! fixture {
     };
 }
 
-fn check(source: &str, file_name: &str) -> Vec<ts_rust::Diagnostic> {
+fn check(source: &str, file_name: &str) -> Vec<tsox::Diagnostic> {
     let result = TypeChecker::new().check_source(source, file_name);
     assert!(result.is_ok(), "fixture should at least parse: {result:?}");
     result

@@ -1,4 +1,4 @@
-use ts_rust::{FileId, Severity, UnitContext, Worker};
+use tsox::{FileId, Severity, UnitContext, Worker};
 
 // A property whose declared type is a literal keeps its literal when the object literal is
 // written against that declared type; without a declared type it widens as before.

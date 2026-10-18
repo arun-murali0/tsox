@@ -1,4 +1,4 @@
-use ts_rust::{Diagnostic, Severity, TypeChecker};
+use tsox::{Diagnostic, Severity, TypeChecker};
 
 // Problem: narrowing was an AST walk that handled if/while/for/switch only. do-while,
 // for-of, for-in, try, throw and labeled statements were reported as not yet checked and

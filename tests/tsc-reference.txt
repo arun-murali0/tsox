@@ -1,6 +1,6 @@
 # Exact `tsc --version` output this comparison was last verified against.
 # compare-tsc refuses to run if the installed tsc reports a different
 # version, so a silent drift in reference behavior is never mistaken for a
-# regression in ts-rust. Update this only after deliberately re-verifying
+# regression in tsox. Update this only after deliberately re-verifying
 # every case under tests/tsc-conformance/ against the new tsc version.
 Version 5.9.3

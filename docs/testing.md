@@ -94,20 +94,20 @@ A semantic change that passes tests but creates a significant benchmark regressi
 
 ## Compatibility harness
 
-ts-rust has three tools that compare its diagnostics against real TypeScript
+tsox has three tools that compare its diagnostics against real TypeScript
 implementations, and they exist separately because they answer different
 questions rather than being three ways to do the same thing:
 
 ```text
 scripts/compare-local.sh   -> "did this change disagree with tsc on our own fixtures?"
-bin/compare-tsc.rs         -> "does ts-rust agree with tsc on a small, curated set?"
-scripts/harness.sh         -> "how does ts-rust perform/compare on a real project?"
+bin/compare-tsc.rs         -> "does tsox agree with tsc on a small, curated set?"
+scripts/harness.sh         -> "how does tsox perform/compare on a real project?"
 ```
 
 **`scripts/compare-local.sh`** is the fast, local, everyday one. It runs the
 entire `tests/fixtures/` suite (every milestone, not a subset) against `tsc
 --strict` once, informationally rather than pass/fail — many fixtures under
-`tests/fixtures/` deliberately exercise ts-rust's own recovery behavior (one
+`tests/fixtures/` deliberately exercise tsox's own recovery behavior (one
 unresolvable class member making the whole class unsupported, say) and are
 *expected* to diverge from `tsc`, so this never blocks on that. It runs `tsc`
 once per file rather than batched, specifically because none of these fixtures
@@ -116,7 +116,7 @@ use imports/exports, so batching them into one `tsc` invocation would make
 duplicate-identifier errors from names reused across unrelated fixtures
 (`Point`, `Animal`, `Counter`...). Output is grouped by milestone and each file
 is marked `MATCH`, `GAP` (only `tsc` reports an error — a check not built yet),
-`FALSE POSITIVE` (only ts-rust reports one — rejecting code `tsc` accepts, the
+`FALSE POSITIVE` (only tsox reports one — rejecting code `tsc` accepts, the
 more serious kind), or `MIXED`.
 
 ```bash
@@ -126,7 +126,7 @@ more serious kind), or `MIXED`.
 ```
 
 **`bin/compare-tsc.rs`** is the in-process, errors-only sibling. Instead of
-shelling out to a `ts-rust` binary, it calls `TypeChecker::check_source`
+shelling out to a `tsox` binary, it calls `TypeChecker::check_source`
 directly and only shells out to `tsc` for the other half of the comparison.
 It's scoped to `tests/tsc-conformance/`, a small, deliberately curated
 directory kept separate from `tests/fixtures/` for the same reason
@@ -136,7 +136,7 @@ check meaningless.
 
 **`scripts/harness.sh`** is the one aimed at a real external project (Zustand
 by default) rather than curated fixtures — see the "Running it locally" section
-in the README for usage. It benchmarks `tsc`, `tsgo`, and `ts-rust` against the
+in the README for usage. It benchmarks `tsc`, `tsgo`, and `tsox` against the
 same project and records reproducibility information: compiler versions,
 source revision, timings, normalized diagnostics, and output hashes.
 
@@ -146,7 +146,7 @@ semantics — they're compatibility investigation tools, and the strength of
 that signal is different for each: `compare-tsc` is the strictest (curated,
 pass/fail), `compare-local` is the broadest (whole suite, informational),
 `harness.sh` is the most realistic (a real project) but also the least
-controlled (real projects use language features ts-rust may not model yet at
+controlled (real projects use language features tsox may not model yet at
 all, which shows up as noise rather than signal until module resolution and
 broader feature coverage land).
 

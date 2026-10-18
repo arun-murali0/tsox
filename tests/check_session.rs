@@ -1,4 +1,4 @@
-use ts_rust::{FileId, ProjectFiles, TypeChecker};
+use tsox::{FileId, ProjectFiles, TypeChecker};
 
 // The session API, the metrics it reports and the file identity types. A session is
 // the one place state outlives a check, so these tests are about what must NOT
@@ -13,7 +13,7 @@ fn a_session_reports_the_same_diagnostics_as_a_one_shot_check() {
     let first = session.check_source(source, "m.ts").unwrap();
     let second = session.check_source(source, "m.ts").unwrap();
 
-    let key = |r: &ts_rust::CheckResult| {
+    let key = |r: &tsox::CheckResult| {
         r.diagnostics
             .iter()
             .map(|d| (d.code, d.start, d.end))

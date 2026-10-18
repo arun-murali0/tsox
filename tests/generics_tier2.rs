@@ -1,4 +1,4 @@
-use ts_rust::{Severity, TypeChecker};
+use tsox::{Severity, TypeChecker};
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -7,7 +7,7 @@ fn init_tracing() {
         .try_init();
 }
 
-fn check(fixture_source: &str, file_name: &str) -> Vec<ts_rust::Diagnostic> {
+fn check(fixture_source: &str, file_name: &str) -> Vec<tsox::Diagnostic> {
     init_tracing();
     let checker = TypeChecker::new();
     let result = checker.check_source(fixture_source, file_name);
@@ -99,7 +99,7 @@ fn two_instantiations_of_the_same_interface_stay_distinct() {
     );
 }
 
-// tsc rejects a bare generic reference (TS2314), so ts-rust reports it as an error
+// tsc rejects a bare generic reference (TS2314), so tsox reports it as an error
 // too. The reference is typed as the error type, so `box.value` in the body adds
 // no second diagnostic.
 #[test]

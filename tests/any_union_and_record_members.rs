@@ -1,4 +1,4 @@
-use ts_rust::{FileId, Severity, UnitContext, Worker};
+use tsox::{FileId, Severity, UnitContext, Worker};
 
 // Two diagnostics that fired where tsc is silent, found in parts 05 and 06 of the
 // TypeScript corpus:

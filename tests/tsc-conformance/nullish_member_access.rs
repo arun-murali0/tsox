@@ -1,4 +1,4 @@
-use ts_rust::{Diagnostic, DiagnosticCode, Severity, TypeChecker};
+use tsox::{Diagnostic, DiagnosticCode, Severity, TypeChecker};
 
 // Problem: reading a property of `string | null` was reported as "Property 'length' does
 // not exist on type 'string | null'" (TS2339). tsc reports the cause, "'x' is possibly

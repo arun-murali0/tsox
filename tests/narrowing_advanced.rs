@@ -1,4 +1,4 @@
-use ts_rust::{DiagnosticCode, TypeChecker};
+use tsox::{DiagnosticCode, TypeChecker};
 
 // Fixtures for narrowing that depends on control flow rather than a single guard:
 // switch cases, && and || conditions, loop tests and the joins where paths meet.
@@ -18,7 +18,7 @@ fn init_tracing() {
         .try_init();
 }
 
-fn check(source: &str, file_name: &str) -> Vec<ts_rust::Diagnostic> {
+fn check(source: &str, file_name: &str) -> Vec<tsox::Diagnostic> {
     init_tracing();
     let checker = TypeChecker::new();
     let result = checker.check_source(source, file_name);

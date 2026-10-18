@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ts_rust::{Diagnostic, LineIndex, Severity, TypeChecker};
+use tsox::{Diagnostic, LineIndex, Severity, TypeChecker};
 
 // mimalloc runs only in this binary, and only in a build with the `mimalloc` feature. It
 // is set here and not in the library because a library that chose a global allocator
@@ -143,14 +143,14 @@ fn main() -> ExitCode {
 #[cfg(feature = "module-resolution")]
 fn run(files: &[PathBuf], options: &Options) -> Result<Tally, String> {
     if options.flat {
-        return Ok(ts_rust::with_deep_stack(|| check_flat(files)));
+        return Ok(tsox::with_deep_stack(|| check_flat(files)));
     }
     check_with_modules(files, options)
 }
 
 #[cfg(not(feature = "module-resolution"))]
 fn run(files: &[PathBuf], _options: &Options) -> Result<Tally, String> {
-    Ok(ts_rust::with_deep_stack(|| check_flat(files)))
+    Ok(tsox::with_deep_stack(|| check_flat(files)))
 }
 
 // One file at a time with no knowledge of the others, which is what every build did
@@ -189,7 +189,7 @@ fn check_flat(files: &[PathBuf]) -> Tally {
 // imports is not yet visible to the checker.
 #[cfg(feature = "module-resolution")]
 fn check_with_modules(files: &[PathBuf], options: &Options) -> Result<Tally, String> {
-    use ts_rust::{FileOutcome, ModuleGraph, ModuleResolver, check_project};
+    use tsox::{FileOutcome, ModuleGraph, ModuleResolver, check_project};
 
     // The graph wants absolute entry paths so a file reached by an import and the same
     // file named as an entry are one node.
@@ -346,13 +346,13 @@ fn collect_ts_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn print_help() {
     println!(
-        "ts-rust: a from-scratch TypeScript type checker (experimental CLI)\n\n\
+        "tsox: a from-scratch TypeScript type checker (experimental CLI)\n\n\
          USAGE:\n    \
-         ts-rust --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--tsc-codes]\n\n\
+         tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--tsc-codes]\n\n\
          OPTIONS:\n    \
          --project <path>    Locate the project root from a tsconfig.json path.\n                         \
          Its contents are not parsed; every .ts/.tsx file under\n                         \
-         that directory is checked directly. See bin/ts-rust.rs\n                         \
+         that directory is checked directly. See bin/tsox.rs\n                         \
          for the exact scoping.\n    \
          --flat              Check each file on its own, without the module graph.\n                         \
          The only mode in a build without the `module-resolution`\n                         \
@@ -361,7 +361,7 @@ fn print_help() {
          --partial           Print each file whose exports are partial, and why\n                         \
          (module graph builds only).\n    \
          --tsc-codes         Print each diagnostic under the tsc code it maps to\n                         \
-         (TS2322) instead of ts-rust's own (TSR1003).\n    \
+         (TS2322) instead of tsox's own (TSR1003).\n    \
          -h, --help          Show this message.\n\n\
          EXIT CODES:\n    \
          0    no errors (warnings may still have been printed)\n    \

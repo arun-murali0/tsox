@@ -1,7 +1,7 @@
-# ts-rust: Low-Level Design (Draft 1)
+# tsox: Low-Level Design (Draft 1)
 
 **Status:** design before code. Rust snippets are interface and data-layout sketches, not final code.
-**Companion:** `ts-rust-HLD.md` has the decision records and the reasons for each choice. Section numbers below match the HLD's ADRs where noted.
+**Companion:** `tsox-HLD.md` has the decision records and the reasons for each choice. Section numbers below match the HLD's ADRs where noted.
 **[VERIFY]** marks library behavior to confirm with a spike before relying on it.
 
 Contents: 1 Arena and type nodes, 2 Memory, 3 Stable identity and portable types, 4 Module graph, 5 Concurrency, 6 Query layer, 7 Checker integration and migration, 8 Determinism and limits, 9 Tests and measurements, 10 Risks and open questions.
@@ -304,7 +304,7 @@ Intersections touch interning (1.4), unresolved declarations (1.7), generics (1.
 | callable members in either order | the first matching signature wins | 1 |
 | a product of union sizes of 100,000 or more | error TS2590, "too complex to represent" | construction 6 |
 
-**Open ([VERIFY]).** The 100,000 cap is tsc's; ts-rust's own budget (ADR-6) may set it lower after measurement. Rules 5 and 7 are written for the strict mode this checker runs in and for anonymous `{}` only; an empty interface is a `Ref` and is not dropped. Type parameters stay opaque members (`T & U` is kept), and the `T & {}` form used by `NonNullable<T>` needs its own case when generics reach it. Enum literal members are treated as literals through their `Named` wrapper and need a fixture.
+**Open ([VERIFY]).** The 100,000 cap is tsc's; tsox's own budget (ADR-6) may set it lower after measurement. Rules 5 and 7 are written for the strict mode this checker runs in and for anonymous `{}` only; an empty interface is a `Ref` and is not dropped. Type parameters stay opaque members (`T & U` is kept), and the `T & {}` form used by `NonNullable<T>` needs its own case when generics reach it. Enum literal members are treated as literals through their `Named` wrapper and need a fixture.
 
 ---
 

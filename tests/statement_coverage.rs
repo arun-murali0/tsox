@@ -1,4 +1,4 @@
-use ts_rust::{Diagnostic, Severity, TypeChecker};
+use tsox::{Diagnostic, Severity, TypeChecker};
 
 // Statements that used to hit the "not yet checked" warning, or whose declarations were
 // never registered: exports, try/catch/finally, throw, do-while, for-of, for-in,

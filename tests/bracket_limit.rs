@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-use ts_rust::{
+use tsox::{
     FileOutcome, ModuleGraph, ModuleResolver, ProjectReport, TypeChecker, check_project,
     with_deep_stack,
 };

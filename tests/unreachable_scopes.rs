@@ -1,4 +1,4 @@
-use ts_rust::{Diagnostic, DiagnosticCode, Severity, TypeChecker};
+use tsox::{Diagnostic, DiagnosticCode, Severity, TypeChecker};
 
 // Dead code, and valid code that must not be mistaken for it, in every construct that
 // holds a statement list: function, method, constructor, accessor and object-method

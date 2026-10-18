@@ -40,12 +40,12 @@ pub fn init_panic_hook() {
 }
 
 #[wasm_bindgen]
-pub struct TsRustChecker {
+pub struct TsoxChecker {
     inner: CoreChecker,
 }
 
 #[wasm_bindgen]
-impl TsRustChecker {
+impl TsoxChecker {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self {
@@ -72,7 +72,7 @@ impl TsRustChecker {
     }
 }
 
-impl Default for TsRustChecker {
+impl Default for TsoxChecker {
     fn default() -> Self {
         Self::new()
     }

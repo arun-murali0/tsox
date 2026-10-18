@@ -40,7 +40,7 @@ mod unit;
 #[cfg(feature = "wasm")]
 mod wasm;
 #[cfg(feature = "wasm")]
-pub use wasm::TsRustChecker;
+pub use wasm::TsoxChecker;
 
 pub use diagnostic_codes::DiagnosticCode;
 pub use diagnostic_view::{DiagnosticView, Position, Range};

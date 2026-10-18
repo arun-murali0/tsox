@@ -3,14 +3,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ts_rust::{Diagnostic, FileOutcome, ModuleGraph, ModuleResolver, Severity, check_project};
+use tsox::{Diagnostic, FileOutcome, ModuleGraph, ModuleResolver, Severity, check_project};
 
 // `declare module "x" { ... }` in a script declaration file is a module that answers the
 // specifier `x` for every file of the project, whether or not any file by that name exists.
 
 struct Checked {
     graph: ModuleGraph,
-    report: ts_rust::ProjectReport,
+    report: tsox::ProjectReport,
 }
 
 fn run(test: &str, files: &[(&str, &str)]) -> Checked {

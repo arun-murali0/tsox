@@ -1,10 +1,10 @@
-use ts_rust::TypeChecker;
+use tsox::TypeChecker;
 
 // Intersection types (LLD 1.13): what a user can write with `&`, and what is reported.
 // Every fixture here was run through tsc 5.9.3 first; each one reports exactly what is
 // asserted, with the same code and the same message.
 
-fn check(source: &str, file_name: &str) -> Vec<ts_rust::Diagnostic> {
+fn check(source: &str, file_name: &str) -> Vec<tsox::Diagnostic> {
     let result = TypeChecker::new().check_source(source, file_name);
     assert!(result.is_ok(), "fixture should at least parse: {result:?}");
     result

@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ts_rust::{Diagnostic, FileOutcome, ModuleGraph, ModuleResolver, Severity, check_project};
+use tsox::{Diagnostic, FileOutcome, ModuleGraph, ModuleResolver, Severity, check_project};
 
 // Step 7a: an import that cannot be bound says so. A relative specifier no file answers
 // is TS2307, a name a complete module does not export is TS2305, and a default import of
@@ -12,7 +12,7 @@ use ts_rust::{Diagnostic, FileOutcome, ModuleGraph, ModuleResolver, Severity, ch
 
 struct Checked {
     graph: ModuleGraph,
-    report: ts_rust::ProjectReport,
+    report: tsox::ProjectReport,
 }
 
 fn run(test: &str, files: &[(&str, &str)]) -> Checked {
