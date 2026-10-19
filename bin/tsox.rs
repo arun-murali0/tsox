@@ -267,6 +267,9 @@ fn check_with_modules(files: &[PathBuf], options: &Options) -> Result<Tally, Str
                 .collect();
             println!("{}: exports partial: {}", path.display(), why.join("; "));
         }
+        for line in tsox::summarize_partial(&graph, &report).lines() {
+            println!("{line}");
+        }
     }
 
     let cycles = graph.cycles();
@@ -358,7 +361,8 @@ fn print_help() {
          The only mode in a build without the `module-resolution`\n                         \
          feature.\n    \
          --cycles            Print each import cycle (module graph builds only).\n    \
-         --partial           Print each file whose exports are partial, and why\n                         \
+         --partial           Print each file whose exports are partial, and why, then a\n                         \
+         summary by reason with the project files each one reaches\n                         \
          (module graph builds only).\n    \
          --tsc-codes         Print each diagnostic under the tsc code it maps to\n                         \
          (TS2322) instead of tsox's own (TSR1003).\n    \
