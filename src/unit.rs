@@ -35,9 +35,10 @@ impl CancelToken {
     }
 }
 
-// What one unit of work reads and never changes. A unit is one file for now; it becomes
-// one strongly connected component of the module graph when the graph driver lands
-// (LLD 4.3), and the graph and the dependency outputs join this struct then.
+// What one unit of work reads and never changes. In the code a unit is one file, checked
+// in its own arena. The graph driver (check_project) schedules a circular import group as
+// one unit of settlement, re-checking its members until their exports stop changing, and
+// gives each file what it imports through `imports` (LLD 4.3, HLD).
 pub struct UnitContext<'a> {
     pub file_id: FileId,
     pub file_name: &'a str,

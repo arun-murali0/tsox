@@ -18,9 +18,9 @@ use super::narrow::{JumpFrame, NarrowState, WriteMap};
 
 // The shared mutable state for checking one program. Every feature module
 // (expressions, statements, narrowing) takes &mut CheckContext rather than owning
-// its own state, by design: this keeps a single-threaded check simple today while
-// making the eventual unit of parallelism explicit later, one independent
-// CheckContext per file, rather than fine-grained locking inside one file's check.
+// its own state, by design: one file's check stays single-threaded and simple, and the
+// unit of parallelism is one independent CheckContext per file, which is how a layer of
+// the module graph runs, rather than fine-grained locking inside one file's check.
 // See docs/architecture.md for the fuller rationale.
 pub struct CheckContext<'ast, 'src> {
     pub arena: TypeArena,
@@ -411,9 +411,10 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
 
     // The seam between AST-facing bridge code and the semantic core. Bridge code
     // calls ctx.semantic().is_assignable(...) instead of reaching into subtyping
-    // directly, so TypeScript-specific assignability rules that are not plain
-    // structural subtyping, such as excess property checks on object literals or
-    // const assertions, have one place to live later without changing call sites.
+    // directly, so a TypeScript assignability rule that is not plain structural
+    // subtyping has one place to live without changing call sites. Excess property
+    // checks are not one of them: they need the literal's syntax, so they run after this
+    // check has passed (see expressions/excess.rs).
     //
     // Takes &mut self (not &self) because SemanticQueries carries a mutable
     // handle to relation_cache alongside the arena. Field-level destructuring

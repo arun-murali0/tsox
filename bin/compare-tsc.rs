@@ -1,6 +1,6 @@
 //! Compares tsox's own diagnostics against a real `tsc` run, in-process.
 //!
-//! Unlike scripts/harness.sh and scripts/compare-local.sh, this binary never
+//! Unlike .github/workflows/harness.yml and scripts/compare-local.sh, this binary never
 //! shells out to tsox as a subprocess; it calls `TypeChecker::check_source`
 //! directly, the same entry point bin/tsox.rs uses, and only shells out to
 //! `tsc` itself (there is no Rust API for that side of the comparison).
@@ -63,11 +63,11 @@
 //! this binary's current (narrower) flag set exactly, for an apples-to-apples
 //! comparison in the meantime.
 //!
-//! IMPORTANT: this binary cannot yet point at a real multi-file project
-//! (e.g. zustand). tsox has no cross-file import/export resolution yet,
-//! so every file in a multi-file project would report spurious "cannot see
-//! this import" noise; see the module resolution design work for why.
-//! Single-file conformance fixtures are the only meaningful input today.
+//! IMPORTANT: this binary checks each file on its own through `check_source`, so it
+//! cannot point at a real multi-file project (e.g. zustand): every import stays
+//! unbound and the result says nothing about the project. Cross-file checking goes
+//! through `check_project`, which bin/tsox.rs reaches with the module-resolution
+//! feature. Single-file conformance fixtures are the only meaningful input here.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
