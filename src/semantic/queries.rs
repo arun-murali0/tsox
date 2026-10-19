@@ -106,11 +106,12 @@ impl<'a> SemanticQueries<'a> {
 
     /// Whether a value of type `source` can be used where `target` is
     /// expected. Currently identical to `is_subtype`: TypeScript's real
-    /// assignability rules (excess property checks, `const` assertions,
-    /// etc.) diverge from plain subtyping in cases tsox doesn't
-    /// implement yet. `is_assignable` is kept as its own method so bridge
-    /// code calls the concept it actually means, and so that divergence
-    /// can be added here later without touching any call site.
+    /// assignability rules diverge from plain subtyping in cases tsox does
+    /// not model in this method. Excess property checks are not among
+    /// them; they run on the literal after this passes (see
+    /// expressions/excess.rs). `is_assignable` is kept as its own method so
+    /// bridge code calls the concept it actually means, and so that a
+    /// divergence can be added here without touching any call site.
     pub fn is_assignable(&mut self, source: TypeId, target: TypeId) -> bool {
         self.is_subtype(source, target)
     }

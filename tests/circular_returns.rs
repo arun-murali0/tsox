@@ -9,8 +9,9 @@ use tsox::{Diagnostic, TypeChecker};
 // outside a `return`, a call inside a nested function, an annotated function.
 // Cost: a circle through an import, a method or a variable is not seen and still reads as
 // `any` (see tests/project_imports.rs for the cross-file case).
-// Now: direct and mutual recursion are reported; ordinary recursion with an annotation
-// and calls that cannot change a return type are not.
+// Now: recursion inside a larger return expression, and mutual recursion, are reported. A
+// bare `return f(...)` inside `f` is not, because tsc leaves it out of the return type, and
+// neither is recursion with an annotation or a call that cannot change a return type.
 
 fn diagnostics(source: &str) -> Vec<Diagnostic> {
     TypeChecker::new()
@@ -89,4 +90,48 @@ fn a_call_outside_a_return_expression_is_not_reported() {
 fn a_call_inside_a_nested_function_is_not_reported() {
     let found = circular("function f() { return () => f(); }\n");
     assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_bare_tail_call_to_itself_is_not_reported() {
+    let found = circular(
+        "function gcd(a: number, b: number) { if (b === 0) return a; return gcd(b, a % b); }\n",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_tail_call_is_not_reported_in_parentheses_or_on_a_later_branch() {
+    let found = circular(
+        "function r(n: number) { return (r(n - 1)); }\n\
+         function s(n: number) { if (n) return s(n - 1); return 1; }\n",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_self_call_inside_a_larger_expression_is_still_reported() {
+    let found = circular(
+        "function u(n: number) { return u(n - 1) + 1; }\n\
+         function t(n: number) { return n ? t(n - 1) : 1; }\n",
+    );
+    assert_eq!(found.len(), 2, "{found:?}");
+}
+
+#[test]
+fn a_self_call_as_an_argument_of_another_call_is_still_reported() {
+    let found = circular(
+        "function id(x: number) { return x; }\n\
+         function z(n: number) { return id(z(n)); }\n",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].starts_with("'z' implicitly has return type 'any'"));
+}
+
+#[test]
+fn a_tail_call_does_not_hide_a_circle_through_another_function() {
+    let found = circular(
+        "function f(n: number) { return g(n); }\nfunction g(n: number) { return f(n); }\n",
+    );
+    assert_eq!(found.len(), 2, "{found:?}");
 }

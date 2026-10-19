@@ -6,10 +6,8 @@ use std::path::{Path, PathBuf};
 use tsox::{FileOutcome, ModuleGraph, ModuleResolver, ProjectReport, check_project_bounded};
 
 // Problem: the doc for the cycle settlement says what a cycle must do, but only some of it
-// was pinned by a test, and one condition does not hold yet.
-// Picked: a short test for each condition not covered in project_imports.rs. Where today's
-// behavior is a known gap, the test says so in its name and states what happens now, so
-// the change that fixes it has to change the test with it.
+// was pinned by a test.
+// Picked: a short test for each condition not covered in project_imports.rs.
 // Now: the result of a run does not depend on the order the entries are given, an unsettled
 // cycle does not hide an importer's own errors, and two unrelated cycles in one layer are
 // settled on their own.

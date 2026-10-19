@@ -113,7 +113,7 @@ dhat-heap = ["dep:dhat"]
 module-resolution = ["dep:oxc_resolver", "dep:rayon", "dep:petgraph"]
 
 # Salsa inputs and memoized queries over project files. A shell around the checker for
-# now; see docs/architecture-foundation.md.
+# now; see docs/architecture/foundation-dependencies.md.
 incremental = ["dep:salsa"]
 
 # Worker-local bump allocation for scratch data that does not outlive a job.

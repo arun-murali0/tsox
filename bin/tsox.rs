@@ -184,9 +184,9 @@ fn check_flat(files: &[PathBuf]) -> Tally {
 }
 
 // Builds the module graph from the project's files, then checks the graph layer by
-// layer with the files of a layer in parallel. Each file is still checked on its own:
-// the graph orders the work and finds imports that resolve to nothing, but what a file
-// imports is not yet visible to the checker.
+// layer with the files of a layer in parallel. The graph orders the work and finds
+// imports that resolve to nothing; a file sees what it imports through the exports the
+// files below it published.
 #[cfg(feature = "module-resolution")]
 fn check_with_modules(files: &[PathBuf], options: &Options) -> Result<Tally, String> {
     use tsox::{FileOutcome, ModuleGraph, ModuleResolver, check_project};

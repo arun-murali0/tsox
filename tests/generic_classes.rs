@@ -13,13 +13,7 @@ fn check(fixture_source: &str, file_name: &str) -> Vec<Diagnostic> {
 // elsewhere in this test suite (e.g. structural_types.rs's `errors()`,
 // recursive_types.rs). Warning-severity diagnostics are implementation-
 // status markers ("this expression kind isn't checked yet"), not something
-// a fixture's correctness should be judged on. Assignment expressions
-// (`x = y`, `this.x = y`) in particular are not yet handled anywhere in
-// infer_expression_type (see src/bridge/expressions/mod.rs's catch-all
-// arm), a pre-existing, checker-wide gap unrelated to generics; it was
-// simply invisible in these fixtures before generic class bodies were
-// actually being checked at all (see check_class_declaration's now-fixed
-// missing type-parameter scope push).
+// a fixture's correctness should be judged on.
 fn single_error(diagnostics: &[Diagnostic], code: DiagnosticCode) -> &Diagnostic {
     let errors: Vec<&Diagnostic> = diagnostics
         .iter()

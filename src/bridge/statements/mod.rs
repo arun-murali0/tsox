@@ -1,4 +1,4 @@
-use oxc_ast::ast::{Declaration, ExportDefaultDeclarationKind, Program, Statement};
+use oxc_ast::ast::{Declaration, ExportDefaultDeclarationKind, Expression, Program, Statement};
 use oxc_semantic::Scoping;
 use oxc_span::GetSpan;
 
@@ -34,6 +34,21 @@ pub fn check_top_level(program: &Program, scoping: &Scoping, ctx: &mut CheckCont
     }
 }
 
+// True when `expr`, parentheses aside, is a call by name to the function whose return type
+// is being inferred.
+fn returns_call_to_owner(expr: &Expression, scoping: &Scoping, ctx: &CheckContext<'_, '_>) -> bool {
+    let Some(owner) = ctx.return_reads.owner else {
+        return false;
+    };
+    let Expression::CallExpression(call) = expr.without_parentheses() else {
+        return false;
+    };
+    let Expression::Identifier(callee) = &call.callee else {
+        return false;
+    };
+    super::narrow::resolve_symbol_id(callee, scoping) == Some(owner)
+}
+
 pub(super) fn check_return_statement(
     ret: &oxc_ast::ast::ReturnStatement,
     scoping: &Scoping,
@@ -44,7 +59,10 @@ pub(super) fn check_return_statement(
     let actual = match &ret.argument {
         Some(expr) => {
             ctx.contextual = ctx.current_return_type;
-            let outer = std::mem::replace(&mut ctx.return_reads.in_return_expression, true);
+            // tsc leaves a bare call to the function itself out of its return type, so
+            // `return gcd(b, a % b)` reads nothing and is not a circle.
+            let reads = !returns_call_to_owner(expr, scoping, ctx);
+            let outer = std::mem::replace(&mut ctx.return_reads.in_return_expression, reads);
             let actual = infer_expression_type(expr, scoping, ctx);
             ctx.return_reads.in_return_expression = outer;
             actual
