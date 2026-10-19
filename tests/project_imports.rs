@@ -877,7 +877,12 @@ fn a_file_reads_only_the_declarations_it_imports() {
         ],
     );
     let reads = reads_of(&project, "b.ts");
-    assert!(reads.contains(&key_in(&project, "a.ts", "User", tsox::DeclKind::Interface)));
+    assert!(reads.contains(&key_in(
+        &project,
+        "a.ts",
+        "User",
+        tsox::DeclKind::Interface
+    )));
     assert!(!reads.contains(&key_in(
         &project,
         "a.ts",
@@ -1422,6 +1427,12 @@ fn a_dynamic_import_finds_the_file_but_does_not_order_it() {
     };
     assert!(project.graph.dependencies(id_of("b.ts")).is_empty());
     assert!(project.graph.dependents(id_of("a.ts")).is_empty());
+    // The load is still recorded, for whatever has to rerun when a.ts changes.
+    assert_eq!(
+        project.graph.dynamic_dependents(id_of("a.ts")),
+        [id_of("b.ts")]
+    );
+    assert!(project.graph.dynamic_dependents(id_of("b.ts")).is_empty());
     // The edge is still there, which is how a.ts was found and why it is checked.
     let edges = project.graph.edges(id_of("b.ts"));
     assert_eq!(edges.len(), 1, "{edges:?}");
