@@ -133,11 +133,7 @@ fn a_package_file_gets_a_package_key_from_its_manifest() {
         .module_key(id.expect("the package file is in the graph"));
     assert_eq!(
         key,
-        Some(tsox::ModuleKey::package(
-            "left-pad",
-            "1.3.0",
-            "index.d.ts"
-        ))
+        Some(tsox::ModuleKey::package("left-pad", "1.3.0", "index.d.ts"))
     );
 }
 

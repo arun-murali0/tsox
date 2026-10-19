@@ -256,7 +256,10 @@ fn run_corpus_and_report(
         );
     }
     #[cfg(not(feature = "dhat-heap"))]
-    println!("{:<40} {diagnostics:>4} diagnostics  {cost}", "corpus_slice");
+    println!(
+        "{:<40} {diagnostics:>4} diagnostics  {cost}",
+        "corpus_slice"
+    );
 
     println!(
         "{:<40} {} files, {refused} refused by the checker",

@@ -19,8 +19,7 @@ pub struct Project {
 impl Project {
     // Removed on drop. The process id keeps two benchmark processes apart.
     pub fn new(name: &str) -> Self {
-        let root =
-            std::env::temp_dir().join(format!("tsox-bench-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tsox-bench-{name}-{}", std::process::id()));
         Self::at(root, false)
     }
 

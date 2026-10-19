@@ -427,9 +427,7 @@ fn print_summary(style: &Style, counts: &Counts, expected_version: &str) {
     println!(
         "  {gap_files} with a gap (tsc reports an error tsox does not -- a check not built yet)"
     );
-    println!(
-        "  {false_positive_files} with a false positive (tsox reports an error tsc does not)"
-    );
+    println!("  {false_positive_files} with a false positive (tsox reports an error tsc does not)");
 }
 
 fn truncate(text: &str, width: usize) -> String {

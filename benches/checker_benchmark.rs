@@ -206,9 +206,15 @@ fn bench_check_session_warm(c: &mut Criterion) {
         }};
     }
 
-    bench_warm_source!("check_session_warm/realistic_50_functions", realistic_source());
+    bench_warm_source!(
+        "check_session_warm/realistic_50_functions",
+        realistic_source()
+    );
 
-    bench_warm_source!("check_session_warm/large_1000_functions", large_source(1_000));
+    bench_warm_source!(
+        "check_session_warm/large_1000_functions",
+        large_source(1_000)
+    );
 
     bench_warm_source!(
         "check_session_warm/connected_application_scale_50",
