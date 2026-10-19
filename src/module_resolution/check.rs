@@ -362,10 +362,12 @@ fn ambient_providers(graph: &ModuleGraph) -> Vec<FileId> {
 // proof of convergence for arbitrary inferred-signature cycles.
 const MIN_CYCLE_ROUNDS: usize = 4;
 
-// Settles one layer's cycle members and records the ones that did not settle. When the
-// bound runs out while their exports are still changing, what they export may be missing
-// names, so it is passed on as a partial list: an importer then stays quiet about a name it
-// cannot find instead of reporting it.
+// Settles the cycle members of one layer, one cycle at a time, and records the members of
+// every cycle that did not settle. Two cycles in a layer do not import each other, so each
+// is settled on its own: its own bound, its own fingerprint, and a failure that stays with
+// it. When the bound runs out while a cycle's exports are still changing, what its members
+// export may be missing names, so it is passed on as a partial list: an importer then stays
+// quiet about a name it cannot find instead of reporting it.
 fn settle_members(
     graph: &ModuleGraph,
     exports: &mut ProjectExports,
@@ -374,18 +376,34 @@ fn settle_members(
     max_cycle_rounds: Option<usize>,
     unsettled: &mut Vec<FileId>,
 ) {
-    let rounds = max_cycle_rounds.unwrap_or_else(|| cycle_round_cap(members.len()));
-    if settle_cycle(graph, exports, members, done, rounds) {
-        return;
+    // Grouped by component, in component order, so the order of the work does not depend
+    // on how the layer was listed.
+    let mut cycles: std::collections::BTreeMap<usize, Vec<FileId>> =
+        std::collections::BTreeMap::new();
+    for id in members {
+        cycles.entry(graph.scc_of(*id)).or_default().push(*id);
     }
-    for (report, unit_exports) in done.iter_mut() {
-        if members.contains(&report.file_id)
-            && let Some(unit_exports) = unit_exports
-        {
-            unit_exports.complete = false;
+    for cycle in cycles.values() {
+        let rounds = max_cycle_rounds.unwrap_or_else(|| cycle_round_cap(cycle.len()));
+        if settle_cycle(graph, exports, cycle, done, rounds) {
+            continue;
         }
+        for (report, unit_exports) in done.iter_mut() {
+            if !cycle.contains(&report.file_id) {
+                continue;
+            }
+            // The file is named as incomplete, not only its export list flagged, so a
+            // report of partial files can say why and count it.
+            let reason = crate::bridge::IncompleteReason::CycleDidNotSettle;
+            if !report.incomplete_reasons.contains(&reason) {
+                report.incomplete_reasons.push(reason);
+            }
+            if let Some(unit_exports) = unit_exports {
+                unit_exports.complete = false;
+            }
+        }
+        unsettled.extend(cycle.iter().copied());
     }
-    unsettled.extend(members.iter().copied());
 }
 
 // How many rechecks a cycle of `members` files gets: one per member plus a spare, so the

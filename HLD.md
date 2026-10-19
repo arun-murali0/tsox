@@ -150,11 +150,11 @@ Each record has: problem, options, decision, why (the case study), cost, and whe
 **Why**
 - *Determinism by construction.* Output order depends on file order, never on which thread finished first.
 - *No locks on the hot path.* Workers share only immutable published results.
-- *Cycles are handled once.* A circular import group is checked as one unit in one arena, so its members share type handles directly and no cross-arena resolution is needed inside a cycle.
+- *A cycle is one unit that settles by iteration.* A circular import group is the unit of scheduling, settlement, publication and failure isolation. Its members are checked together, then checked again against what the previous round exported, until what they export stops changing or a bound that grows with the size of the cycle runs out. A cycle that reaches the bound exports as incomplete, so a file that imports it stays quiet about a name it cannot find. Each file is still checked in its own arena and sees the other members through their published declarations, not through shared type handles. A shared arena for a whole cycle is a possible later design, not part of v1.
 
 **Cost.** One very large cycle (for example a barrel-file cycle) runs serially. Syntax trees are not sent between threads in v1: files are parsed once for the header and again inside the worker that checks them (LLD 5.2).
 
-**Revisit if.** Measurements on real projects show one SCC taking a large share of wall time (see section 4, item 2).
+**Revisit if.** Measurements on real projects show one SCC taking a large share of wall time (see section 4, item 2), or a cycle needs to share type handles directly because settlement by rounds is too slow or too weak for it.
 
 ---
 
@@ -291,7 +291,7 @@ Locked at stage 0. Each stays as decided until the spike or measurement named in
 1. **Identity versus version: split.** `DeclKey` is identity and `SigHash` is version (ADR-5). A signature inside the id would change the id of every referrer on each edit and defeat early cutoff.
 2. **Aliases: transparent wrapper nodes** (`Named`, LLD 1.8). A side table keyed by id is what forces today's `set()` and `make_unique` guards.
 3. **Union display order: first writer wins, in a side table.** Identity stays canonical, and messages keep the order as written, which is closest to what tsc prints. Accepted limit: two unions written in different orders print in whichever order was seen first.
-4. **v1 unit of work: one SCC.** Cycle members share one arena, so nothing is shared across arenas inside a cycle. Reopen only if S4 shows a single SCC dominating wall time.
+4. **v1 unit of work: one SCC, settled by iteration.** A cycle is scheduled, settled, published and failed as one unit, and each member is checked in its own arena against the published declarations of the others, in rounds until the exports stop changing. Reopen, with a shared arena per cycle as the candidate, only if S4 shows a single SCC dominating wall time or rounds prove too slow or too weak.
 5. **Hash function: XXH3-128.** Already a dependency (`xxhash-rust`, `xxh3`). A truncated cryptographic hash stays available behind a flag for untrusted input.
 6. **When to compute the 128-bit hash: lazily, when a type reaches an export boundary.** Most types never leave their file.
 7. **Salsa: `=0.28.5`, provisional.** Reopen if S1 fails.

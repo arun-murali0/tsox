@@ -10,6 +10,7 @@ mod discovery;
 mod error;
 mod graph;
 mod metadata;
+mod partial;
 mod resolver;
 
 pub use check::{FileOutcome, FileReport, ProjectReport, check_project, check_project_bounded};
@@ -17,4 +18,5 @@ pub use discovery::{ModuleRequest, ModuleRequestKind, ModuleScan, scan_module_re
 pub use error::ModuleError;
 pub use graph::{ModuleEdge, ModuleGraph};
 pub use metadata::{FileFingerprint, content_hash};
+pub use partial::{PartialRow, PartialSummary, ReasonKind, summarize_partial};
 pub use resolver::ModuleResolver;

@@ -73,8 +73,8 @@ pub use topology::ModuleTopology;
 #[cfg(feature = "module-resolution")]
 pub use module_resolution::{
     FileFingerprint, FileOutcome, FileReport, ModuleEdge, ModuleError, ModuleGraph, ModuleRequest,
-    ModuleRequestKind, ModuleResolver, ModuleScan, ProjectReport, check_project, content_hash,
-    scan_module_requests,
+    ModuleRequestKind, ModuleResolver, ModuleScan, PartialRow, PartialSummary, ProjectReport,
+    ReasonKind, check_project, content_hash, scan_module_requests, summarize_partial,
 };
 
 // Exposed only so a test can make an import cycle run out of recheck rounds (see

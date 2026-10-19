@@ -56,7 +56,11 @@ pub fn corpus_slice(default_stride: usize) -> Vec<CorpusFile> {
         .step_by(stride)
         .filter_map(|path| {
             let source = fs::read_to_string(&path).ok()?;
-            let name = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
+            let name = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
             Some(CorpusFile { name, source })
         })
         .collect();

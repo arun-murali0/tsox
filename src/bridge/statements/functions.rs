@@ -89,6 +89,10 @@ pub(super) fn check_function_declaration(
         infers_return,
         func.r#async,
     );
+    if infers_return {
+        ctx.return_reads
+            .note_owner(symbol_id, name.name.as_str(), name.span());
+    }
     hoist_function_declarations(&body.statements, ctx);
     for body_stmt in &body.statements {
         check_statement(body_stmt, scoping, ctx);
@@ -97,6 +101,14 @@ pub(super) fn check_function_declaration(
     ctx.narrow = outer_narrow;
 
     if infers_return {
+        // A return type that is read, directly or through other functions, by one of its
+        // own return expressions has no answer. It stays `any`, and now says so.
+        for (function, span) in ctx.return_reads.take_cycle(symbol_id) {
+            ctx.error(
+                crate::diagnostic_messages::messages::return_implicitly_any(&function),
+                span,
+            );
+        }
         // Every `return` contributed its widened type; a body that never returns a
         // value (or only falls off the end) returns void, the way tsc infers it.
         // Re-declaring replaces the placeholder, so calls checked after this point

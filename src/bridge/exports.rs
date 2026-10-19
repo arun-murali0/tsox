@@ -76,6 +76,9 @@ pub enum IncompleteReason {
     StarFromUnknownModule,
     /// `export * as ns from` a module that is missing, or whose exports were not read.
     NamespaceStarFromUnknownModule,
+    /// The file is in an import cycle that did not settle within its bound, so what it exports
+    /// may still have been changing.
+    CycleDidNotSettle,
 }
 
 impl IncompleteReason {
@@ -104,6 +107,7 @@ impl IncompleteReason {
             Self::NamespaceStarFromUnknownModule => {
                 "`export * as ns` from a module that is missing or not read"
             }
+            Self::CycleDidNotSettle => "an import cycle that did not settle",
         }
     }
 }

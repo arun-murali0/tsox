@@ -34,6 +34,11 @@ pub struct ModuleEdge {
 // ordering by it would only invent cycles. The edge stays in `edges`, which is what the
 // walk that finds files follows, so the file is still found, checked and reported.
 //
+// What a dynamic import does need is a record of who loads whom, since a change to the
+// loaded file will matter to its loader once `import("x")` is typed. That is
+// `dynamic_dependents`, kept apart from `dependents` so that nothing which orders or
+// schedules by `dependents` can pick up an edge that must not order.
+//
 // `sccs`, `scc_of` and `layers` are worked out once, when the graph is built: the
 // components dependencies first (which is also a topological order of them), the
 // component of each file, and the files grouped for checking. They are plain arrays, so a
@@ -44,6 +49,7 @@ pub struct ModuleGraph {
     edges: Vec<Vec<ModuleEdge>>,
     dependencies: Vec<Vec<FileId>>,
     dependents: Vec<Vec<FileId>>,
+    dynamic_dependents: Vec<Vec<FileId>>,
     sccs: Vec<Vec<FileId>>,
     scc_of: Vec<u32>,
     layers: Vec<Vec<FileId>>,
@@ -190,7 +196,19 @@ impl ModuleGraph {
     ) -> Self {
         let mut dependencies = Vec::with_capacity(edges.len());
         let mut dependents = vec![Vec::new(); edges.len()];
+        let mut dynamic_dependents = vec![Vec::new(); edges.len()];
         for (position, file_edges) in edges.iter().enumerate() {
+            let mut loaded: Vec<FileId> = file_edges
+                .iter()
+                .filter(|edge| edge.kind == ModuleRequestKind::DynamicImport)
+                .filter_map(|edge| edge.target)
+                .collect();
+            loaded.sort();
+            loaded.dedup();
+            for target in &loaded {
+                dynamic_dependents[index_of(*target)].push(file_id(position));
+            }
+
             let mut targets: Vec<FileId> = file_edges
                 .iter()
                 .filter(|edge| edge.kind != ModuleRequestKind::DynamicImport)
@@ -226,6 +244,7 @@ impl ModuleGraph {
             edges,
             dependencies,
             dependents,
+            dynamic_dependents,
             sccs,
             scc_of,
             layers,
@@ -288,9 +307,17 @@ impl ModuleGraph {
         slice_of(&self.dependencies, id)
     }
 
-    /// The files that import `id`, in id order.
+    /// The files that import `id`, in id order. A dynamic import is not one of them; see
+    /// `dynamic_dependents`.
     pub fn dependents(&self, id: FileId) -> &[FileId] {
         slice_of(&self.dependents, id)
+    }
+
+    /// The files that load `id` with `import("...")`, in id order, once each. These edges
+    /// never order or schedule anything and are not in `dependents`. Whatever has to rerun
+    /// when `id` changes is `dependents` together with this list.
+    pub fn dynamic_dependents(&self, id: FileId) -> &[FileId] {
+        slice_of(&self.dynamic_dependents, id)
     }
 
     /// Whether the parser reported a syntax error in `id`. Such a file may have fewer

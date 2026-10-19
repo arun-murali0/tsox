@@ -234,6 +234,15 @@ pub mod messages {
         DiagnosticMessage::new(DiagnosticCode::ImplicitAnyElement, text)
     }
 
+    pub fn return_implicitly_any(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyReturn,
+            format!(
+                "'{name}' implicitly has return type 'any' because it does not have a return type annotation and is referenced directly or indirectly in one of its return expressions."
+            ),
+        )
+    }
+
     pub fn this_implicitly_any() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::ImplicitAnyThis,

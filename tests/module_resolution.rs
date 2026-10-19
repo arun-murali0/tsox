@@ -597,6 +597,30 @@ fn graph_retains_static_dynamic_side_effect_reexport_and_import_equals_kinds() {
     );
 }
 
+// Problem: which edge kinds order the checking was only stated in a comment, and a dynamic
+// import was kept out of `dependents`, so nothing could tell what a changed file affects.
+// Picked: every kind but a dynamic import is a dependency, and a dynamic import is listed in
+// `dynamic_dependents` instead, so each kind is in exactly one of the two lists.
+#[test]
+fn only_a_dynamic_import_is_kept_out_of_the_ordering_and_is_listed_apart() {
+    let graph = build(&["edge-kinds/entry.ts"]);
+    let entry = id_of(&graph, "edge-kinds/entry.ts");
+    for ordered in ["polyfill", "exports", "legacy"] {
+        let file = id_of(&graph, &format!("edge-kinds/{ordered}.ts"));
+        assert_eq!(
+            graph.dependents(file),
+            [entry],
+            "{ordered} orders the entry"
+        );
+        assert!(graph.dynamic_dependents(file).is_empty(), "{ordered}");
+    }
+    let lazy = id_of(&graph, "edge-kinds/lazy.ts");
+    assert!(graph.dependents(lazy).is_empty());
+    assert_eq!(graph.dynamic_dependents(lazy), [entry]);
+    assert!(!graph.dependencies(entry).contains(&lazy));
+    assert!(graph.dynamic_dependents(entry).is_empty());
+}
+
 #[test]
 fn separate_ambient_module_blocks_union_their_export_tables() {
     let graph = build(&["ambient-merge/consumer.ts", "ambient-merge/modules.d.ts"]);

@@ -585,7 +585,7 @@ bitflags! { pub struct EdgeKind: u8 { const VALUE=1; const TYPE_ONLY=2; const SI
 
 ### 4.3 Unit of work
 
-A **unit** is one SCC. One worker checks it in one arena, so members of a cycle can reference each other's declarations through shared `DeclSlot`s without any cross-arena rebuilding.
+A **unit** is one SCC for scheduling, settlement, publication and failure isolation. The members of a cycle are each checked in their own arena, then checked again against what the previous round published, until what they export stops changing or the round bound runs out. A cycle that reaches the bound exports as incomplete. Sharing one arena across a cycle, so members could use each other's `DeclSlot`s directly, is a possible later design and not part of v1.
 
 Intra-unit protocol:
 
@@ -599,6 +599,8 @@ check_unit(scc):
   phase C (bodies):  check bodies and statements per file in FileId order; emit diagnostics
   publish:           UnitOutput { exports (portable), diagnostics, incomplete }
 ```
+
+In v1 these phases run for one file at a time, and the project driver repeats them for the members of a cycle until the published exports stop changing.
 
 ### 4.4 Inferred exports and declaration cycles (the hardest correctness point)
 
