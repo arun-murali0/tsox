@@ -12,6 +12,7 @@ use crate::semantic::queries::RelationCache;
 use crate::symbol_map::SymbolTypeMap;
 use crate::types::FileId;
 use crate::unit::CancelToken;
+use oxc_semantic::SymbolId;
 
 use super::narrow::{JumpFrame, NarrowState, WriteMap};
 
@@ -67,6 +68,18 @@ pub struct CheckContext<'ast, 'src> {
     // function, arrow or method never adds its returns to the enclosing one.
     // Cost: a caller checked before the body is walked sees the placeholder `any`.
     pub inferred_returns: Option<Vec<TypeId>>,
+
+    // Problem: a function with no return annotation takes its return type from its body,
+    // and a call to another such function inside a `return` needs that function's type
+    // too. Two functions that each need the other's have no answer, and the placeholder
+    // `any` they get was passed off as one without a word.
+    // Picked: while an unannotated function's `return` expressions are checked, each call
+    // to a function declaration is noted as an edge from that function to the callee. A
+    // cycle among those edges is reported once for each function on it (TS7023).
+    // Cost: only calls by name to a function declared in the same file are seen. A call
+    // through an import, a method or a variable is not, so a cycle through one is not
+    // reported and still reads as `any`.
+    pub return_reads: ReturnReads,
 
     // Inferred signatures for anonymous default function declarations, keyed by their
     // source start offset. They have no SymbolId, but their bodies still need checking
@@ -161,6 +174,76 @@ pub struct ReturnScope {
     outer_type: Option<TypeId>,
     outer_inferred: Option<Vec<TypeId>>,
     outer_async: bool,
+    outer_owner: Option<SymbolId>,
+}
+
+// The record of which function declarations an unannotated function's return expressions
+// call (see `CheckContext::return_reads`).
+#[derive(Default)]
+pub struct ReturnReads {
+    // The function whose return type is being inferred from the body being walked. None in
+    // any nested function, arrow or method, which has its own scope and its own answer.
+    pub owner: Option<SymbolId>,
+    // True while the expression of a `return` statement is being checked.
+    pub in_return_expression: bool,
+    edges: Vec<(SymbolId, SymbolId)>,
+    names: FxHashMap<SymbolId, (String, Span)>,
+    reported: Vec<SymbolId>,
+}
+
+impl ReturnReads {
+    // A call by name to the function declaration `callee`, seen where it can affect the
+    // return type of the function being inferred.
+    pub fn note_call(&mut self, callee: SymbolId) {
+        if !self.in_return_expression {
+            return;
+        }
+        if let Some(owner) = self.owner
+            && !self.edges.contains(&(owner, callee))
+        {
+            self.edges.push((owner, callee));
+        }
+    }
+
+    pub fn note_owner(&mut self, symbol: SymbolId, name: &str, span: Span) {
+        self.owner = Some(symbol);
+        self.names
+            .entry(symbol)
+            .or_insert_with(|| (name.to_string(), span));
+    }
+
+    // The functions on a cycle through `symbol` that have not been reported yet, with the
+    // name and place to report each at. Empty when `symbol` is on no cycle.
+    pub fn take_cycle(&mut self, symbol: SymbolId) -> Vec<(String, Span)> {
+        let reach = |from: SymbolId, forward: bool| -> Vec<SymbolId> {
+            let mut seen: Vec<SymbolId> = Vec::new();
+            let mut pending = vec![from];
+            while let Some(node) = pending.pop() {
+                for (a, b) in &self.edges {
+                    let (here, next) = if forward { (*a, *b) } else { (*b, *a) };
+                    if here == node && !seen.contains(&next) {
+                        seen.push(next);
+                        pending.push(next);
+                    }
+                }
+            }
+            seen
+        };
+        let ahead = reach(symbol, true);
+        let behind = reach(symbol, false);
+        let mut found = Vec::new();
+        for member in ahead.into_iter().filter(|node| behind.contains(node)) {
+            if self.reported.contains(&member) {
+                continue;
+            }
+            self.reported.push(member);
+            if let Some((name, span)) = self.names.get(&member) {
+                found.push((name.clone(), *span));
+            }
+        }
+        found.sort_by_key(|(_, span)| span.start);
+        found
+    }
 }
 
 impl<'ast, 'src> CheckContext<'ast, 'src> {
@@ -172,6 +255,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             outer_type: std::mem::replace(&mut self.current_return_type, return_type),
             outer_inferred: std::mem::replace(&mut self.inferred_returns, infer.then(Vec::new)),
             outer_async: std::mem::replace(&mut self.current_return_async, false),
+            outer_owner: self.return_reads.owner.take(),
         }
     }
 
@@ -211,6 +295,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
     pub fn leave_return_scope(&mut self, scope: ReturnScope) -> Vec<TypeId> {
         self.current_return_type = scope.outer_type;
         self.current_return_async = scope.outer_async;
+        self.return_reads.owner = scope.outer_owner;
         std::mem::replace(&mut self.inferred_returns, scope.outer_inferred).unwrap_or_default()
     }
 
@@ -229,6 +314,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             current_return_type: None,
             current_return_async: false,
             inferred_returns: None,
+            return_reads: ReturnReads::default(),
             exported_function_types: FxHashMap::default(),
             current_class_instance: None,
             implicit_this: false,

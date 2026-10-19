@@ -44,7 +44,10 @@ pub(super) fn check_return_statement(
     let actual = match &ret.argument {
         Some(expr) => {
             ctx.contextual = ctx.current_return_type;
-            infer_expression_type(expr, scoping, ctx)
+            let outer = std::mem::replace(&mut ctx.return_reads.in_return_expression, true);
+            let actual = infer_expression_type(expr, scoping, ctx);
+            ctx.return_reads.in_return_expression = outer;
+            actual
         }
         None => ctx.arena.undefined(),
     };

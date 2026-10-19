@@ -51,7 +51,12 @@ pub(super) fn infer_arrow_function_type(
     let outer_narrow = ctx.narrow.clone();
     let visible = closure_view(&outer_narrow, arrow.span().start, scoping, ctx);
     ctx.narrow = visible;
+    // An arrow's body is its own function: a call inside it does not read the return type
+    // of the function it sits in, since the arrow's return type is only needed when the
+    // arrow is called. An expression body has no return scope of its own to say so.
+    let outer_owner = ctx.return_reads.owner.take();
     let result = infer_arrow_function_type_inner(arrow, scoping, ctx);
+    ctx.return_reads.owner = outer_owner;
     ctx.narrow = outer_narrow;
     result
 }

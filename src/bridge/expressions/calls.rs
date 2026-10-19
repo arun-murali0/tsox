@@ -71,8 +71,12 @@ pub(super) fn infer_call_expression_type(
     let mut callee_is_declaration = false;
     let (callee_type, callee_name) = match &call.callee {
         Expression::Identifier(ident) => {
-            callee_is_declaration = resolve_symbol_id(ident, scoping)
-                .is_some_and(|symbol_id| scoping.symbol_flags(symbol_id).is_function());
+            let callee_symbol = resolve_symbol_id(ident, scoping)
+                .filter(|symbol_id| scoping.symbol_flags(*symbol_id).is_function());
+            callee_is_declaration = callee_symbol.is_some();
+            if let Some(symbol_id) = callee_symbol {
+                ctx.return_reads.note_call(symbol_id);
+            }
             (
                 resolve_identifier_type(ident, scoping, ctx),
                 ident.name.to_string(),

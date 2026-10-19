@@ -43,7 +43,8 @@ impl ReasonKind {
             | IncompleteReason::DeclarationFileWithoutExportStatement
             | IncompleteReason::UnrepresentableDeclaration
             | IncompleteReason::StarFromUnknownModule
-            | IncompleteReason::NamespaceStarFromUnknownModule => Self::Root,
+            | IncompleteReason::NamespaceStarFromUnknownModule
+            | IncompleteReason::CycleDidNotSettle => Self::Root,
             IncompleteReason::UnresolvedReExport => Self::Mixed,
             IncompleteReason::StarFromPartialModule
             | IncompleteReason::NamespaceStarFromPartialModule => Self::Propagation,

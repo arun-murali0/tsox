@@ -157,6 +157,7 @@ fn every_reason_has_its_own_phrase() {
         Why::NamespaceStarFromPartialModule,
         Why::StarFromUnknownModule,
         Why::NamespaceStarFromUnknownModule,
+        Why::CycleDidNotSettle,
     ];
     let mut phrases: Vec<&str> = all.iter().map(|reason| reason.describe()).collect();
     assert!(phrases.iter().all(|phrase| !phrase.is_empty()));
@@ -355,13 +356,14 @@ fn the_reasons_split_into_root_mixed_and_passed_on() {
         Why::NamespaceStarFromPartialModule,
         Why::StarFromUnknownModule,
         Why::NamespaceStarFromUnknownModule,
+        Why::CycleDidNotSettle,
     ];
     let count = |kind| {
         all.iter()
             .filter(|reason| ReasonKind::of(**reason) == kind)
             .count()
     };
-    assert_eq!(count(ReasonKind::Root), 11);
+    assert_eq!(count(ReasonKind::Root), 12);
     assert_eq!(count(ReasonKind::Mixed), 1);
     assert_eq!(count(ReasonKind::Propagation), 2);
     assert_eq!(ReasonKind::of(Why::UnresolvedReExport), ReasonKind::Mixed);

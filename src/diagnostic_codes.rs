@@ -65,6 +65,7 @@ pub enum DiagnosticCode {
     ImplicitAnyParameter,
     ImplicitAnyElement,
     ImplicitAnyThis,
+    ImplicitAnyReturn,
 
     // 1600s: reachability
     UnreachableCode,
@@ -143,6 +144,7 @@ impl DiagnosticCode {
             ImplicitAnyParameter => "TSR1401",
             ImplicitAnyElement => "TSR1402",
             ImplicitAnyThis => "TSR1403",
+            ImplicitAnyReturn => "TSR1404",
 
             UnimplementedCallExpressionKind => "TSR9001",
             UnimplementedNewExpressionTarget => "TSR9002",
@@ -223,6 +225,7 @@ impl DiagnosticCode {
             ImplicitAnyParameter => 7006,
             ImplicitAnyElement => 7053,
             ImplicitAnyThis => 2683,
+            ImplicitAnyReturn => 7023,
 
             UnreachableCode => 7027,
             ExpressionTooComplex => 2590,

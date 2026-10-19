@@ -877,12 +877,7 @@ fn a_file_reads_only_the_declarations_it_imports() {
         ],
     );
     let reads = reads_of(&project, "b.ts");
-    assert!(reads.contains(&key_in(
-        &project,
-        "a.ts",
-        "User",
-        tsox::DeclKind::Interface
-    )));
+    assert!(reads.contains(&key_in(&project, "a.ts", "User", tsox::DeclKind::Interface)));
     assert!(!reads.contains(&key_in(
         &project,
         "a.ts",
