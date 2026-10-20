@@ -1,5 +1,7 @@
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::project::ProjectFiles;
 use crate::topology::ModuleTopology;
@@ -109,13 +111,20 @@ impl ModuleGraph {
                 path: path.clone(),
                 source,
             })?;
-            states.push(FileState::new(fingerprint, content_hash(&bytes)));
+            let state = FileState::new(fingerprint, content_hash(&bytes));
 
+            let mut kept: Option<Arc<str>> = None;
             let mut file_edges = Vec::new();
             let mut failed = false;
             let mut declares_ambient = false;
             if is_scannable(&path) {
                 let source = String::from_utf8_lossy(&bytes);
+                // Borrowed means the bytes were valid UTF-8, which is the only text
+                // `read_to_string` would have given the checker. Anything else is not
+                // kept, so the checker reads the file itself and fails as before.
+                if let Cow::Borrowed(valid) = &source {
+                    kept = Some(Arc::from(*valid));
+                }
                 let scan = scan_module_requests(&source, &path.to_string_lossy());
                 failed = scan.parse_failed;
                 declares_ambient = scan.declares_ambient_modules;
@@ -131,6 +140,7 @@ impl ModuleGraph {
                     });
                 }
             }
+            states.push(state.with_text(kept));
             edges.push(file_edges);
             syntax_errors.push(failed);
             ambient_scripts.push(declares_ambient);
@@ -341,6 +351,14 @@ impl ModuleGraph {
     /// when `id` changes is `dependents` together with this list.
     pub fn dynamic_dependents(&self, id: FileId) -> &[FileId] {
         slice_of(&self.dynamic_dependents, id)
+    }
+
+    /// The text discovery read for `id`, so a later stage does not read the file again.
+    /// None for a file that is not scanned or whose bytes are not valid UTF-8; the caller
+    /// then reads the file itself. It is the text the graph's hash and fingerprint
+    /// describe, and may be older than the disk: see `changed_files`.
+    pub fn source(&self, id: FileId) -> Option<&str> {
+        self.states.get(index_of(id)).and_then(FileState::text)
     }
 
     /// Whether the parser reported a syntax error in `id`. Such a file may have fewer

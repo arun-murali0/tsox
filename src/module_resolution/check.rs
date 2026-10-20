@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -991,6 +992,20 @@ impl ImportSource for ImportsOf<'_> {
     }
 }
 
+// The text of a file for the checker: the text discovery already read when it kept one,
+// so a file is read from the disk once. A file it did not keep (not scanned, or not valid
+// UTF-8) is read here, and fails here exactly as it always did.
+fn load_text<'g>(
+    graph: &'g ModuleGraph,
+    id: FileId,
+    path: &std::path::Path,
+) -> std::io::Result<Cow<'g, str>> {
+    match graph.source(id) {
+        Some(text) => Ok(Cow::Borrowed(text)),
+        None => fs::read_to_string(path).map(Cow::Owned),
+    }
+}
+
 // One unit per file. The worker is the thread's own, so nothing mutable is shared.
 fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked {
     let graph = project.graph;
@@ -1008,7 +1023,7 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
     let mut incomplete_reasons = Vec::new();
     let outcome = match graph.files().path(id) {
         None => FileOutcome::ReadFailed(format!("no path recorded for file {}", id.index())),
-        Some(path) => match fs::read_to_string(path) {
+        Some(path) => match load_text(graph, id, path) {
             Err(error) => FileOutcome::ReadFailed(format!("{}: {error}", path.display())),
             Ok(source) => {
                 let name = path.to_string_lossy();
