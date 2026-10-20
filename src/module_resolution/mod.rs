@@ -12,6 +12,7 @@ mod graph;
 mod metadata;
 mod partial;
 mod resolver;
+mod schedule;
 
 pub use check::{FileOutcome, FileReport, ProjectReport, check_project, check_project_bounded};
 pub use discovery::{ModuleRequest, ModuleRequestKind, ModuleScan, scan_module_requests};
@@ -20,3 +21,4 @@ pub use graph::{ModuleEdge, ModuleGraph};
 pub use metadata::{FileFingerprint, content_hash};
 pub use partial::{PartialRow, PartialSummary, ReasonKind, summarize_partial};
 pub use resolver::ModuleResolver;
+pub use schedule::{Cyclic, Finished, UnitOutcome, run_units, unit_dependencies};

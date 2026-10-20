@@ -45,16 +45,22 @@ side effect, dynamic, re-export). A dynamic import should only order files when 
 used; today every dynamic import with a string is an ordinary edge and can invent a cycle.
 Exit: unit tests on random graphs for order and membership.
 
-E3 - A cycle as one unit (LLD 4.3, 4.4). Cycle members are checked again for up to four
-rounds today. The HLD locks one cycle as one unit with phases declare, shapes, bodies, one
-arena, shared slots, and a circularity error when an inferred type re-enters itself.
-Exit: the cycle tests pass without the round limit and the output is stable.
-[yet to decide: build the unit as locked, or keep the iteration and amend the HLD]
+E3 - A cycle as one unit (LLD 4.3, 4.4). Done. A cycle is scheduled, settled and published as
+one unit, and its members are checked again until what they export stops changing, for a
+number of rounds that grows with the size of the cycle. A cycle that runs out of rounds is
+named, its files export as incomplete, and no other cycle is touched. A circular inferred
+return inside one file is reported (TS7023), except a bare `return f(...)` inside `f`, which
+tsc leaves out of the return type. The unit with one shared arena and shared slots stays a
+later option (HLD), and a circle that passes through an import still reads as `any`.
+Exit: met. tests/scc_contract.rs and tests/circular_returns.rs hold the contract.
 
 E4 - Scheduler and pipeline (LLD 5). Dependency counting per unit, a ready queue, ordered
 publication, a read and hash and header stage with backpressure, one internal error
 diagnostic when a unit panics (its dependents still run), cancellation checked at unit start.
 Exit: every unit runs exactly once after its dependencies on random graphs, and E0 stays green.
+Status: the scheduling core is in src/module_resolution/schedule.rs with its random-graph exit
+test in tests/scheduler.rs. check_project still runs layer by layer; moving it onto the
+scheduler, the cancel token through the driver, and the read and hash stage are still to do.
 
 E5 - Project config and resolution (LLD 6.4). tsconfig: extends, paths, baseUrl, rootDirs,
 typeRoots, types, include, exclude and the strict flags; package.json exports and types
