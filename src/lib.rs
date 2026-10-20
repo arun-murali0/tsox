@@ -84,6 +84,7 @@ pub use module_resolution::{
 #[cfg(feature = "module-resolution")]
 #[doc(hidden)]
 pub use module_resolution::check_project_bounded;
+pub use module_resolution::check_project_cancellable;
 
 pub use arena::TypeArenaStats;
 pub use bridge::{CheckMetrics, IncompleteReason};

@@ -14,7 +14,10 @@ mod partial;
 mod resolver;
 mod schedule;
 
-pub use check::{FileOutcome, FileReport, ProjectReport, check_project, check_project_bounded};
+pub use check::{
+    FileOutcome, FileReport, ProjectReport, check_project, check_project_bounded,
+    check_project_cancellable,
+};
 pub use discovery::{ModuleRequest, ModuleRequestKind, ModuleScan, scan_module_requests};
 pub use error::ModuleError;
 pub use graph::{ModuleEdge, ModuleGraph};

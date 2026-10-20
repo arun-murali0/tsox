@@ -87,18 +87,24 @@ Members of one cycle share a layer, since none of them can go first. A file that
 ## 7. Checking a project
 
 ```text
-for each layer, in order:
-    files of the layer in parallel (rayon)
-        each file: its own CheckSession -> diagnostics
+check the ambient providers (scripts that declare modules), publish them
+pass 1: run every component of the graph on the ready queue
+    a component starts when the last component it imports has finished
+        one file: a worker's session -> diagnostics, then its exports are published
+        a cycle: its members are checked again until their exports stop changing
+pass 2, only when pass 1 found a UMD alias, an augmentation or an ambient module:
+    the same, against globals built from everything pass 1 produced
 sort the report by FileId
 ```
+
+The queue is `schedule.rs`; decisions 15 and 16 give the reasons. A unit reads only what the components it imports published, and a `Globals` value that is fixed before the pass, so the report does not depend on timing. `check_project_cancellable` takes a `CancelToken`; a file that did not run is a read failure and `ProjectReport::cancelled` is set.
 
 - **One session per file.** A session reuses its arena across repeated checks of one file, but here each file is checked once. A session per file means the workers share nothing mutable, so no lock is needed anywhere in the checker.
 - **Sorted by `FileId`.** `FileId` derives `Ord` for this, and it follows path order, so the report reads the same whatever order the entries were given in. Without the sort, the order would depend on which thread finished first.
 - **Only checkable files.** TypeScript source outside `node_modules`. Declaration files of dependencies are in the graph because their imports matter, but checking someone else's package is not the project's job. `dependency_declarations_are_in_the_graph_but_are_not_checked` protects that.
 - **No file is left out.** A file that cannot be read is `ReadFailed` and one the checker rejects is `CheckFailed`. A report that silently omits files reads as all clear for exactly the files nobody looked at, which is the same rule that keeps an unresolved import in the graph. `ProjectReport::failure_count` separates files that were not checked from files that were checked and found wrong.
 
-**What this section describes, and what replaced part of it.** When this milestone landed each file was checked on its own, deliberately, and an import statement got the same unimplemented-statement warning it gets in single-file mode. The layering was in place so that once an import was looked up in the file it names, that file would already have been checked. That is now what happens: each file runs as a unit with its module key and an `ImportSource`, a layer's exports are collected before the next layer starts, and the members of a cycle are checked again until their exports settle. The checker side is in [cross-file-types](cross-file-types.md). The graph, the layers and the one-session-per-file rule above are unchanged.
+**What this section describes, and what replaced part of it.** When this milestone landed each file was checked on its own, deliberately, and an import statement got the same unimplemented-statement warning it gets in single-file mode. The layering was in place so that once an import was looked up in the file it names, that file would already have been checked. That is now what happens: each file runs as a unit with its module key and an `ImportSource`, a file's exports are published as soon as it finishes, and the members of a cycle are checked again until their exports settle. The checker side is in [cross-file-types](cross-file-types.md). The graph, the layers and the one-session-per-file rule above are unchanged.
 
 ## 8. Change detection in two steps
 

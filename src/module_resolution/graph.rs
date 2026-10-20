@@ -55,6 +55,8 @@ pub struct ModuleGraph {
     layers: Vec<Vec<FileId>>,
     states: Vec<FileState>,
     syntax_errors: Vec<bool>,
+    // Per file: a script that declares ambient modules, as the discovery parse saw it.
+    ambient_scripts: Vec<bool>,
     // The project root, an input of the graph (LLD 3.1.1). None until a caller sets it
     // with `with_root`; without one no file gets a Project key.
     root: Option<PathBuf>,
@@ -85,6 +87,7 @@ impl ModuleGraph {
         let mut edges = Vec::new();
         let mut states = Vec::new();
         let mut syntax_errors = Vec::new();
+        let mut ambient_scripts = Vec::new();
 
         // Files are interned as their importers are scanned, so the list grows while it
         // is walked. Visiting ids in order is a breadth-first walk with no queue.
@@ -110,10 +113,12 @@ impl ModuleGraph {
 
             let mut file_edges = Vec::new();
             let mut failed = false;
+            let mut declares_ambient = false;
             if is_scannable(&path) {
                 let source = String::from_utf8_lossy(&bytes);
                 let scan = scan_module_requests(&source, &path.to_string_lossy());
                 failed = scan.parse_failed;
+                declares_ambient = scan.declares_ambient_modules;
                 for request in scan.requests {
                     let target = resolve_request(resolver, &path, &request)
                         .map(|resolved| files.intern(resolved));
@@ -128,10 +133,17 @@ impl ModuleGraph {
             }
             edges.push(file_edges);
             syntax_errors.push(failed);
+            ambient_scripts.push(declares_ambient);
             next += 1;
         }
 
-        Ok(Self::in_path_order(&files, edges, states, syntax_errors))
+        Ok(Self::in_path_order(
+            &files,
+            edges,
+            states,
+            syntax_errors,
+            ambient_scripts,
+        ))
     }
 
     // Discovery ids depend on the order the entries came in and on how imports are
@@ -146,6 +158,7 @@ impl ModuleGraph {
         edges: Vec<Vec<ModuleEdge>>,
         states: Vec<FileState>,
         syntax_errors: Vec<bool>,
+        ambient_scripts: Vec<bool>,
     ) -> Self {
         let paths: Vec<&Path> = (0..discovered.len())
             .map(|position| {
@@ -174,6 +187,7 @@ impl ModuleGraph {
         let mut sorted_edges = Vec::with_capacity(order.len());
         let mut sorted_states = Vec::with_capacity(order.len());
         let mut sorted_errors = Vec::with_capacity(order.len());
+        let mut sorted_ambient = Vec::with_capacity(order.len());
         for &old in &order {
             let mut file_edges = edges[old].take().expect("each file is moved once");
             for edge in &mut file_edges {
@@ -184,8 +198,15 @@ impl ModuleGraph {
             sorted_edges.push(file_edges);
             sorted_states.push(states[old].take().expect("each file is moved once"));
             sorted_errors.push(syntax_errors[old]);
+            sorted_ambient.push(ambient_scripts[old]);
         }
-        Self::assemble(files, sorted_edges, sorted_states, sorted_errors)
+        Self::assemble(
+            files,
+            sorted_edges,
+            sorted_states,
+            sorted_errors,
+            sorted_ambient,
+        )
     }
 
     fn assemble(
@@ -193,6 +214,7 @@ impl ModuleGraph {
         edges: Vec<Vec<ModuleEdge>>,
         states: Vec<FileState>,
         syntax_errors: Vec<bool>,
+        ambient_scripts: Vec<bool>,
     ) -> Self {
         let mut dependencies = Vec::with_capacity(edges.len());
         let mut dependents = vec![Vec::new(); edges.len()];
@@ -250,6 +272,7 @@ impl ModuleGraph {
             layers,
             states,
             syntax_errors,
+            ambient_scripts,
             root: None,
         }
     }
@@ -326,6 +349,14 @@ impl ModuleGraph {
         self.syntax_errors
             .get(index_of(id))
             .is_some_and(|failed| *failed)
+    }
+
+    /// Whether `id` is a script, with no `import` or `export`, that declares ambient
+    /// modules with `declare module "x"`. Known from the discovery parse.
+    pub fn declares_ambient_modules(&self, id: FileId) -> bool {
+        self.ambient_scripts
+            .get(index_of(id))
+            .is_some_and(|declares| *declares)
     }
 
     pub fn unresolved(&self) -> impl Iterator<Item = (FileId, &ModuleEdge)> {
@@ -617,7 +648,7 @@ mod tests {
             });
         }
         let states = Vec::new();
-        ModuleGraph::assemble(files, edges, states, vec![false; count])
+        ModuleGraph::assemble(files, edges, states, vec![false; count], vec![false; count])
     }
 
     fn ids(indexes: &[usize]) -> Vec<FileId> {

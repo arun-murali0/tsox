@@ -41,6 +41,10 @@ pub struct ModuleRequest {
 pub struct ModuleScan {
     pub requests: Vec<ModuleRequest>,
     pub parse_failed: bool,
+    /// The file is a script (it has no `import` or `export`) that declares ambient modules
+    /// with `declare module "x" { ... }`. Read off the parse the scan already made, so the
+    /// checker does not parse the file again to find out.
+    pub declares_ambient_modules: bool,
 }
 
 pub fn scan_module_requests(source: &str, file_name: &str) -> ModuleScan {
@@ -49,6 +53,7 @@ pub fn scan_module_requests(source: &str, file_name: &str) -> ModuleScan {
         return ModuleScan {
             requests: Vec::new(),
             parse_failed: true,
+            declares_ambient_modules: false,
         };
     }
     let allocator = Allocator::default();
@@ -61,6 +66,7 @@ pub fn scan_module_requests(source: &str, file_name: &str) -> ModuleScan {
         return ModuleScan {
             requests: Vec::new(),
             parse_failed,
+            declares_ambient_modules: false,
         };
     }
 
@@ -204,9 +210,18 @@ pub fn scan_module_requests(source: &str, file_name: &str) -> ModuleScan {
     // changes from run to run. Source order makes the graph reproducible.
     requests.sort_by_key(|request| request.start);
 
+    let declares_ambient_modules = !is_external_module
+        && parsed.program.body.iter().any(|statement| {
+            matches!(
+                statement,
+                oxc_ast::ast::Statement::TSExternalModuleDeclaration(_)
+            )
+        });
+
     ModuleScan {
         requests,
         parse_failed,
+        declares_ambient_modules,
     }
 }
 
