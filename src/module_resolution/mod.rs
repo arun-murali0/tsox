@@ -6,6 +6,7 @@
 // resolver does not do: the graph over the results, cycle detection, dependency order,
 // change detection and the parallel driver.
 mod check;
+mod config;
 mod discovery;
 mod error;
 mod graph;
@@ -18,10 +19,11 @@ pub use check::{
     FileOutcome, FileReport, ProjectReport, check_project, check_project_bounded,
     check_project_cancellable,
 };
+pub use config::{ConfigError, Json, ProjectConfig, parse_jsonc};
 pub use discovery::{ModuleRequest, ModuleRequestKind, ModuleScan, scan_module_requests};
 pub use error::ModuleError;
 pub use graph::{ModuleEdge, ModuleGraph};
 pub use metadata::{FileFingerprint, content_hash};
 pub use partial::{PartialRow, PartialSummary, ReasonKind, summarize_partial};
-pub use resolver::ModuleResolver;
+pub use resolver::{ModuleResolver, ResolveMode};
 pub use schedule::{Cyclic, Finished, UnitOutcome, run_units, unit_dependencies};

@@ -85,32 +85,41 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    // tsconfig.json's contents are never parsed; the path is only used to locate
-    // the project root, and every .ts/.tsx file under that root is then checked
-    // directly. There is no include/exclude/paths handling and no support for
-    // multiple projects yet. Those files are the entries of the module graph when
-    // it is used; files they import are added to the graph from there.
-    let Some(project_root) = tsconfig_path.parent() else {
-        eprintln!(
-            "error: could not determine a project root from {}",
-            tsconfig_path.display()
-        );
-        return ExitCode::from(2);
-    };
+    // The config file's directory is the project root. A bare file name such as
+    // `tsconfig.json` has an empty parent, which means the current directory.
+    let project_root = tsconfig_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
 
-    let mut source_files = Vec::new();
-    collect_ts_files(project_root, &mut source_files);
-    source_files.sort();
+    // With the module graph, the config is read: `include`, `exclude` and `files` (after
+    // `extends`) select the entries, and `paths` and `baseUrl` resolve imports. If it
+    // cannot be read, every .ts/.tsx file under the root is checked and the config is
+    // ignored, with a warning. There is no support for multiple projects yet. The entries
+    // are the roots of the module graph; files they import are added from there.
+    #[cfg(feature = "module-resolution")]
+    let config = load_config(&tsconfig_path);
+    #[cfg(feature = "module-resolution")]
+    let source_files = match &config {
+        Some(config) => config.entry_files(),
+        None => files_under(project_root),
+    };
+    #[cfg(not(feature = "module-resolution"))]
+    let source_files = files_under(project_root);
 
     if source_files.is_empty() {
         eprintln!(
-            "warning: no .ts/.tsx files found under {}",
+            "warning: no .ts/.tsx files selected under {}",
             project_root.display()
         );
         return ExitCode::SUCCESS;
     }
 
-    let tally = match run(&source_files, &options) {
+    #[cfg(feature = "module-resolution")]
+    let outcome = run(&source_files, &options, config.as_ref());
+    #[cfg(not(feature = "module-resolution"))]
+    let outcome = run(&source_files, &options);
+    let tally = match outcome {
         Ok(tally) => tally,
         Err(message) => {
             eprintln!("error: {message}");
@@ -140,12 +149,48 @@ fn main() -> ExitCode {
     }
 }
 
+// Every .ts/.tsx file under `root`, sorted, skipping the usual build and dependency
+// directories. What is checked when there is no configuration to select files.
+fn files_under(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_ts_files(root, &mut files);
+    files.sort();
+    files
+}
+
 #[cfg(feature = "module-resolution")]
-fn run(files: &[PathBuf], options: &Options) -> Result<Tally, String> {
+fn load_config(tsconfig_path: &std::path::Path) -> Option<tsox::ProjectConfig> {
+    let absolute = match fs::canonicalize(tsconfig_path) {
+        Ok(absolute) => absolute,
+        Err(error) => {
+            eprintln!(
+                "warning: could not resolve {}: {error}",
+                tsconfig_path.display()
+            );
+            return None;
+        }
+    };
+    match tsox::ProjectConfig::load(&absolute) {
+        Ok(config) => Some(config),
+        Err(error) => {
+            eprintln!(
+                "warning: {error}; checking every .ts/.tsx file under the project directory and ignoring the configuration"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(feature = "module-resolution")]
+fn run(
+    files: &[PathBuf],
+    options: &Options,
+    config: Option<&tsox::ProjectConfig>,
+) -> Result<Tally, String> {
     if options.flat {
         return Ok(tsox::with_deep_stack(|| check_flat(files)));
     }
-    check_with_modules(files, options)
+    check_with_modules(files, options, config)
 }
 
 #[cfg(not(feature = "module-resolution"))]
@@ -188,7 +233,11 @@ fn check_flat(files: &[PathBuf]) -> Tally {
 // imports that resolve to nothing; a file sees what it imports through the exports the
 // files below it published.
 #[cfg(feature = "module-resolution")]
-fn check_with_modules(files: &[PathBuf], options: &Options) -> Result<Tally, String> {
+fn check_with_modules(
+    files: &[PathBuf],
+    options: &Options,
+    config: Option<&tsox::ProjectConfig>,
+) -> Result<Tally, String> {
     use tsox::{FileOutcome, ModuleGraph, ModuleResolver, check_project};
 
     // The graph wants absolute entry paths so a file reached by an import and the same
@@ -200,8 +249,21 @@ fn check_with_modules(files: &[PathBuf], options: &Options) -> Result<Tally, Str
         entries.push(absolute);
     }
 
-    let resolver = ModuleResolver::new();
-    let graph = ModuleGraph::build(&entries, &resolver).map_err(|error| error.to_string())?;
+    // The project's tsconfig.json decides `paths`, `baseUrl` and `extends` for resolution,
+    // and is attached to the graph with the project root, so a missing package is reported
+    // when nothing in the configuration could answer it. Without a readable config the
+    // resolver reads none and there is no root, so a missing package is never reported.
+    let (resolver, root) = match config {
+        Some(config) => (
+            ModuleResolver::with_tsconfig(config.config_file()),
+            Some(config.root().to_path_buf()),
+        ),
+        None => (ModuleResolver::new(), None),
+    };
+    let mut graph = ModuleGraph::build(&entries, &resolver).map_err(|error| error.to_string())?;
+    if let (Some(config), Some(root)) = (config, root) {
+        graph = graph.with_root(root).with_config(config);
+    }
     let report = check_project(&graph);
 
     let mut tally = Tally::default();
@@ -220,8 +282,9 @@ fn check_with_modules(files: &[PathBuf], options: &Options) -> Result<Tally, Str
         }
     }
 
-    // A warning and not an error: tsconfig's `paths` and `baseUrl` are not read, so an
-    // import they would resolve shows up here although tsc would find it.
+    // A warning and not an error: tsconfig's `paths`, `baseUrl` and `extends` are applied,
+    // but `rootDirs`, `typeRoots` and `types` are not, so an import they would resolve can
+    // still show up here although tsc would find it.
     let mut unresolved = 0usize;
     for (id, edge) in graph.unresolved() {
         if !graph.is_checkable(id) {

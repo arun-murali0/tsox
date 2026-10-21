@@ -569,8 +569,8 @@ fn with_worker<T>(run: impl FnOnce(&mut Worker) -> T) -> T {
 }
 
 // Whether a package specifier that no file answers (`import x from \"react\"`) can be called
-// a missing module. TypeScript also finds one through `paths`, `baseUrl`, `rootDirs` or an
-// `extends`ed config (none of which are read here), through a `declare module` pattern
+// a missing module. TypeScript also finds one through `paths` or `baseUrl` (possibly set in
+// an `extends`ed config) and `typeRoots`, through a `declare module` pattern
 // (`\"*.css\"`), and through any `@types` package, whose declarations are global and are
 // not files this project imports. A project with none of those has nothing else to
 // answer it, so the specifier really is missing; with any of them it is left alone.
@@ -581,22 +581,37 @@ fn bare_specifiers_are_reportable(graph: &ModuleGraph, wildcard_module_declared:
     if wildcard_module_declared {
         return false;
     }
+    // With the configuration attached, the effective options decide, after `extends`: a
+    // `paths` or `baseUrl` the resolver applied has already had its say, so only an option
+    // the checker does not apply (`typeRoots`) can still hide a package.
+    let parsed = graph.config_hides_bare_specifiers();
+    if parsed == Some(true) {
+        return false;
+    }
+    // Without it, the config can only be searched as text. `paths` and `baseUrl` count only
+    // when the resolver did not apply them, and `extends` always counts, because the
+    // extended file can hold any of the rest.
+    let keys: &[&str] = if graph.tsconfig_applied() {
+        &["\"rootDirs\"", "\"extends\"", "\"typeRoots\""]
+    } else {
+        &[
+            "\"paths\"",
+            "\"baseUrl\"",
+            "\"rootDirs\"",
+            "\"extends\"",
+            "\"typeRoots\"",
+        ]
+    };
     for directory in root.ancestors() {
         if directory.join("node_modules").join("@types").is_dir() {
             return false;
         }
+        if parsed.is_some() {
+            continue;
+        }
         for name in ["tsconfig.json", "jsconfig.json"] {
             if let Ok(text) = fs::read_to_string(directory.join(name)) {
-                if [
-                    "\"paths\"",
-                    "\"baseUrl\"",
-                    "\"rootDirs\"",
-                    "\"extends\"",
-                    "\"typeRoots\"",
-                ]
-                .iter()
-                .any(|key| text.contains(key))
-                {
+                if keys.iter().any(|key| text.contains(key)) {
                     return false;
                 }
             }

@@ -7,10 +7,11 @@ use crate::project::ProjectFiles;
 use crate::topology::ModuleTopology;
 use crate::types::FileId;
 
+use super::config::ProjectConfig;
 use super::discovery::{ModuleRequest, ModuleRequestKind, scan_module_requests};
 use super::error::ModuleError;
 use super::metadata::{FileFingerprint, FileState, content_hash};
-use super::resolver::ModuleResolver;
+use super::resolver::{ModuleResolver, ResolveMode};
 
 // One import or re-export statement, kept whether or not it resolved. `target` is None
 // for an import that did not, and it stays in the graph: dropping it would make a file
@@ -62,6 +63,21 @@ pub struct ModuleGraph {
     // The project root, an input of the graph (LLD 3.1.1). None until a caller sets it
     // with `with_root`; without one no file gets a Project key.
     root: Option<PathBuf>,
+    // Whether the resolver that built the graph applied a tsconfig.json, so a `paths` or
+    // `baseUrl` in it has already had its say in resolution.
+    tsconfig_applied: bool,
+    // The configuration the graph was built under, once a caller attaches it with
+    // `with_config`: an input of the graph like the root.
+    config: Option<ConfigInput>,
+}
+
+// The config files read for a project, as they were when attached, and whether the
+// effective configuration holds something that can answer a package specifier without a
+// file the checker reads.
+#[derive(Debug)]
+struct ConfigInput {
+    files: Vec<(PathBuf, FileState)>,
+    hides_bare_specifiers: bool,
 }
 
 impl ModuleGraph {
@@ -73,7 +89,9 @@ impl ModuleGraph {
         // nested syntax. It runs on the same 64 MB stack the checking workers have, so a
         // file this can parse is a file they can parse, and not on whatever stack the
         // caller happens to be on (8 MB for a main thread, 2 MB for a spawned one).
-        crate::stack_guard::on_big_stack(|| Self::discover(entries, resolver))
+        let mut graph = crate::stack_guard::on_big_stack(|| Self::discover(entries, resolver))?;
+        graph.tsconfig_applied = resolver.reads_tsconfig();
+        Ok(graph)
     }
 
     fn discover(entries: &[PathBuf], resolver: &ModuleResolver) -> Result<Self, ModuleError> {
@@ -284,6 +302,8 @@ impl ModuleGraph {
             syntax_errors,
             ambient_scripts,
             root: None,
+            tsconfig_applied: false,
+            config: None,
         }
     }
 
@@ -296,6 +316,74 @@ impl ModuleGraph {
 
     pub fn root(&self) -> Option<&Path> {
         self.root.as_deref()
+    }
+
+    /// Attaches the project's configuration as an input of the graph: every config file it
+    /// was read from is recorded, so `config_changed` can say one has moved, and its
+    /// effective options decide whether a missing package can be reported (see
+    /// `config_hides_bare_specifiers`).
+    pub fn with_config(mut self, config: &ProjectConfig) -> Self {
+        let mut files = Vec::new();
+        for path in config.sources() {
+            if let (Ok(bytes), Ok(fingerprint)) = (fs::read(path), FileFingerprint::of(path)) {
+                files.push((
+                    path.clone(),
+                    FileState::new(fingerprint, content_hash(&bytes)),
+                ));
+            }
+        }
+        let has = |name: &str| config.compiler_option(name).is_some();
+        // `typeRoots` can bring in `declare module` declarations the checker does not read.
+        // `paths` and `baseUrl` can point a package at a file, unless the resolver was given
+        // the config and has already followed them. `rootDirs` only applies to relative
+        // specifiers, so it cannot answer a package name.
+        let hides_bare_specifiers =
+            has("typeRoots") || (!self.tsconfig_applied && (has("paths") || has("baseUrl")));
+        self.config = Some(ConfigInput {
+            files,
+            hides_bare_specifiers,
+        });
+        self
+    }
+
+    /// Whether any config file recorded by `with_config` has changed or gone since. False
+    /// when no configuration was attached. A changed config means resolution results, and
+    /// the files `include` selects, may be out of date: build the graph again.
+    pub fn config_changed(&self) -> bool {
+        self.config.as_ref().is_some_and(|config| {
+            config
+                .files
+                .iter()
+                .any(|(path, state)| !state.is_unchanged(path))
+        })
+    }
+
+    /// The config files recorded by `with_config`, the project's own first.
+    pub fn config_files(&self) -> Vec<&Path> {
+        self.config
+            .as_ref()
+            .map(|config| {
+                config
+                    .files
+                    .iter()
+                    .map(|(path, _)| path.as_path())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// For a graph with a configuration attached: whether it holds something that can
+    /// answer a package specifier that no file answers, so a missing package should not
+    /// be reported. None when no configuration was attached.
+    pub fn config_hides_bare_specifiers(&self) -> Option<bool> {
+        self.config
+            .as_ref()
+            .map(|config| config.hides_bare_specifiers)
+    }
+
+    /// Whether the resolver that built this graph applied a `tsconfig.json`.
+    pub fn tsconfig_applied(&self) -> bool {
+        self.tsconfig_applied
     }
 
     /// The stable identity of `id` (LLD 3.1.1): Project under the root, Package for a file
@@ -507,15 +595,26 @@ fn resolve_request(
     from: &Path,
     request: &ModuleRequest,
 ) -> Option<PathBuf> {
+    let mode = resolve_mode(from, request.kind);
     if request.is_type {
         return resolver
-            .resolve_dts_from_file(from, &request.specifier)
+            .resolve_dts_from_file_as(mode, from, &request.specifier)
             .ok();
     }
     resolver
-        .resolve_from_file(from, &request.specifier)
-        .or_else(|_| resolver.resolve_dts_from_file(from, &request.specifier))
+        .resolve_from_file_as(mode, from, &request.specifier)
+        .or_else(|_| resolver.resolve_dts_from_file_as(mode, from, &request.specifier))
         .ok()
+}
+
+// A package's `exports` are read under `require` for `import x = require()` and for any
+// import in a `.cts` file, and under `import` for everything else.
+fn resolve_mode(from: &Path, kind: ModuleRequestKind) -> ResolveMode {
+    if kind == ModuleRequestKind::ImportEquals || extension(from) == Some("cts") {
+        ResolveMode::Require
+    } else {
+        ResolveMode::Import
+    }
 }
 
 fn extension(path: &Path) -> Option<&str> {

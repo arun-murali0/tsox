@@ -3,7 +3,9 @@
 **Evidence base.** E0 checked on 2026-10-18 against `main` at `5789d5a`; E1 to E3 checked on 2026-10-19 against `features` at `1fe24cf`, and the full suite re-run on 2026-10-20 against `main` at `bcc757d` (`cargo test --all-features`: 1,208 passed, 0 failed, plus the corpus abort test at stride 1) (the
 crate is now `tsox`; the depth guard and the 4,000-bracket limit are merged). Claims marked *(verified)* were checked in the code or by running the
 binary on that tree. Claims marked *(not rechecked)* come from earlier reads and have not been
-confirmed this round.
+confirmed this round. The E4 phase 3 work and measurements were checked on 2026-10-20 against
+`core-engine` at `9b2b92b` with the phase 3a change applied, built with rustc 1.91.1 on a
+one-core machine *(verified: `scripts/ci.sh`, 65 test binaries, 0 failed)*.
 
 ## 1. Goal
 
@@ -25,8 +27,8 @@ so the type system can evolve without repeatedly changing the project driver.
 | E1: Cross-file completeness | Complete | Real-project runs of `tsox --partial` beyond the corpus; the reach columns only mean something on multi-file projects | `tsox --partial` summary (corpus: 518 partial files of 10,083, 449 of them `UnrepresentableDeclaration`) |
 | E2: Graph shape and edge kinds | Complete | Typed dynamic-import tracking (deferred to E6); `ModuleTopology` decision (after E4) | `only_a_dynamic_import_is_kept_out_of_the_ordering_and_is_listed_apart`; dependents lists for dynamic imports |
 | E3: SCC as one unit | Complete | The cross-file circular-return case (needs on-demand inference, later design) | `tests/scc_contract.rs`, `tests/circular_returns.rs` |
-| E4: Scheduler and pipeline | In progress (phases 1 and 2 done) | Read, hash and header stage and the single parse (phase 3, needs the AST ownership design) | `tests/scheduler.rs` on random graphs; `random_projects_give_the_same_report_whatever_the_timing` for the real checker |
-| E5: Project configuration and resolution | Not started | Configuration-aware resolution and package exports | A project using `paths` and package `exports` with no false TS2307 |
+| E4: Scheduler and pipeline | Complete for its exit condition (phases 1, 2 and 3a done); the single parse (3b) is deferred to E7 | None for E4. Whether to parse once is decided with the E7 ownership design (section 3, E4, and section 8) | `tests/scheduler.rs` on random graphs; `random_projects_give_the_same_report_whatever_the_timing` for the real checker; `tests/source_once.rs` for read-once |
+| E5: Project configuration and resolution | Complete for its exit condition on the supported layouts; `typeRoots`/`types`, conditions driven by `moduleResolution`, and automatic graph updates on a config change are open | See "Not done" in section 3, E5 | `tests/tsconfig_resolution.rs`, `tests/project_config.rs`, `tests/cli_project.rs` |
 | E6: Library and ambient declarations | Not started | Shared provider, `declare global`, module augmentation | Merge fixtures that give the same result in any file order |
 | E7: Query layer | Prototype only | Salsa integration and verified invalidation | One test per row of the LLD invalidation matrix |
 | E8: Limits, safety, measurement | Partially implemented | Budgets, recursion protection, memory checks, metrics | Adversarial-input suite; metrics from LLD 9.5 |
@@ -222,14 +224,96 @@ keep an unresolved-annotation warning. It still never reports a missing name or 
 `an_unsettled_cycle_reports_no_missing_name_among_its_own_members` now checks exactly that.
 Default bounds are unaffected: a cycle gets one round per member plus a spare.
 
-Phase 3 is the read, hash and header stage and the single parse, which waits on the AST
-ownership design. The checker still parses each file itself after discovery has.
+Phase 3 is split in two, because the two halves differ in cost and in risk.
+
+**Phase 3a (done): read and hash each file once.** Discovery already fingerprinted and hashed
+every file (`FileState`, `content_hash`). It now also keeps the text it read, for a scanned
+file whose bytes are valid UTF-8, and `check_file` uses that text instead of reading the file
+again (`ModuleGraph::source`, `load_text`). A file with no kept text is read by the checker as
+before, so a file that is not valid UTF-8 still fails to read. Two things follow. The checker
+checks the text discovery saw, not whatever is on the disk later, so a file edited after the
+walk is still reported as it was seen, and `changed_files` is what says it has moved. And every
+scanned file's text now stays in memory for the life of the graph (text only, no ASTs).
+*(verified: `tests/source_once.rs`, 5 tests; the full suite passes.)*
+
+**Phase 3b (deferred): parse each file once.** The checker still parses each file itself after
+discovery has. Measured on the 10,083-file corpus as one project, release build, one thread
+*(verified, 2026-10-20)*:
+
+| Step | Time |
+|---|---|
+| Discovery scan (parse and import walk) | 0.111 s |
+| Checker parse only | 0.089 s |
+| Checker semantic analysis | 0.072 s |
+| `ModuleGraph::build` | 0.20 to 0.22 s |
+| `check_project` | 0.96 to 0.98 s |
+| Whole pipeline | about 1.18 s |
+
+The checker's repeat parse is about 0.089 s of 1.18 s, roughly 7.5 %, which is the most that
+parsing once could save. Keeping every discovery AST alive until the checker uses it holds 73 MB
+of AST data (227 MB of allocator capacity, since each file has its own allocator) and raises
+peak resident memory from about 70 MB to about 139 MB. The ASTs are about 11 times the size of
+the source text, so the cost grows with project size. About 1,100 of the files have parse
+errors, so the analysis time covers the rest.
+
+**Decision.** E4's exit condition does not need 3b, and the gain is small against the memory
+and the ownership design it forces. 3b is deferred and decided together with E7, whose query
+layer has to settle who owns parsed trees and arenas anyway. If that design keeps parsed trees,
+a single parse may follow at little extra cost. If it does not, 3b stays unneeded.
+
+**Not measured.** The measurement machine had one core. The checker runs on all cores and
+discovery runs on one thread, so on a multi-core machine discovery could be a much larger share
+of the wall-clock time than it is here. Parsing once would not change that, because it removes
+the checker's parse and not discovery's. Parallelising discovery is the more likely gain, and it
+needs a multi-core run to confirm. *(not measured)*
 
 ### E5: Implement project configuration and complete module resolution
 
-The current resolver supports useful TypeScript-oriented behavior, but the project driver does
-not yet interpret `tsconfig.json`. Its contents are never parsed, and `paths` and `baseUrl` are
-not read; a warning says so *(verified in `bin/tsox.rs`)*.
+The project driver now reads the project's `tsconfig.json` and applies it to file selection
+and to resolution.
+
+**Done.**
+- **Configuration (`config.rs`).** `ProjectConfig::load` reads a config as JSON with comments and
+  trailing commas, follows `extends` (a path, a package, or a list), merges `compilerOptions` key
+  by key with the extending file winning, and resolves `include`, `exclude` and `files` relative
+  to the file that wrote them. With no `include` or `files` everything under the config is
+  selected; `node_modules`, dot-directories and the `outDir` are left out by default; a `.ts`
+  file hides the `.tsx` and `.d.ts` of the same name. A config that cannot be read, or an
+  `extends` that names nothing or loops, is an error and not an empty project.
+- **Resolution.** `ModuleResolver::with_tsconfig` hands the config to oxc_resolver, which applies
+  `paths` (with and without `baseUrl`), `baseUrl` alone, `extends` chains, project `references`
+  and `rootDirs`. A specifier the config does not map resolves as before, and an alias that
+  points at nothing is still unresolved.
+- **`exports` conditions follow the importing file.** An `import` statement reads the `import`
+  condition; `import x = require()` and any import in a `.cts` file read `require`; a `.mts`
+  file reads `import` (`ResolveMode`).
+- **The config is a graph input.** `ModuleGraph::with_config` records every config file that was
+  read, and `config_changed()` says one has changed or gone.
+- **The gate follows the effective config.** With the config attached, `ModuleGraph::
+  config_hides_bare_specifiers` decides after `extends`: only `typeRoots` can still hide a
+  missing package, plus `paths` or `baseUrl` when the resolver was not given the config.
+  `rootDirs` does not, because it only merges directories for relative imports. A missing
+  package that nothing answers is now a TS2307 even in a project with path aliases.
+- **CLI.** `--project` loads the config, checks the files it selects, uses its directory as the
+  root, accepts a bare file name such as `tsconfig.json`, and falls back to every file with a
+  warning when the config cannot be read.
+
+*(verified on 2026-10-21: `tests/tsconfig_resolution.rs`, `tests/project_config.rs` and
+`tests/cli_project.rs` pass with the rest of the suite.)*
+
+**Not done.**
+- `typeRoots` and `types` are not applied, so a config that sets `typeRoots` still keeps the gate
+  shut. Both feed ambient declarations, which E6 provides.
+- `exports` conditions do not read `moduleResolution` or `module`, or the nearest `package.json`
+  `type`. They follow only the importing file's extension and kind of import. A project that
+  relies on NodeNext behaviour for a `.ts` file in a CommonJS package is not covered.
+- A config change is detected (`config_changed`) but does not update the graph by itself: the
+  caller rebuilds. Automatic updates belong to E7.
+- The compiler options the checker needs (strictness and others) are kept as written but the
+  checker does not read them from the config.
+- Without a parsed config, the gate falls back to searching the config text, and there it still
+  counts `rootDirs`, `extends`, `typeRoots` and, when the resolver was not given the config,
+  `paths` and `baseUrl`. This is deliberately cautious.
 
 Configuration parsing should cover inheritance, file selection, path aliases, base URLs, root
 directories, type roots, explicitly selected types, and the strictness settings needed by the
@@ -290,6 +374,12 @@ execute and compares the incremental result against a cold check.
 The key distinction is between reusing allocated capacity and reusing semantic results. The
 current session and worker reuse behavior does not itself establish incremental checking.
 
+**Carried over from E4 (phase 3b).** The E7 design has to say who owns a parsed tree and its
+arena: a file input query, a header query, or the checking unit. Settle that first, then decide
+whether discovery's parse can be reused by the checker. The E4 measurements (section 3, E4)
+give the baseline to compare against: parsing once saves about 7.5 % of run time on the corpus
+and would roughly double peak memory if every tree were kept.
+
 **Exit condition:** Body-only edits, public-signature edits, import changes, and configuration
 changes invalidate the expected queries and produce results equivalent to a cold check.
 
@@ -339,7 +429,7 @@ are available.
 2. **E3 contract:** Keep iteration, amend the HLD, and close convergence and failure-isolation
    semantics before changing the scheduler.
 3. **E4 scheduler and pipeline:** Introduce dependency-count scheduling, deterministic
-   publication, cancellation, and single-parse execution.
+   publication, cancellation, and read-once. Single-parse execution is deferred to E7.
 4. **E5 project configuration:** Implement configuration-aware resolution. This is largely
    independent of the type-system redesign and removes errors caused by incomplete project
    inputs. It does not depend on E4 and can run beside it.
@@ -437,3 +527,7 @@ stage.
    release binary. If it goes, the corpus README needs its commands changed.
 3. **E8:** whether the `alloc_union` fix is worth doing now or waits for the budgets work.
 4. **Process:** resolved. `cargo fmt --all -- --check` failed on `main` after the rename; `727e31f` re-formatted the files, and the check passes on `c4b1aaa` *(verified)*.
+5. **E4 / E7:** whether to parse each file once (phase 3b). Open on purpose: decide with the E7
+   ownership design, using the measurements in section 3 under E4. Not needed for E4's exit
+   condition.
+6. **E4:** whether to parallelise discovery. Needs a multi-core measurement first.
