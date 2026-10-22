@@ -11,7 +11,7 @@ mod unresolved_names;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
-use oxc_semantic::Semantic;
+use oxc_semantic::{Scoping, Semantic};
 
 use crate::arena::{TypeArena, TypeArenaStats};
 use crate::diagnostics::Diagnostic;
@@ -97,7 +97,7 @@ pub(crate) fn check_file(
     ctx.cancel = cancel.cloned();
     ctx.imports = imports;
 
-    declare_phase(&program, &mut ctx);
+    declare_phase(&program, semantic.scoping(), &mut ctx);
     bodies_phase(&program, &semantic, &mut ctx);
     // The guard in the namespace has no diagnostics of its own to write to, so it left a
     // flag. The position is the start of the file, since a cut chain has no one place.
@@ -121,10 +121,14 @@ pub(crate) fn check_file(
     Ok(Some((diagnostics, metrics, exports)))
 }
 
-fn declare_phase<'ast>(program: &'ast Program<'ast>, ctx: &mut CheckContext<'ast, '_>) {
+fn declare_phase<'ast>(
+    program: &'ast Program<'ast>,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'ast, '_>,
+) {
     // Imports first: a local declaration, a signature or an annotation may name any of
     // them, and the declare pass resolves in source order only within itself.
-    imports::bind_imports(program, ctx);
+    imports::bind_imports(program, scoping, ctx);
     declare::declare_top_level(program, ctx);
 }
 

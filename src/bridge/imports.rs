@@ -15,6 +15,7 @@
 // missing (the project driver does, when no configuration could be hiding it), and a name
 // missing from a partial module is still silent.
 
+use oxc_semantic::Scoping;
 use oxc_span::{GetSpan, Span};
 
 use crate::diagnostic_messages::messages;
@@ -29,10 +30,15 @@ use crate::types::{ObjectType, PropertyEntry, Type};
 
 use super::context::CheckContext;
 
-pub(super) fn bind_imports<'ast>(program: &'ast Program<'ast>, ctx: &mut CheckContext<'ast, '_>) {
+pub(super) fn bind_imports<'ast>(
+    program: &'ast Program<'ast>,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'ast, '_>,
+) {
     let Some(source) = ctx.imports else {
         return;
     };
+    bind_project_globals(program, scoping, ctx, source);
     // UMD aliases are global names for script consumers. An external module is isolated
     // unless the compiler option allowUmdGlobalAccess is enabled (not modelled here), so
     // do not inject those globals into files that already have import/export syntax.
@@ -101,6 +107,107 @@ pub(super) fn bind_imports<'ast>(program: &'ast Program<'ast>, ctx: &mut CheckCo
             }
             _ => {}
         }
+    }
+}
+
+// Problem: a type, function or variable that one file declares globally (an interface in a
+// script file, or a member of `declare global { }`) is visible to every other file of the
+// project, but a file only knew what it declared or imported, so each use was reported as
+// "Cannot find name".
+// Picked: bind a project global only when the file uses a name nothing in it declares,
+// which oxc lists as the root scope's unresolved references. Importing every global into
+// every file would cost the number of globals times the number of files; this costs the
+// names a file actually leaves unresolved. The names are taken in sorted order, so what is
+// bound does not depend on hash order.
+// Cost: a name declared several times (an interface in two files) is merged by the same
+// code that merges a module augmentation, so it inherits that code's limits (a generic
+// interface with a different arity keeps the first declaration).
+fn bind_project_globals<'ast>(
+    program: &'ast Program<'ast>,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'ast, '_>,
+    source: &dyn ImportSource,
+) {
+    let mut names: Vec<String> = scoping
+        .root_unresolved_references()
+        .keys()
+        .map(|name| name.to_string())
+        .collect();
+    names.sort();
+    let own = super::declare::own_global_block_names(program);
+    for name in names {
+        if own.contains(&name) {
+            continue;
+        }
+        // A name the standard library provides is bound to nothing here: a project file that
+        // only adds members to it (`interface Window { app: App }`) would otherwise stand in
+        // for the whole type and make every real member look missing.
+        if crate::lib_global_types::is_lib_global_type(&name) {
+            continue;
+        }
+        let keys = source.global_decls(&name);
+        if keys.is_empty() {
+            if source.global_name_unmodelled(&name) {
+                ctx.namespace.mark_unmodelled_global(&name);
+            }
+            continue;
+        }
+        bind_global_name(ctx, source, &name, &keys);
+    }
+}
+
+// Binds the declarations of one global name: its types go into the type namespace, its
+// value (a variable, a function and its overloads, an enum) into `global_values`.
+fn bind_global_name<'ast>(
+    ctx: &mut CheckContext<'ast, '_>,
+    source: &dyn ImportSource,
+    name: &str,
+    keys: &[DeclKey],
+) {
+    let provider: &dyn DeclProvider = source;
+    let mut value: Option<crate::arena::TypeId> = None;
+    let mut functions: Vec<crate::arena::TypeId> = Vec::new();
+    for &key in keys {
+        let Some(decl) = provider.decl(key) else {
+            continue;
+        };
+        match decl.kind {
+            DeclKind::Interface | DeclKind::Class | DeclKind::Alias => {
+                bind_key_as(ctx, source, key, name, None, false);
+            }
+            DeclKind::Enum => {
+                bind_key_as(ctx, source, key, name, None, false);
+                if value.is_none()
+                    && let Some((_, enum_value)) =
+                        ctx.importer.import_enum(&mut ctx.arena, provider, key)
+                {
+                    value = Some(enum_value);
+                }
+            }
+            DeclKind::Var => {
+                if value.is_none() {
+                    value = ctx.importer.import_decl(&mut ctx.arena, provider, key);
+                }
+            }
+            DeclKind::Function => {
+                if let Some(function) = ctx.importer.import_decl(&mut ctx.arena, provider, key) {
+                    functions.push(function);
+                }
+            }
+            DeclKind::Namespace => {}
+        }
+    }
+    let value = match (value, functions.len()) {
+        (Some(value), _) => Some(value),
+        (None, 0) => None,
+        (None, 1) => functions.pop(),
+        (None, _) => {
+            let first = functions[0];
+            Some(ctx.arena.alloc_intersection(functions).unwrap_or(first))
+        }
+    };
+    if let Some(value) = value {
+        ctx.global_values.insert(name.to_string(), value);
     }
 }
 

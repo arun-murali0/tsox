@@ -41,6 +41,52 @@ pub(super) fn module_scope(specifier: &str) -> String {
     format!("\"{specifier}\"")
 }
 
+// The names declared at the top of `statements`, as `declare global { }` members or the
+// top level of a script declare them. A `declare module "x"` block has no name here.
+pub(super) fn declared_names<'ast>(statements: &'ast [Statement<'ast>]) -> Vec<String> {
+    let mut names = Vec::new();
+    for (item, _) in items_in(statements) {
+        match item {
+            TopLevelItem::Alias(d) => names.push(d.id.name.to_string()),
+            TopLevelItem::Interface(d) => names.push(d.id.name.to_string()),
+            TopLevelItem::Class(d) => {
+                if let Some(id) = &d.id {
+                    names.push(id.name.to_string());
+                }
+            }
+            TopLevelItem::Enum(d) => names.push(d.id.name.to_string()),
+            TopLevelItem::Function(d) => {
+                if let Some(id) = &d.id {
+                    names.push(id.name.to_string());
+                }
+            }
+            TopLevelItem::Namespace(d) => names.push(d.id.name.to_string()),
+            TopLevelItem::Variable(d) => {
+                for declarator in &d.declarations {
+                    let mut bindings = Vec::new();
+                    super::exports::collect_binding_identifiers(&declarator.id, &mut bindings);
+                    names.extend(bindings.into_iter().map(|(name, _)| name));
+                }
+            }
+            TopLevelItem::ExternalModule(_) => {}
+        }
+    }
+    names
+}
+
+// The names this file declares itself inside `declare global { ... }` blocks. Those are
+// global to the project but are declared in this file, so the project's copy of one must not
+// be bound here as well: it would collide with the local declaration.
+pub(super) fn own_global_block_names(program: &Program<'_>) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for stmt in &program.body {
+        if let Statement::TSGlobalDeclaration(block) = stmt {
+            names.extend(declared_names(&block.body.body));
+        }
+    }
+    names
+}
+
 // What a `namespace N { ... }` holds, as the same flat list any statement list gives.
 //
 // Problem: `namespace A.B { ... }` has no block of its own. Its body is another namespace
@@ -78,6 +124,10 @@ pub(super) fn items_in<'a>(statements: &'a [Statement<'a>]) -> Vec<(TopLevelItem
             Statement::TSExternalModuleDeclaration(d) => {
                 items.push((TopLevelItem::ExternalModule(d), false))
             }
+            // `declare global { ... }`: its members are declared at the top level of the file,
+            // where the rest of the file finds them. They are also the project's globals,
+            // which the export collector reads separately.
+            Statement::TSGlobalDeclaration(d) => items.extend(items_in(&d.body.body)),
             Statement::ExportDeclaration(export) => match &export.declaration {
                 Declaration::TSTypeAliasDeclaration(d) => {
                     items.push((TopLevelItem::Alias(d), true))

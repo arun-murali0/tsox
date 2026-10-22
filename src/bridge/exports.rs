@@ -157,6 +157,25 @@ pub(crate) struct ExportTable {
     pub augmentations: Vec<(String, ExportTable)>,
     /// UMD names introduced by `export as namespace`.
     pub umd_namespaces: Vec<String>,
+    /// The global declarations this file makes: the top-level declarations of a script
+    /// file, and the members of each `declare global { }` block of a module. Their names
+    /// are not exports, and they stay out of `names`.
+    pub global_names: Vec<(String, DeclKey)>,
+    /// The declarations behind `global_names`, copied so the project can hand them to
+    /// every other file whatever order the files finished in.
+    pub global_decls: Vec<PortableDecl>,
+    /// Names the file declares globally whose declaration could not be carried over. They
+    /// exist, so a use of one is not a missing name, but nothing is known about their type.
+    pub global_unmodelled: Vec<String>,
+    /// True when `global_unmodelled` holds a script's global names only, because the project
+    /// did not ask for their declarations (see `ImportSource::collect_global_decls`).
+    pub global_names_only: bool,
+    /// The names the file uses that nothing in it declares (oxc's root unresolved
+    /// references). The project reads them to decide whether any file uses a global that
+    /// another file declares, which is the only case a second pass could change anything.
+    pub unresolved_names: Vec<String>,
+    /// Names of exported declarations that had no portable form (see `global_unmodelled`).
+    pub dropped_names: Vec<String>,
 }
 
 impl ExportTable {
@@ -314,7 +333,7 @@ fn push_item<'ast>(
 // Export every identifier introduced by a destructuring declaration. The checker
 // already records the individual symbol types during the body pass; this walk only
 // recovers their names and symbol IDs for the portable export table.
-fn collect_binding_identifiers<'ast>(
+pub(super) fn collect_binding_identifiers<'ast>(
     pattern: &'ast BindingPattern<'ast>,
     out: &mut Vec<(String, Option<SymbolId>)>,
 ) {
@@ -493,11 +512,79 @@ pub(crate) fn collect_exports<'ast>(
     module: ModuleKey,
 ) -> ExportTable {
     let definition = program.source_type.is_typescript_definition();
-    let mut table = collect_in(&program.body, definition, false, scoping, ctx, module);
+    let is_module = is_external_module(program);
+    // A script's global declarations are built only when the project asks: most are never
+    // used by another file, and a portable declaration for every top-level item of every
+    // script is the cost. Without the ask the script lists its names and nothing else.
+    let wants_decls = ctx
+        .imports
+        .is_none_or(|imports| imports.collect_global_decls());
+    let lazy_script = !is_module && !wants_decls;
+    // In a script every top-level declaration is global, so each is listed as if exported;
+    // those names are then moved out of the export list, which a script does not have.
+    let export_all = !is_module && !lazy_script;
+    let mut table = collect_in(&program.body, definition, export_all, scoping, ctx, module);
+    if lazy_script {
+        table.global_unmodelled = super::declare::declared_names(&program.body);
+        table.global_names_only = true;
+    } else if !is_module {
+        table.global_names = std::mem::take(&mut table.names);
+        table.global_decls = std::mem::take(&mut table.decls);
+        table.global_unmodelled = table.dropped_names.clone();
+    }
     let (ambient, augmentations) = collect_ambient(program, scoping, ctx, module);
     table.ambient = ambient;
     table.augmentations = augmentations;
+    collect_global_blocks(program, scoping, ctx, module, &mut table);
+    table.unresolved_names = scoping
+        .root_unresolved_references()
+        .keys()
+        .map(|name| name.to_string())
+        .collect();
     table
+}
+
+// Whether the file has `import` or `export` syntax, which makes it a module and not a script.
+fn is_external_module(program: &Program<'_>) -> bool {
+    program.body.iter().any(|stmt| {
+        matches!(
+            stmt,
+            Statement::ImportDeclaration(_)
+                | Statement::ExportDeclaration(_)
+                | Statement::ExportNamedDeclaration(_)
+                | Statement::ExportDefaultDeclaration(_)
+                | Statement::ExportAllDeclaration(_)
+                | Statement::ExportFromDeclaration(_)
+                | Statement::TSExportAssignment(_)
+                | Statement::TSNamespaceExportDeclaration(_)
+                | Statement::TSImportEqualsDeclaration(_)
+        )
+    })
+}
+
+// The members of each `declare global { ... }` block of a module. The declare pass registered
+// them at the top level of the file's namespace, so resolving a name here finds them, and
+// each block gets a module key of its own so its declarations cannot collide with the
+// file's exports.
+fn collect_global_blocks<'ast>(
+    program: &'ast Program<'ast>,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'ast, '_>,
+    owner: ModuleKey,
+    table: &mut ExportTable,
+) {
+    let mut ordinal = 0;
+    for stmt in &program.body {
+        let Statement::TSGlobalDeclaration(block) = stmt else {
+            continue;
+        };
+        let key = ModuleKey::ambient_child("{global}", owner, ordinal);
+        ordinal += 1;
+        let collected = collect_in(&block.body.body, true, true, scoping, ctx, key);
+        table.global_unmodelled.extend(collected.dropped_names);
+        table.global_names.extend(collected.names);
+        table.global_decls.extend(collected.decls);
+    }
 }
 
 // The modules a script file declares with `declare module "x" { ... }`: each is a module
@@ -1111,7 +1198,10 @@ fn collect_in<'ast>(
         };
         match built.and_then(|p| register(&mut keys, ctx, p)) {
             Some(p) => pending.push(p),
-            None if exported => table.mark(IncompleteReason::UnrepresentableDeclaration),
+            None if exported => {
+                table.dropped_names.push(item.name.clone());
+                table.mark(IncompleteReason::UnrepresentableDeclaration)
+            }
             None => {}
         }
     }
@@ -1146,6 +1236,7 @@ fn collect_in<'ast>(
                 written.insert(p.key, (decl, p.exported_as));
             }
             None if !p.exported_as.is_empty() => {
+                table.dropped_names.extend(p.exported_as.iter().cloned());
                 table.mark(IncompleteReason::UnrepresentableDeclaration)
             }
             None => {}

@@ -100,6 +100,10 @@ struct Project<'a> {
     tables: RwLock<Tables>,
     globals: Globals,
     cancel: Option<&'a CancelToken>,
+    // Whether a script file builds declarations for its global names, or only lists them.
+    // Off in the passes; on for the providers and for the run that rebuilds the scripts
+    // another file uses (see `run_project`).
+    collect_global_decls: bool,
 }
 
 impl Project<'_> {
@@ -150,6 +154,14 @@ struct Globals {
     decls: FxHashMap<DeclKey, Arc<PortableDecl>>,
     // The UMD aliases (`export as namespace`), with the members of the file that exports them.
     global_namespaces: Vec<GlobalNamespace>,
+    // The names the project declares globally (top-level declarations of script files and
+    // members of `declare global` blocks), each with every declaration of it. The files are
+    // taken in path order, so the order of a name's declarations does not depend on the
+    // order the files were checked or listed in.
+    global_names: FxHashMap<String, Vec<DeclKey>>,
+    // Names the project declares globally whose declaration could not be carried over. A use
+    // of one is not a missing name, but nothing is known about its type.
+    unmodelled_globals: std::collections::HashSet<String>,
     // Whether a package specifier no file answers is certainly a missing module (see
     // `bare_specifiers_are_reportable`).
     bare_reportable: bool,
@@ -203,6 +215,30 @@ impl Globals {
             }
         }
         globals.global_namespaces = global_namespaces(units);
+        // Project globals. Merged in path order (ties by id), so a name declared in several
+        // files lists its declarations the same way however the project was assembled.
+        let mut by_path: Vec<(Option<&std::path::Path>, FileId, &UnitExports)> = units
+            .iter()
+            .filter(|(_, unit)| !unit.globals.is_empty())
+            .map(|(id, unit)| (graph.files().path(*id), *id, *unit))
+            .collect();
+        by_path.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        for (_, _, unit) in &by_path {
+            for block in &unit.globals {
+                for decl in &block.exports {
+                    globals.decls.insert(decl.key, Arc::new(decl.clone()));
+                }
+                for (name, key) in &block.export_names {
+                    let keys = globals.global_names.entry(name.clone()).or_default();
+                    if !keys.contains(key) {
+                        keys.push(*key);
+                    }
+                }
+                globals
+                    .unmodelled_globals
+                    .extend(block.unmodelled.iter().cloned());
+            }
+        }
         // A script reaches the members of a UMD global without an import edge, so it does
         // not wait for the file that exports it. The declarations of that file, and of
         // everything it imports, are therefore handed over here, fixed for the pass, and
@@ -211,7 +247,7 @@ impl Globals {
         let mut seen: std::collections::HashSet<FileId> = std::collections::HashSet::new();
         let mut pending: Vec<FileId> = units
             .iter()
-            .filter(|(_, unit)| !unit.umd_namespaces.is_empty())
+            .filter(|(_, unit)| !unit.umd_namespaces.is_empty() || !unit.globals.is_empty())
             .map(|(id, _)| *id)
             .collect();
         while let Some(id) = pending.pop() {
@@ -337,6 +373,7 @@ fn run_project(
             tables: RwLock::new(Tables::default()),
             globals: Globals::default(),
             cancel,
+            collect_global_decls: true,
         };
         for (report, unit_exports) in check_files(&project, &providers) {
             if let Some(unit_exports) = unit_exports {
@@ -378,21 +415,90 @@ fn run_project(
     // every global before checking each file. When the first pass found any, check the
     // non-provider files again against all of them. A project with none has nothing a
     // second pass could change, so the first pass is the answer.
+    //
+    // A file's global declarations (script files, `declare global`) need a second pass only
+    // when some file uses a name another file declares: most projects declare none, and
+    // a script file that nothing else reads from would otherwise cost every project a
+    // second pass.
+    let declared_globals: std::collections::HashSet<&str> = first
+        .files
+        .iter()
+        .filter_map(|(_, unit)| unit.as_ref())
+        .flat_map(|unit| unit.globals.iter())
+        .flat_map(|block| {
+            block
+                .export_names
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .chain(block.unmodelled.iter().map(String::as_str))
+        })
+        .collect();
     let needs_second = first.files.iter().any(|(_, unit)| {
         unit.as_ref().is_some_and(|unit| {
             !unit.umd_namespaces.is_empty()
                 || !unit.augmentations.is_empty()
                 || !unit.ambient.is_empty()
+                || unit
+                    .unresolved_names
+                    .iter()
+                    .any(|name| declared_globals.contains(name.as_str()))
         })
     }) && !cancel.is_some_and(CancelToken::is_cancelled);
+    drop(declared_globals);
     let last = if needs_second {
+        // A script lists only its global names in the first pass. The ones whose names some
+        // other file uses are checked again on their own, asked for their declarations: a
+        // script imports nothing, so it needs no other file's exports to do so. The rest keep
+        // their name list, which nothing reads.
+        let used_names: std::collections::HashSet<&str> = first
+            .files
+            .iter()
+            .filter_map(|(_, unit)| unit.as_ref())
+            .flat_map(|unit| unit.unresolved_names.iter().map(String::as_str))
+            .collect();
+        let script_sources: Vec<FileId> = first
+            .files
+            .iter()
+            .filter(|(_, unit)| {
+                unit.as_ref().is_some_and(|unit| {
+                    unit.globals.iter().any(|block| {
+                        block.names_only
+                            && block
+                                .unmodelled
+                                .iter()
+                                .any(|n| used_names.contains(n.as_str()))
+                    })
+                })
+            })
+            .map(|(report, _)| report.file_id)
+            .collect();
+        drop(used_names);
+        let mut rebuilt: Vec<(FileId, UnitExports)> = Vec::new();
+        if !script_sources.is_empty() {
+            let scripts = Project {
+                graph,
+                tables: RwLock::new(Tables::default()),
+                globals: Globals::default(),
+                cancel,
+                collect_global_decls: true,
+            };
+            for (report, unit_exports) in check_files(&scripts, &script_sources) {
+                if let Some(unit_exports) = unit_exports {
+                    rebuilt.push((report.file_id, unit_exports));
+                }
+            }
+        }
+        let rebuilt_ids: std::collections::HashSet<FileId> =
+            rebuilt.iter().map(|(id, _)| *id).collect();
         let mut all: Vec<(FileId, &UnitExports)> = provider_refs.clone();
         all.extend(
             first
                 .files
                 .iter()
+                .filter(|(report, _)| !rebuilt_ids.contains(&report.file_id))
                 .filter_map(|(report, unit)| unit.as_ref().map(|u| (report.file_id, u))),
         );
+        all.extend(rebuilt.iter().map(|(id, unit)| (*id, unit)));
         all.sort_by_key(|(id, _)| *id);
         let mut second_globals = Globals::build(graph, &all);
         second_globals.bare_reportable = bare_specifiers_are_reportable(graph, wildcard_declared);
@@ -448,6 +554,7 @@ fn run_pass(setup: &PassSetup<'_>, globals: Globals) -> UnitResult {
         tables: RwLock::new(Tables::default()),
         globals,
         cancel: setup.cancel,
+        collect_global_decls: false,
     };
     for (id, unit) in setup.provider_units {
         project.publish(*id, unit.clone());
@@ -848,6 +955,10 @@ struct UnitExports {
     ambient: Vec<crate::unit::AmbientExports>,
     augmentations: Vec<crate::unit::AmbientExports>,
     umd_namespaces: Vec<String>,
+    // The names the file uses that nothing in it declares.
+    unresolved_names: Vec<String>,
+    // What the file declares globally (see UnitOutput::globals).
+    globals: Vec<crate::unit::AmbientExports>,
 }
 
 // The imports of one file: its specifiers are resolved through the graph's own edges, so
@@ -1005,6 +1116,23 @@ impl ImportSource for ImportsOf<'_> {
     fn global_namespaces(&self) -> Vec<GlobalNamespace> {
         self.project.globals.global_namespaces.clone()
     }
+
+    fn global_decls(&self, name: &str) -> Vec<DeclKey> {
+        self.project
+            .globals
+            .global_names
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn collect_global_decls(&self) -> bool {
+        self.project.collect_global_decls
+    }
+
+    fn global_name_unmodelled(&self, name: &str) -> bool {
+        self.project.globals.unmodelled_globals.contains(name)
+    }
 }
 
 // The text of a file for the checker: the text discovery already read when it kept one,
@@ -1068,6 +1196,8 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                             ambient: output.ambient,
                             augmentations: output.augmentations,
                             umd_namespaces: output.umd_namespaces,
+                            unresolved_names: output.unresolved_names,
+                            globals: output.globals,
                         });
                         FileOutcome::Checked(output.diagnostics)
                     }
