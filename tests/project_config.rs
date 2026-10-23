@@ -513,7 +513,11 @@ fn type_roots_custom_conditions_and_module_suffixes_hide_a_missing_package_but_r
             r#""customConditions": ["source"]"#,
             true,
         ),
-        ("gate-module-suffixes", r#""moduleSuffixes": [".ios", ""]"#, true),
+        (
+            "gate-module-suffixes",
+            r#""moduleSuffixes": [".ios", ""]"#,
+            true,
+        ),
     ] {
         let fixture = Fixture::new(
             test,
