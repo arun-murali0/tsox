@@ -852,6 +852,17 @@ impl TypeArena {
         self.display_name(type_id).is_some() || self.app_parts(type_id).is_some()
     }
 
+    // Whether `type_id` is a `Promise<T>`: an App of the built-in Promise slot.
+    pub fn is_promise(&self, type_id: TypeId) -> bool {
+        let Some(&promise) = self.builtin_slots.get("Promise") else {
+            return false;
+        };
+        matches!(
+            self.types.get(type_id.0 as usize),
+            Some(Type::App(slot, _, _)) if *slot == promise
+        )
+    }
+
     // The value type V of a `Record<K, V>`: any key reads as V. Record has no real index
     // signature here, so this is the narrower stand-in the member access code uses (see
     // type_annotation::resolve_builtin_generic), and it does not model K at all.

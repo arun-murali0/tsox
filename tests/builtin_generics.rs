@@ -77,9 +77,8 @@ fn promise_return_type_no_longer_blocks_resolution() {
     single_error(&diagnostics, DiagnosticCode::ArgumentNotAssignable);
 }
 
-// Deliberate divergence from tsc; see the fixture's own comment. This
-// checker's Promise<T> has no members at all, so .then() is honestly
-// reported missing rather than silently accepted.
+// A Promise's then, catch and finally exist (loosely typed), and a member it does not
+// have is reported once; see the fixture's own comment.
 #[test]
 fn promise_member_access_correctly_reports_missing_property() {
     let source = include_str!(
