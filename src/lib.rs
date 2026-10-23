@@ -85,6 +85,10 @@ pub use module_resolution::{
 #[cfg(feature = "module-resolution")]
 #[doc(hidden)]
 pub use module_resolution::check_project_bounded;
+
+// Public API, unlike the one above, but `module_resolution` only exists with its feature,
+// so the export needs the same gate or a build without the feature fails to resolve it.
+#[cfg(feature = "module-resolution")]
 pub use module_resolution::check_project_cancellable;
 
 pub use arena::TypeArenaStats;

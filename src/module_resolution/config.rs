@@ -447,7 +447,7 @@ impl ProjectConfig {
             roots.dedup();
             let mut candidates = Vec::new();
             for root in roots {
-                walk(&root, &excludes, &mut candidates);
+                walk(&root, &excludes, &mut candidates, &mut Vec::new());
             }
             for path in candidates {
                 if patterns.iter().any(|p| p.matches_file(&path)) {
@@ -757,11 +757,21 @@ fn glob_segment(pattern: &str, name: &str) -> bool {
 }
 
 // Collects the supported source files under `root`, not entering a directory an exclude
-// pattern covers.
-fn walk(root: &Path, excludes: &[Pattern], out: &mut Vec<PathBuf>) {
+// pattern covers. `above` holds the real path of every directory on the way down to `root`.
+// `fs::metadata` follows symlinks, so a link that points at one of those directories would
+// otherwise be walked again until the OS gives up on the path; a directory already on the
+// way down is skipped instead. A directory reached twice by different routes is still
+// listed twice, which is what tsc does too, and `found.dedup()` in `entry_files` merges
+// the files that come out the same.
+fn walk(root: &Path, excludes: &[Pattern], out: &mut Vec<PathBuf>, above: &mut Vec<PathBuf>) {
+    let real = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if above.contains(&real) {
+        return;
+    }
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
+    above.push(real);
     let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
     paths.sort();
     for path in paths {
@@ -770,7 +780,7 @@ fn walk(root: &Path, excludes: &[Pattern], out: &mut Vec<PathBuf>) {
         }
         let is_dir = fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false);
         if is_dir {
-            walk(&path, excludes, out);
+            walk(&path, excludes, out, above);
         } else if path
             .file_name()
             .and_then(|n| n.to_str())
@@ -779,6 +789,7 @@ fn walk(root: &Path, excludes: &[Pattern], out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+    above.pop();
 }
 
 // When one name exists as `a.ts`, `a.tsx` and `a.d.ts`, TypeScript keeps the first of

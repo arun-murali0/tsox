@@ -336,9 +336,13 @@ impl ModuleGraph {
         // `typeRoots` can bring in `declare module` declarations the checker does not read.
         // `paths` and `baseUrl` can point a package at a file, unless the resolver was given
         // the config and has already followed them. `rootDirs` only applies to relative
-        // specifiers, so it cannot answer a package name.
-        let hides_bare_specifiers =
-            has("typeRoots") || (!self.tsconfig_applied && (has("paths") || has("baseUrl")));
+        // specifiers, so it cannot answer a package name. `customConditions` and
+        // `moduleSuffixes` change which file a package specifier lands on and the resolver
+        // is not given either, so a package they would find must not be reported missing.
+        let hides_bare_specifiers = has("typeRoots")
+            || has("customConditions")
+            || has("moduleSuffixes")
+            || (!self.tsconfig_applied && (has("paths") || has("baseUrl")));
         self.config = Some(ConfigInput {
             files,
             hides_bare_specifiers,

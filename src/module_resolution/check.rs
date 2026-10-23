@@ -433,7 +433,7 @@ fn run_project(
                 .chain(block.unmodelled.iter().map(String::as_str))
         })
         .collect();
-    let needs_second = first.files.iter().any(|(_, unit)| {
+    let wants_second = first.files.iter().any(|(_, unit)| {
         unit.as_ref().is_some_and(|unit| {
             !unit.umd_namespaces.is_empty()
                 || !unit.augmentations.is_empty()
@@ -443,8 +443,14 @@ fn run_project(
                     .iter()
                     .any(|name| declared_globals.contains(name.as_str()))
         })
-    }) && !cancel.is_some_and(CancelToken::is_cancelled);
+    });
     drop(declared_globals);
+    // A token cancelled after the first pass finished leaves every file with a result, so
+    // the per-file failure below would not show it, yet those results were computed without
+    // the globals the second pass exists to supply. Counting the skipped pass as a
+    // cancellation keeps such a run from reading as a clean one.
+    let skipped_second = wants_second && cancel.is_some_and(CancelToken::is_cancelled);
+    let needs_second = wants_second && !skipped_second;
     let last = if needs_second {
         // A script lists only its global names in the first pass. The ones whose names some
         // other file uses are checked again on their own, asked for their declarations: a
@@ -517,9 +523,10 @@ fn run_project(
     files.sort_by_key(|report| report.file_id);
     unsettled.sort();
     unsettled.dedup();
-    let cancelled = files.iter().any(
-        |report| matches!(&report.outcome, FileOutcome::ReadFailed(text) if text == CANCELLED),
-    );
+    let cancelled = skipped_second
+        || files.iter().any(
+            |report| matches!(&report.outcome, FileOutcome::ReadFailed(text) if text == CANCELLED),
+        );
     ProjectReport {
         files,
         unsettled,
@@ -698,8 +705,16 @@ fn bare_specifiers_are_reportable(graph: &ModuleGraph, wildcard_module_declared:
     // Without it, the config can only be searched as text. `paths` and `baseUrl` count only
     // when the resolver did not apply them, and `extends` always counts, because the
     // extended file can hold any of the rest.
+    // `customConditions` and `moduleSuffixes` are never applied by the resolver, so they
+    // count either way.
     let keys: &[&str] = if graph.tsconfig_applied() {
-        &["\"rootDirs\"", "\"extends\"", "\"typeRoots\""]
+        &[
+            "\"rootDirs\"",
+            "\"extends\"",
+            "\"typeRoots\"",
+            "\"customConditions\"",
+            "\"moduleSuffixes\"",
+        ]
     } else {
         &[
             "\"paths\"",
@@ -707,6 +722,8 @@ fn bare_specifiers_are_reportable(graph: &ModuleGraph, wildcard_module_declared:
             "\"rootDirs\"",
             "\"extends\"",
             "\"typeRoots\"",
+            "\"customConditions\"",
+            "\"moduleSuffixes\"",
         ]
     };
     for directory in root.ancestors() {

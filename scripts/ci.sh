@@ -14,6 +14,11 @@ else
   cargo fmt --all
 fi
 
+# The module-resolution feature is on by default, so every other step builds with it. A
+# public item exported without its gate only fails to build here.
+echo "==> cargo check --no-default-features"
+cargo check --locked --no-default-features
+
 # --locked: a stale Cargo.lock fails instead of being rewritten quietly.
 echo "==> cargo test --features module-resolution"
 cargo test --locked --all-features

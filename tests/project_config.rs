@@ -500,13 +500,20 @@ fn a_config_that_only_extends_does_not_hide_a_missing_package() {
 }
 
 #[test]
-fn type_roots_in_an_extended_file_hide_a_missing_package_but_root_dirs_do_not() {
+fn type_roots_custom_conditions_and_module_suffixes_hide_a_missing_package_but_root_dirs_do_not() {
     // `typeRoots` can bring in `declare module` declarations the checker does not read, so
     // it keeps the gate shut. `rootDirs` only merges directories for relative imports; it
     // cannot answer a package name, so a package nothing answers is reported.
     for (test, option, hides) in [
         ("gate-root-dirs", r#""rootDirs": ["src", "gen"]"#, false),
         ("gate-type-roots", r#""typeRoots": ["./types"]"#, true),
+        // The resolver is never given these two, so either could be what finds a package.
+        (
+            "gate-custom-conditions",
+            r#""customConditions": ["source"]"#,
+            true,
+        ),
+        ("gate-module-suffixes", r#""moduleSuffixes": [".ios", ""]"#, true),
     ] {
         let fixture = Fixture::new(
             test,
