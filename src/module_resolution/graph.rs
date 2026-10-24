@@ -599,7 +599,7 @@ fn resolve_request(
     from: &Path,
     request: &ModuleRequest,
 ) -> Option<PathBuf> {
-    let mode = resolve_mode(from, request.kind);
+    let mode = resolve_mode(resolver, from, request.kind);
     if request.is_type {
         return resolver
             .resolve_dts_from_file_as(mode, from, &request.specifier)
@@ -611,13 +611,23 @@ fn resolve_request(
         .ok()
 }
 
-// A package's `exports` are read under `require` for `import x = require()` and for any
-// import in a `.cts` file, and under `import` for everything else.
-fn resolve_mode(from: &Path, kind: ModuleRequestKind) -> ResolveMode {
-    if kind == ModuleRequestKind::ImportEquals || extension(from) == Some("cts") {
-        ResolveMode::Require
-    } else {
-        ResolveMode::Import
+// A package's `exports` are read under `require` for `import x = require()`, for any import
+// in a `.cts`/`.cjs` file, and, when the resolver follows NodeNext, for an import in a
+// `.ts`/`.tsx`/`.js`/`.jsx` file whose nearest package.json is not `"type": "module"`.
+// A dynamic `import()` and everything else is read under `import`.
+fn resolve_mode(resolver: &ModuleResolver, from: &Path, kind: ModuleRequestKind) -> ResolveMode {
+    match kind {
+        ModuleRequestKind::ImportEquals => return ResolveMode::Require,
+        ModuleRequestKind::DynamicImport => return ResolveMode::Import,
+        _ => {}
+    }
+    match extension(from) {
+        Some("cts" | "cjs") => ResolveMode::Require,
+        Some("mts" | "mjs") => ResolveMode::Import,
+        _ if resolver.is_node_next() && !resolver.nearest_package_is_module(from) => {
+            ResolveMode::Require
+        }
+        _ => ResolveMode::Import,
     }
 }
 

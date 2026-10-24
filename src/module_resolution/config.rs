@@ -88,6 +88,19 @@ impl Json {
     }
 }
 
+/// Whether a package.json's text sets `"type": "module"`. Text that does not parse, or has
+/// no such value, is not a module package.
+pub(crate) fn package_json_type_is_module(text: &str) -> bool {
+    parse_jsonc(text)
+        .ok()
+        .and_then(|json| {
+            json.get("type")
+                .and_then(Json::as_str)
+                .map(|t| t == "module")
+        })
+        .unwrap_or(false)
+}
+
 /// Parses JSON that may contain `//` and `/* */` comments, a trailing comma before `]` or
 /// `}`, and a leading byte-order mark, which is what `tsconfig.json` files contain.
 pub fn parse_jsonc(text: &str) -> Result<Json, String> {
@@ -98,6 +111,11 @@ pub fn parse_jsonc(text: &str) -> Result<Json, String> {
         at: 0,
     };
     parser.skip_trivia()?;
+    // A file with nothing in it, or only comments, is an empty object: tsc reads an empty
+    // tsconfig.json as `{}` and selects every file under it.
+    if parser.at == parser.bytes.len() {
+        return Ok(Json::Object(Vec::new()));
+    }
     let value = parser.value(0)?;
     parser.skip_trivia()?;
     if parser.at != parser.bytes.len() {
@@ -406,6 +424,20 @@ impl ProjectConfig {
         &self.sources
     }
 
+    /// Whether the effective configuration asks for NodeNext rules: `moduleResolution` is
+    /// `node16` or `nodenext`, or it is unset and `module` is. Compared without case.
+    pub fn uses_node_next(&self) -> bool {
+        let is_node = |name: &str| {
+            self.compiler_option(name)
+                .and_then(Json::as_str)
+                .map(|v| matches!(v.to_ascii_lowercase().as_str(), "node16" | "nodenext"))
+        };
+        match is_node("moduleResolution") {
+            Some(answer) => answer,
+            None => is_node("module").unwrap_or(false),
+        }
+    }
+
     /// A compiler option as the effective configuration sets it, after `extends`.
     pub fn compiler_option(&self, name: &str) -> Option<&Json> {
         self.compiler_options.get(name)
@@ -603,23 +635,37 @@ struct Pattern {
 impl Pattern {
     fn new(base: &Path, spec: &str, is_include: bool) -> Self {
         let spec = spec.replace('\\', "/");
-        let mut segments: Vec<String> = spec
-            .split('/')
-            .filter(|s| !s.is_empty() && *s != ".")
-            .map(str::to_owned)
-            .collect();
         // An absolute spec keeps the root as its base.
         let mut base = base.to_path_buf();
         if spec.starts_with('/') {
             base = PathBuf::from("/");
         }
-        // `..` leaves the base directory, so it moves the base and is not matched.
-        while segments.first().is_some_and(|s| s == "..") {
-            segments.remove(0);
-            base.pop();
+        // `.` names the directory it is in and `..` leaves one: `.` is dropped, and `..`
+        // removes the literal segment before it or, with none, moves the base up. A `..`
+        // after a wildcard cannot be resolved by name, so it stays and matches nothing.
+        let mut segments: Vec<String> = Vec::new();
+        for part in spec.split('/').filter(|s| !s.is_empty() && *s != ".") {
+            if part == ".." {
+                match segments.last() {
+                    None => {
+                        base.pop();
+                    }
+                    Some(last) if !has_wildcard(last) && last != ".." => {
+                        segments.pop();
+                    }
+                    Some(_) => segments.push(part.to_owned()),
+                }
+            } else {
+                segments.push(part.to_owned());
+            }
         }
         if is_include {
-            if let Some(last) = segments.last() {
+            if segments.is_empty() {
+                // `.`, `./` and `..` name a whole directory, so everything under it is
+                // selected, the way a directory name does below.
+                segments.push("**".to_owned());
+                segments.push("*".to_owned());
+            } else if let Some(last) = segments.last() {
                 if last == "**" {
                     // A trailing `**` means everything under that directory.
                     segments.push("*".to_owned());
@@ -861,10 +907,26 @@ mod tests {
         );
     }
 
+    // tsc reads a tsconfig.json with nothing in it, or only comments, as `{}`.
+    #[test]
+    fn jsonc_with_nothing_in_it_is_an_empty_object() {
+        for empty in [
+            "",
+            "  \n",
+            "// only a comment",
+            "/* a */ // b\n",
+            "\u{feff}",
+        ] {
+            assert!(
+                matches!(parse_jsonc(empty), Ok(Json::Object(entries)) if entries.is_empty()),
+                "{empty:?}"
+            );
+        }
+    }
+
     #[test]
     fn jsonc_rejects_bad_input_with_a_line_number() {
         for bad in [
-            "",
             "{",
             "{\"a\" 1}",
             "[1 2]",

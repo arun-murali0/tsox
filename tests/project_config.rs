@@ -67,7 +67,9 @@ impl Fixture {
     fn graph(&self, entries: &[&str]) -> ModuleGraph {
         let config = self.config();
         let paths: Vec<PathBuf> = entries.iter().map(|e| self.path(e)).collect();
-        ModuleGraph::build(&paths, &ModuleResolver::with_tsconfig(config.config_file()))
+        let resolver = ModuleResolver::with_tsconfig(config.config_file())
+            .with_node_next(config.uses_node_next());
+        ModuleGraph::build(&paths, &resolver)
             .expect("the project builds")
             .with_root(&self.root)
             .with_config(&config)
@@ -293,6 +295,93 @@ fn an_include_naming_a_directory_selects_what_is_under_it() {
         ],
     );
     assert_eq!(fixture.selected(), names(&["src/a.ts", "src/deep/b.ts"]));
+}
+
+// Problem: `.` and `..` were dropped from an include before the last segment was looked at,
+// which left no segments at all, so `"include": ["."]` selected nothing and a project that
+// only said "everything here" was checked as empty.
+// Picked: a spec that resolves to a directory itself selects everything under it, as a
+// directory name does, and `..` inside a spec removes the segment before it.
+// Problem: an empty tsconfig.json (or one holding only comments) was a parse error, so the
+// command line fell back to checking everything and, once that fallback was removed, would
+// have refused a project that tsc accepts.
+// Picked: a config with nothing in it is `{}`, as in tsc.
+#[test]
+fn an_empty_config_or_one_with_only_comments_selects_everything() {
+    for text in ["", "\n", "// nothing yet\n"] {
+        let fixture = Fixture::new(
+            "empty-config",
+            &[("tsconfig.json", text), ("a.ts", ""), ("src/b.ts", "")],
+        );
+        assert_eq!(fixture.selected(), names(&["a.ts", "src/b.ts"]), "{text:?}");
+    }
+}
+
+#[test]
+fn an_include_of_dot_selects_the_whole_directory() {
+    for spec in [".", "./", "./."] {
+        let fixture = Fixture::new(
+            "include-dot",
+            &[
+                ("tsconfig.json", &format!(r#"{{ "include": ["{spec}"] }}"#)),
+                ("a.ts", ""),
+                ("src/b.ts", ""),
+                ("node_modules/p/c.ts", ""),
+            ],
+        );
+        assert_eq!(
+            fixture.selected(),
+            names(&["a.ts", "src/b.ts"]),
+            "include {spec}"
+        );
+    }
+}
+
+#[test]
+fn dot_dot_inside_an_include_removes_the_segment_before_it() {
+    let fixture = Fixture::new(
+        "include-dot-dot-inside",
+        &[
+            ("tsconfig.json", r#"{ "include": ["src/.."] }"#),
+            ("a.ts", ""),
+            ("src/b.ts", ""),
+        ],
+    );
+    assert_eq!(fixture.selected(), names(&["a.ts", "src/b.ts"]));
+
+    let fixture = Fixture::new(
+        "include-dot-dot-then-name",
+        &[
+            ("tsconfig.json", r#"{ "include": ["src/../lib"] }"#),
+            ("src/b.ts", ""),
+            ("lib/c.ts", ""),
+        ],
+    );
+    assert_eq!(fixture.selected(), names(&["lib/c.ts"]));
+}
+
+#[test]
+fn an_include_of_dot_dot_selects_the_parent_of_the_config() {
+    let fixture = Fixture::new(
+        "include-parent",
+        &[
+            ("app/tsconfig.json", r#"{ "include": [".."] }"#),
+            ("app/a.ts", ""),
+            ("shared/b.ts", ""),
+        ],
+    );
+    let config = ProjectConfig::load(fixture.path("app/tsconfig.json")).expect("loads");
+    let selected: Vec<String> = config
+        .entry_files()
+        .iter()
+        .map(|p| {
+            p.strip_prefix(&fixture.root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    assert_eq!(selected, names(&["app/a.ts", "shared/b.ts"]));
 }
 
 #[test]
@@ -637,6 +726,146 @@ fn an_import_in_an_mts_file_reads_the_import_condition() {
     let fixture = package_project("exports-mts", &[("a.mts", "import { kind } from 'pkg';\n")]);
     let graph = fixture.graph(&["a.mts"]);
     assert_eq!(target_of(&graph, &fixture, "a.mts"), "esm.d.ts");
+}
+
+// ---- NodeNext: a `.ts` file's format comes from the nearest package.json `type`
+
+const NODE_NEXT: &str = r#"{ "compilerOptions": { "module": "nodenext" } }"#;
+
+fn package_project_with(test: &str, config: &str, extra: &[(&str, &str)]) -> Fixture {
+    let mut files: Vec<(&str, &str)> = PACKAGE.to_vec();
+    files.push(("tsconfig.json", config));
+    files.extend_from_slice(extra);
+    Fixture::new(test, &files)
+}
+
+fn uses_node_next(config: &str) -> bool {
+    Fixture::new("uses-node-next", &[("tsconfig.json", config)])
+        .config()
+        .uses_node_next()
+}
+
+#[test]
+fn node16_and_nodenext_ask_for_node_next_rules_whatever_the_case() {
+    for config in [
+        r#"{ "compilerOptions": { "moduleResolution": "NodeNext" } }"#,
+        r#"{ "compilerOptions": { "moduleResolution": "node16" } }"#,
+        r#"{ "compilerOptions": { "module": "Node16" } }"#,
+        r#"{ "compilerOptions": { "module": "nodenext", "moduleResolution": "nodenext" } }"#,
+    ] {
+        assert!(uses_node_next(config), "{config}");
+    }
+}
+
+#[test]
+fn bundler_and_unset_options_do_not_ask_for_node_next_rules() {
+    for config in [
+        "{}",
+        r#"{ "compilerOptions": { "moduleResolution": "bundler" } }"#,
+        r#"{ "compilerOptions": { "module": "esnext", "moduleResolution": "node" } }"#,
+        // `moduleResolution` wins over `module` when both are set.
+        r#"{ "compilerOptions": { "module": "nodenext", "moduleResolution": "bundler" } }"#,
+    ] {
+        assert!(!uses_node_next(config), "{config}");
+    }
+}
+
+#[test]
+fn nodenext_reads_require_for_a_ts_file_in_a_package_without_a_type() {
+    let fixture = package_project_with(
+        "nn-no-type",
+        NODE_NEXT,
+        &[
+            ("package.json", "{}"),
+            ("a.ts", "import { kind } from 'pkg';\n"),
+        ],
+    );
+    let graph = fixture.graph(&["a.ts"]);
+    assert_eq!(target_of(&graph, &fixture, "a.ts"), "cjs.d.ts");
+}
+
+#[test]
+fn nodenext_reads_import_for_a_ts_file_in_a_module_package() {
+    let fixture = package_project_with(
+        "nn-module",
+        NODE_NEXT,
+        &[
+            ("package.json", r#"{ "type": "module" }"#),
+            ("a.ts", "import { kind } from 'pkg';\n"),
+        ],
+    );
+    let graph = fixture.graph(&["a.ts"]);
+    assert_eq!(target_of(&graph, &fixture, "a.ts"), "esm.d.ts");
+}
+
+#[test]
+fn the_nearest_package_json_decides_not_the_root_one() {
+    let fixture = package_project_with(
+        "nn-nearest",
+        NODE_NEXT,
+        &[
+            ("package.json", r#"{ "type": "module" }"#),
+            ("legacy/package.json", r#"{ "type": "commonjs" }"#),
+            ("legacy/deep/a.ts", "import { kind } from 'pkg';\n"),
+            ("b.ts", "import { kind } from 'pkg';\n"),
+        ],
+    );
+    let graph = fixture.graph(&["legacy/deep/a.ts", "b.ts"]);
+    assert_eq!(target_of(&graph, &fixture, "legacy/deep/a.ts"), "cjs.d.ts");
+    assert_eq!(target_of(&graph, &fixture, "b.ts"), "esm.d.ts");
+}
+
+#[test]
+fn nodenext_keeps_the_extension_rule_over_the_package_type() {
+    let fixture = package_project_with(
+        "nn-extension",
+        NODE_NEXT,
+        &[
+            ("package.json", "{}"),
+            ("a.mts", "import { kind } from 'pkg';\n"),
+        ],
+    );
+    let graph = fixture.graph(&["a.mts"]);
+    assert_eq!(target_of(&graph, &fixture, "a.mts"), "esm.d.ts");
+
+    let fixture = package_project_with(
+        "nn-extension-cts",
+        NODE_NEXT,
+        &[
+            ("package.json", r#"{ "type": "module" }"#),
+            ("a.cts", "import { kind } from 'pkg';\n"),
+        ],
+    );
+    let graph = fixture.graph(&["a.cts"]);
+    assert_eq!(target_of(&graph, &fixture, "a.cts"), "cjs.d.ts");
+}
+
+#[test]
+fn a_dynamic_import_reads_import_even_in_a_commonjs_package() {
+    let fixture = package_project_with(
+        "nn-dynamic",
+        NODE_NEXT,
+        &[
+            ("package.json", "{}"),
+            ("a.ts", "export const m = import('pkg');\n"),
+        ],
+    );
+    let graph = fixture.graph(&["a.ts"]);
+    assert_eq!(target_of(&graph, &fixture, "a.ts"), "esm.d.ts");
+}
+
+#[test]
+fn without_nodenext_the_package_type_is_ignored() {
+    let fixture = package_project_with(
+        "bundler-ignores-type",
+        r#"{ "compilerOptions": { "moduleResolution": "bundler" } }"#,
+        &[
+            ("package.json", "{}"),
+            ("a.ts", "import { kind } from 'pkg';\n"),
+        ],
+    );
+    let graph = fixture.graph(&["a.ts"]);
+    assert_eq!(target_of(&graph, &fixture, "a.ts"), "esm.d.ts");
 }
 
 // ---- `rootDirs`

@@ -20,9 +20,11 @@ use oxc_span::{GetSpan, Span};
 
 use crate::diagnostic_messages::messages;
 use oxc_ast::ast::{
-    ImportDeclaration, ImportDeclarationSpecifier, ImportOrExportKind, ModuleExportName, Program,
-    Statement, TSModuleReference,
+    ImportDeclaration, ImportDeclarationSpecifier, ImportExpression, ImportOrExportKind,
+    ModuleExportName, Program, Statement, TSImportType, TSModuleReference, TSTypeQuery,
+    TSTypeQueryExprName,
 };
+use oxc_ast_visit::{Visit, walk};
 
 use crate::keys::{DeclKey, DeclKind};
 use crate::portable::{DeclProvider, GlobalNamespace, ImportSource, ModuleExports};
@@ -39,6 +41,7 @@ pub(super) fn bind_imports<'ast>(
         return;
     };
     bind_project_globals(program, scoping, ctx, source);
+    bind_import_types(program, ctx, source);
     // UMD aliases are global names for script consumers. An external module is isolated
     // unless the compiler option allowUmdGlobalAccess is enabled (not modelled here), so
     // do not inject those globals into files that already have import/export syntax.
@@ -408,12 +411,26 @@ fn bind_namespace_object<'ast>(
             bind_key_as(ctx, source, key, &qualified, None, false);
         }
     }
-    if source.module_exports(specifier) != (ModuleExports::Known { complete: true }) {
+    let Some(object) = module_object(ctx, source, specifier) else {
         return;
-    }
+    };
     let Some(symbol_id) = local.symbol_id.get() else {
         return;
     };
+    ctx.symbols.declare(symbol_id, object);
+}
+
+// The object `import * as ns` and `typeof import("x")` stand for: its properties are the
+// module's value exports. None unless the module's export list is known in full.
+fn module_object<'ast>(
+    ctx: &mut CheckContext<'ast, '_>,
+    source: &dyn ImportSource,
+    specifier: &str,
+) -> Option<crate::arena::TypeId> {
+    let provider: &dyn DeclProvider = source;
+    if source.module_exports(specifier) != (ModuleExports::Known { complete: true }) {
+        return None;
+    }
     let mut properties: Vec<PropertyEntry> = Vec::new();
     for (name, key) in source.export_all(specifier) {
         let Some(decl) = provider.decl(key) else {
@@ -442,8 +459,80 @@ fn bind_namespace_object<'ast>(
             is_method: false,
         });
     }
-    let object = ctx.arena.alloc(Type::Object(ObjectType::new(properties)));
-    ctx.symbols.declare(symbol_id, object);
+    Some(ctx.arena.alloc(Type::Object(ObjectType::new(properties))))
+}
+
+// What the file writes as `typeof import("x")`, `import("x").Name` and `import("x")`.
+#[derive(Default)]
+struct ImportTypeUses {
+    // Specifiers whose module object is needed.
+    modules: std::collections::BTreeSet<String>,
+    // (specifier, dotted qualifier) of an `import("x").A.B` type.
+    names: std::collections::BTreeSet<(String, String)>,
+}
+
+impl<'a> Visit<'a> for ImportTypeUses {
+    fn visit_ts_type_query(&mut self, query: &TSTypeQuery<'a>) {
+        if let TSTypeQueryExprName::TSImportType(import) = &query.expr_name
+            && import.qualifier.is_none()
+        {
+            self.modules.insert(import.source.value.to_string());
+        }
+        walk::walk_ts_type_query(self, query);
+    }
+
+    fn visit_ts_import_type(&mut self, import: &TSImportType<'a>) {
+        if let Some(qualifier) = &import.qualifier
+            && let Some(text) = crate::type_annotation::import_qualifier_text(qualifier)
+        {
+            self.names.insert((import.source.value.to_string(), text));
+        }
+        walk::walk_ts_import_type(self, import);
+    }
+
+    fn visit_import_expression(&mut self, import: &ImportExpression<'a>) {
+        if let Some(specifier) = super::expressions::import_specifier_text(&import.source) {
+            self.modules.insert(specifier);
+        }
+        walk::walk_import_expression(self, import);
+    }
+}
+
+// Problem: `typeof import("x")`, `import("x").Name` and `import("x")` were not read, so the
+// annotations stayed unresolved and a dynamic import was an unchecked expression.
+// Picked: bind each one before the body is checked, under a name made from the specifier
+// (see type_annotation::typeof_import_name), so the annotation reader only looks it up. Only
+// what the file writes is bound, so a file with no import types pays nothing.
+// Cost: a module object is built only from a module whose exports are known in full, as for
+// `import * as ns`; a type argument or a qualified `typeof import("x").y` is not read.
+fn bind_import_types<'ast>(
+    program: &'ast Program<'ast>,
+    ctx: &mut CheckContext<'ast, '_>,
+    source: &dyn ImportSource,
+) {
+    let mut uses = ImportTypeUses::default();
+    uses.visit_program(program);
+    for specifier in &uses.modules {
+        if let Some(object) = module_object(ctx, source, specifier) {
+            let name = crate::type_annotation::typeof_import_name(specifier);
+            ctx.namespace.insert_imported(&name, object, Vec::new());
+        }
+    }
+    for (specifier, qualifier) in &uses.names {
+        let head = qualifier.split('.').next().unwrap_or(qualifier);
+        let prefix = format!("{head}.");
+        for key in source.export_keys(specifier, head) {
+            let name = format!("import({specifier:?}).{head}");
+            bind_key_as(ctx, source, key, &name, None, true);
+        }
+        // Types written inside `namespace head { ... }`, for `import("x").head.Inner`.
+        for (name, key) in source.export_all(specifier) {
+            if let Some(rest) = name.strip_prefix(&prefix) {
+                let qualified = format!("import({specifier:?}).{head}.{rest}");
+                bind_key_as(ctx, source, key, &qualified, None, true);
+            }
+        }
+    }
 }
 
 // Binds `local` to every declaration the module exports under `imported`. A name that

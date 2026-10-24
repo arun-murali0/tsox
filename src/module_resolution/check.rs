@@ -8,7 +8,7 @@ use crate::bridge::IncompleteReason;
 use crate::diagnostics::Diagnostic;
 use crate::error::CheckerError;
 use crate::fxhash::FxHashMap;
-use crate::keys::DeclKey;
+use crate::keys::{DeclKey, DeclKind};
 use crate::portable::{DeclProvider, GlobalNamespace, ImportSource, ModuleExports, PortableDecl};
 use crate::types::FileId;
 use crate::unit::{CancelToken, UnitContext, UnitError, Worker};
@@ -997,19 +997,73 @@ impl ImportsOf<'_> {
         reads
     }
 
-    fn target(&self, specifier: &str) -> Option<FileId> {
-        self.project
-            .graph
-            .edges(self.from)
+    // Problem: a dynamic `import("x")` does not order units (lazy imports may form cycles), so
+    // a unit that only imports `x` dynamically does not wait for it. Reading its exports then
+    // gave a different answer depending on whether `x` happened to have finished: typed in
+    // one run, unknown in the next.
+    // Picked: the edge a specifier is read through is a waited-for one when the file has any
+    // (a static import, an `import type`, an import type); a dynamic-only edge is not read.
+    // Cost: `import("./lazy")` of a module the file does not also import stays `Promise<any>`.
+    fn edge_for(&self, specifier: &str) -> Option<&super::ModuleEdge> {
+        let edges = self.project.graph.edges(self.from);
+        edges
             .iter()
-            .find(|edge| edge.specifier == specifier)
-            .and_then(|edge| edge.target)
+            .find(|edge| {
+                edge.specifier == specifier && edge.kind != super::ModuleRequestKind::DynamicImport
+            })
+            .or_else(|| edges.iter().find(|edge| edge.specifier == specifier))
+    }
+
+    fn target(&self, specifier: &str) -> Option<FileId> {
+        let edge = self.edge_for(specifier)?;
+        if edge.kind == super::ModuleRequestKind::DynamicImport {
+            return None;
+        }
+        edge.target
+    }
+
+    // Problem: an augmentation adds members to an interface or class the module declares, so
+    // on its own it is only part of that declaration. When the module's own exports are not
+    // known in full (a package file with no name and version to key it by), the base
+    // declaration is missing and the augmentation alone stood in for the whole type: every
+    // member the module really declares was then reported as not existing.
+    // Picked: an augmentation of an interface or class is used only when the module's list
+    // has that name already, or is known in full. A function or constant it adds stands alone.
+    // Cost: an augmented interface of a module we cannot read stays unresolved, silently.
+    fn augmentation_keys(
+        &self,
+        target: FileId,
+        base: &[(String, DeclKey)],
+    ) -> Vec<(String, DeclKey)> {
+        let Some((extra, _)) = self.project.globals.augmentations.get(&target) else {
+            return Vec::new();
+        };
+        let base_complete = self
+            .project
+            .read()
+            .complete
+            .get(&target)
+            .copied()
+            .unwrap_or(false);
+        extra
+            .iter()
+            .filter(|(name, key)| {
+                if base_complete || base.iter().any(|(existing, _)| existing == name) {
+                    return true;
+                }
+                let merges =
+                    self.project.globals.decls.get(key).is_some_and(|decl| {
+                        matches!(decl.kind, DeclKind::Interface | DeclKind::Class)
+                    });
+                !merges
+            })
+            .cloned()
+            .collect()
     }
 
     fn append_augmentations(&self, target: FileId, names: &mut Vec<(String, DeclKey)>) {
-        if let Some((extra, _)) = self.project.globals.augmentations.get(&target) {
-            names.extend(extra.iter().cloned());
-        }
+        let extra = self.augmentation_keys(target, names);
+        names.extend(extra);
         names.sort();
         names.dedup();
     }
@@ -1065,15 +1119,10 @@ impl ImportSource for ImportsOf<'_> {
                 complete: *complete,
             };
         }
-        let Some(edge) = self
-            .project
-            .graph
-            .edges(self.from)
-            .iter()
-            .find(|edge| edge.specifier == specifier)
-        else {
+        let Some(edge) = self.edge_for(specifier) else {
             return ModuleExports::Unknown;
         };
+        let dynamic_only = edge.kind == super::ModuleRequestKind::DynamicImport;
         let Some(target) = edge.target else {
             // A relative specifier no file answers is missing. A package specifier is only
             // known to be missing when the project's configuration cannot be hiding it.
@@ -1084,6 +1133,9 @@ impl ImportSource for ImportsOf<'_> {
                 ModuleExports::Unknown
             };
         };
+        if dynamic_only {
+            return ModuleExports::Unknown;
+        }
         match self.project.read().complete.get(&target) {
             Some(complete) => ModuleExports::Known {
                 complete: *complete
@@ -1117,14 +1169,14 @@ impl ImportSource for ImportsOf<'_> {
             .filter(|(exported, _)| exported == name)
             .map(|(_, key)| *key)
             .collect::<Vec<_>>();
-        if let Some((extra, _)) = self.project.globals.augmentations.get(&target) {
-            names.extend(
-                extra
-                    .iter()
-                    .filter(|(exported, _)| exported == name)
-                    .map(|(_, key)| *key),
-            );
-        }
+        let base: Vec<(String, DeclKey)> =
+            names.iter().map(|key| (name.to_owned(), *key)).collect();
+        names.extend(
+            self.augmentation_keys(target, &base)
+                .into_iter()
+                .filter(|(exported, _)| exported == name)
+                .map(|(_, key)| key),
+        );
         names.sort();
         names.dedup();
         names

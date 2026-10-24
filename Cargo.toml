@@ -130,6 +130,9 @@ mimalloc = ["dep:mimalloc"]
 # previous "s" traded exactly that inlining for size, which was right for the wasm
 # bundle but skewed every native measurement.
 [profile.release]
+# Keep unwinding. The project scheduler (module_resolution/schedule.rs) catches a panic in
+# one unit so the files that import it still run, and an abort here would turn that one bad
+# file into a dead process with no report.
 # panic = "abort"
 opt-level = 3
 lto = "fat"

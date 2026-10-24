@@ -18,6 +18,7 @@ mod namespace;
 #[allow(dead_code)]
 mod portable;
 mod project;
+#[cfg(feature = "module-resolution")]
 mod scc;
 #[cfg(feature = "scratchpad")]
 mod scratchpad;

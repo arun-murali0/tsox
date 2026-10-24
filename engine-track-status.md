@@ -28,8 +28,8 @@ so the type system can evolve without repeatedly changing the project driver.
 | E2: Graph shape and edge kinds | Complete | Typed dynamic-import tracking (deferred to E6); `ModuleTopology` decision (after E4) | `only_a_dynamic_import_is_kept_out_of_the_ordering_and_is_listed_apart`; dependents lists for dynamic imports |
 | E3: SCC as one unit | Complete | The cross-file circular-return case (needs on-demand inference, later design) | `tests/scc_contract.rs`, `tests/circular_returns.rs` |
 | E4: Scheduler and pipeline | Complete for its exit condition (phases 1, 2 and 3a done); the single parse (3b) is deferred to E7 | None for E4. Whether to parse once is decided with the E7 ownership design (section 3, E4, and section 8) | `tests/scheduler.rs` on random graphs; `random_projects_give_the_same_report_whatever_the_timing` for the real checker; `tests/source_once.rs` for read-once |
-| E5: Project configuration and resolution | Complete for its exit condition on the supported layouts; `typeRoots`/`types`, conditions driven by `moduleResolution`, and automatic graph updates on a config change are open | See "Not done" in section 3, E5 | `tests/tsconfig_resolution.rs`, `tests/project_config.rs`, `tests/cli_project.rs` |
-| E6: Library and ambient declarations | Not started | Shared provider, `declare global`, module augmentation | Merge fixtures that give the same result in any file order |
+| E5: Project configuration and resolution | Complete for its exit condition, including NodeNext module format from `package.json` `type`; `typeRoots`/`types` (E6), the checker reading compiler options, and automatic graph updates on a config change (E7) are open | See "Not done" in section 3, E5 | `tests/tsconfig_resolution.rs`, `tests/project_config.rs`, `tests/cli_project.rs` |
+| E6: Library and ambient declarations | In progress: slice 1 (project globals and `declare global`) done; slice 2 partly done (array and Promise members, loosely typed); slice 3 (module augmentation) done for interfaces, added exports and order independence; real library shapes through the provider and typed `import()` not started | Library shapes through the provider (rest of slice 2, needs generic inference); class-plus-interface augmentation; typed `import()`/`typeof import()` (slice 4); `typeRoots`/`types` wiring (slice 5) | `tests/project_globals.rs` (slice 1), `tests/library_members.rs` (slice 2), `tests/module_augmentation.rs` (slice 3) |
 | E7: Query layer | Prototype only | Salsa integration and verified invalidation | One test per row of the LLD invalidation matrix |
 | E8: Limits, safety, measurement | Partially implemented | Budgets, recursion protection, memory checks, metrics | Adversarial-input suite; metrics from LLD 9.5 |
 
@@ -294,19 +294,27 @@ and to resolution.
   missing package, plus `paths` or `baseUrl` when the resolver was not given the config.
   `rootDirs` does not, because it only merges directories for relative imports. A missing
   package that nothing answers is now a TS2307 even in a project with path aliases.
+- **NodeNext follows the nearest `package.json`.** When `moduleResolution` is `node16` or
+  `nodenext` (or it is unset and `module` is), `ProjectConfig::uses_node_next` is true and
+  the CLI builds the resolver with `with_node_next`. Then a `.ts`, `.tsx`, `.js` or `.jsx`
+  file reads the `require` condition unless the nearest `package.json` says
+  `"type": "module"`. `.mts`/`.mjs` and `.cts`/`.cjs` keep their extension rule, a dynamic
+  `import()` always reads `import`, and `bundler`, `node` and unset options ignore the
+  package type. The nearest-package lookup is cached per directory.
 - **CLI.** `--project` loads the config, checks the files it selects, uses its directory as the
   root, accepts a bare file name such as `tsconfig.json`, and falls back to every file with a
   warning when the config cannot be read.
 
 *(verified on 2026-10-21: `tests/tsconfig_resolution.rs`, `tests/project_config.rs` and
-`tests/cli_project.rs` pass with the rest of the suite.)*
+`tests/cli_project.rs` pass with the rest of the suite; the NodeNext tests are in
+`tests/project_config.rs`.)*
 
 **Not done.**
 - `typeRoots` and `types` are not applied, so a config that sets `typeRoots` still keeps the gate
   shut. Both feed ambient declarations, which E6 provides.
-- `exports` conditions do not read `moduleResolution` or `module`, or the nearest `package.json`
-  `type`. They follow only the importing file's extension and kind of import. A project that
-  relies on NodeNext behaviour for a `.ts` file in a CommonJS package is not covered.
+- `exports` conditions read `moduleResolution`/`module` only to switch NodeNext on. Other
+  `moduleResolution` effects are not modelled: the `node10`/`classic` rule sets, extension
+  rules for relative imports under NodeNext, and `customConditions`.
 - A config change is detected (`config_changed`) but does not update the graph by itself: the
   caller rebuilds. Automatic updates belong to E7.
 - The compiler options the checker needs (strictness and others) are kept as written but the
@@ -354,6 +362,61 @@ represented as usable types.
 **Exit condition:** Library and ambient declarations merge consistently, required
 dynamic-import forms resolve to correct types, and results do not depend on file processing
 order.
+
+**Progress (slice 1 done):** a top-level declaration of a script file and a member of
+`declare global { }` is now visible to every file of the project, with real types. Names are
+published per file; the project table is built in path order, so the result does not depend
+on the order files are listed or checked in (tested by reversing the entry list); a name
+declared in several files merges like a module augmentation; a file binds only the globals it
+leaves unresolved; a name the library provides is left alone until slice 2. A script lists
+only its names in the first pass and is checked again for its declarations only when another
+file uses one. Evidence: the repro of a script plus a `declare global` block used from a
+third file goes from 5 false TS2304 errors to 0 and matches `tsc`; wrong uses are still
+reported with `tsc`'s codes; 1279 tests pass; the stride-1 corpus abort test passes.
+Corpus as one project against `before-e6`: diagnostics 25,670 to 25,246, failures unchanged at
+1,103. **Not measured:** whether those 424 fewer diagnostics are all false errors; compare
+with `tsc` before relying on it. **Known cost:** a project whose scripts use each other's
+names gets a full second pass (corpus: check time about +57%, peak memory 26.7 to 79.5 MB);
+narrowing it to the files that use a global and their importers is open. **Known limits:** a
+file that declares a global itself does not see other files' declarations of the same name;
+a global that refers to another global is typed from the first pass; `.d.ts` providers are
+checked before globals exist; global namespaces are skipped; merged interfaces print as an
+anonymous shape.
+
+**Progress (slice 2, partly done):** an array has its library methods and a Promise has `then`,
+`catch` and `finally`. Before, an array only had `length`, so `arr.map(f)`, `arr.push(x)` or
+`p.then(f)` was a false "Property does not exist". A method that only moves or reports
+elements is typed from the element type (`push`, `slice`, `indexOf`, `join`, `pop`, ...), so
+wrong uses are still rejected with `tsc`'s codes; a method whose real signature needs generic
+inference (`map`, `reduce`, `flatMap`, `find`, `filter`, `flat`, and the Promise chain) takes
+callbacks and returns `any`, so it loses errors and invents none. Evidence: 6 tests in
+`tests/library_members.rs`; 1285 tests pass; the stride-1 corpus abort test passes; on zustand
+(0 errors under `tsc` and `tsgo`) tsox errors fall 104 to 94 and TS2339 18 to 8, all removed
+errors being false; corpus diagnostics 25,246 to 24,761 with failures unchanged and no change in
+allocations or peak memory. **Not done:** the slice's stated goal, loading a library subset
+through the provider so `Array`, `Promise` and `Record` have real generic shapes: it needs the
+generic inference the checker does not have yet, and loose typing is the safe stand-in until
+then. `Record` mismatches and `Promise<T>` assignability are still not checked, a Promise chain
+after the first call is `any`, and `ReadonlyArray`, tuples, `Map` and `Set` members are not
+added. The remaining zustand TS2339 are generic-constraint members (`S extends ...`) and a
+union with a Promise, not library shapes.
+
+**Progress (slice 3, done for what is listed):** a `declare module "x" { ... }` in a module adds
+to what `x` exports, and this was already in place; slice 3 tests it and closes one hole. Tests
+(`tests/module_augmentation.rs`, 6) check: two files augmenting one interface both contribute and
+wrong uses get `tsc`'s codes; the result is the same when the file list is reversed; an
+augmentation can add a function, a constant or a new interface; and a package keeps its own
+members next to an augmentation. The hole: when the augmented module's own exports are not known
+in full (a package file whose `package.json` has no `name` and `version`, so it has no module
+key), an augmentation of an interface or class used to stand in for the whole declaration, and
+every member the package really declares was reported as missing (a false TS2353). Now such an
+augmentation is used only when the module's list already has the name or is known in full; the
+name stays unresolved, silently. A function or constant it adds stands alone. Evidence: 1291
+tests pass; the stride-1 corpus abort test passes; the regression test fails without the fix.
+**Not done:** an augmentation that merges an interface into a class (the class is reported as a
+shape not yet checked, and members added this way are not checked); augmenting a namespace or
+an enum; an augmentation of a module that is only declared ambiently (`declare module "x"` in a
+script), which is a provider and not an augmentation.
 
 ### E7: Integrate the query layer only after the unit boundary is stable
 

@@ -206,6 +206,29 @@ pub fn scan_module_requests(source: &str, file_name: &str) -> ModuleScan {
     };
     dynamic_imports.visit_program(&parsed.program);
     requests.extend(dynamic_imports.requests);
+    // An import type, `typeof import("x")` or `import("x").Name`, needs the exports of `x` and
+    // binds nothing locally. It is a type-only edge, so unlike a dynamic `import("x")` it
+    // orders the file after `x`, which is what lets the file read what `x` exports.
+    struct ImportTypeWalker {
+        requests: Vec<ModuleRequest>,
+    }
+    impl<'a> Visit<'a> for ImportTypeWalker {
+        fn visit_ts_import_type(&mut self, import: &oxc_ast::ast::TSImportType<'a>) {
+            self.requests.push(ModuleRequest {
+                specifier: import.source.value.as_str().to_owned(),
+                is_type: true,
+                is_import: false,
+                kind: ModuleRequestKind::TypeImport,
+                start: import.span.start,
+            });
+            walk::walk_ts_import_type(self, import);
+        }
+    }
+    let mut import_types = ImportTypeWalker {
+        requests: Vec::new(),
+    };
+    import_types.visit_program(&parsed.program);
+    requests.extend(import_types.requests);
     // The parser keeps requests in a hash map keyed by specifier, whose iteration order
     // changes from run to run. Source order makes the graph reproducible.
     requests.sort_by_key(|request| request.start);

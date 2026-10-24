@@ -1,6 +1,6 @@
 use oxc_ast::ast::{
     BindingPattern, FormalParameters, PropertyKey, TSMethodSignature, TSMethodSignatureKind,
-    TSSignature, TSType, TSTypeAnnotation, TSTypeName,
+    TSSignature, TSType, TSTypeAnnotation, TSTypeName, TSTypeQueryExprName,
 };
 use oxc_span::GetSpan;
 
@@ -147,6 +147,36 @@ pub fn resolve_ts_type(
 
         TSType::TSLiteralType(literal) => resolve_literal_type(&literal.literal, arena),
 
+        // `import("x").Name` and `typeof import("x")`: the import pass bound each one under
+        // a name made from the specifier, so reading it is a lookup. A qualifier that is a
+        // dotted path is looked up whole; type arguments and import options are not read.
+        TSType::TSImportType(import) => {
+            if import.type_arguments.is_some() || import.options.is_some() {
+                return None;
+            }
+            let name = import_type_name(&import.source.value, import.qualifier.as_ref()?)?;
+            match namespace.resolve(&name, arena) {
+                Resolution::Resolved(type_id) => Some(type_id),
+                Resolution::Circular | Resolution::NotFound => None,
+            }
+        }
+        TSType::TSTypeQuery(query) => {
+            let TSTypeQueryExprName::TSImportType(import) = &query.expr_name else {
+                return None;
+            };
+            if import.qualifier.is_some()
+                || import.type_arguments.is_some()
+                || import.options.is_some()
+                || query.type_arguments.is_some()
+            {
+                return None;
+            }
+            let name = typeof_import_name(&import.source.value);
+            match namespace.resolve(&name, arena) {
+                Resolution::Resolved(type_id) => Some(type_id),
+                Resolution::Circular | Resolution::NotFound => None,
+            }
+        }
         TSType::TSTypeReference(reference) => {
             // `N.I` is looked up under its dotted name, which is how a declaration inside
             // `namespace N` is registered. Anything deeper than a plain dotted path of
@@ -714,5 +744,36 @@ fn dotted_type_name(name: &TSTypeName) -> Option<String> {
             qualified.right.name
         )),
         _ => None,
+    }
+}
+
+/// The name `typeof import("specifier")` is bound under in the namespace.
+pub(crate) fn typeof_import_name(specifier: &str) -> String {
+    format!("typeof import({specifier:?})")
+}
+
+/// The name `import("specifier").A.B` is bound under in the namespace, or None for a
+/// qualifier this does not read.
+pub(crate) fn import_type_name(
+    specifier: &str,
+    qualifier: &oxc_ast::ast::TSImportTypeQualifier<'_>,
+) -> Option<String> {
+    Some(format!(
+        "import({specifier:?}).{}",
+        import_qualifier_text(qualifier)?
+    ))
+}
+
+/// `A` or `A.B` for an import type's qualifier.
+pub(crate) fn import_qualifier_text(
+    qualifier: &oxc_ast::ast::TSImportTypeQualifier<'_>,
+) -> Option<String> {
+    match qualifier {
+        oxc_ast::ast::TSImportTypeQualifier::Identifier(name) => Some(name.name.to_string()),
+        oxc_ast::ast::TSImportTypeQualifier::QualifiedName(qualified) => Some(format!(
+            "{}.{}",
+            import_qualifier_text(&qualified.left)?,
+            qualified.right.name
+        )),
     }
 }

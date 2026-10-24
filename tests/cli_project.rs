@@ -121,18 +121,67 @@ fn a_path_alias_resolves_and_a_missing_package_is_an_error() {
     assert_eq!(output.status.code(), Some(1), "{text}");
 }
 
+// Problem: a config that could not be read made the command line warn and check every
+// `.ts` file under the project directory instead, and a config that selected no file made
+// it exit 0 after a warning. Both let a broken project pass a CI gate with nothing, or the
+// wrong files, checked.
+// Picked: either one stops the run with exit code 2 and an error, as tsc does, and no file
+// is checked.
 #[test]
-fn a_config_that_cannot_be_read_falls_back_to_every_file_with_a_warning() {
+fn a_config_that_cannot_be_read_stops_the_run_and_checks_nothing() {
     let root = project(
         "bad-config",
         &[
             ("tsconfig.json", "{ \"include\": [ }"),
-            ("a.ts", "export const a: number = 1;\n"),
+            ("a.ts", "export const a: number = 'text';\n"),
         ],
     );
     let output = run(&root, "tsconfig.json");
     let text = stdout(&output);
     let errors = String::from_utf8_lossy(&output.stderr);
-    assert!(errors.contains("cannot parse"), "{errors}");
-    assert!(text.contains("Checked 1 file(s)"), "{text}");
+    assert_eq!(output.status.code(), Some(2), "{text}{errors}");
+    assert!(
+        errors.contains("error:") && errors.contains("cannot parse"),
+        "{errors}"
+    );
+    assert!(!text.contains("Checked"), "{text}");
+}
+
+#[test]
+fn a_config_that_selects_no_file_is_an_error_not_a_clean_run() {
+    let root = project(
+        "no-inputs",
+        &[
+            ("tsconfig.json", r#"{ "include": ["src"] }"#),
+            ("other/a.ts", "export const a: number = 1;\n"),
+        ],
+    );
+    let output = run(&root, "tsconfig.json");
+    let errors = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{errors}");
+    assert!(errors.contains("no .ts/.tsx files selected"), "{errors}");
+}
+
+#[test]
+fn an_include_of_dot_checks_the_files_next_to_the_config() {
+    let root = project(
+        "include-dot-cli",
+        &[
+            ("tsconfig.json", r#"{ "include": ["."] }"#),
+            ("a.ts", "export const a: number = 'text';\n"),
+        ],
+    );
+    let output = run(&root, "tsconfig.json");
+    assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+}
+
+#[test]
+fn help_describes_that_the_config_is_read() {
+    let output = Command::new(env!("CARGO_BIN_EXE_tsox"))
+        .arg("--help")
+        .output()
+        .expect("the binary runs");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(!text.contains("not parsed"), "{text}");
+    assert!(text.contains("include/exclude/files"), "{text}");
 }

@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use oxc_resolver::{
     ResolveOptions, Resolver, TsconfigDiscovery, TsconfigOptions, TsconfigReferences,
@@ -18,12 +21,17 @@ pub struct ModuleResolver {
     // request that is a `require` call. See `ResolveMode`.
     require_resolver: Resolver,
     reads_tsconfig: bool,
+    // Under NodeNext a `.ts` file's module format comes from the nearest package.json `type`.
+    // Off by default: bundler-style projects read every import under `import`.
+    node_next: bool,
+    // Directory -> whether the nearest package.json at or above it says "type": "module".
+    package_types: Mutex<HashMap<PathBuf, bool>>,
 }
 
 /// Which condition a package's `exports` map is read under. An `import` statement matches
 /// the `import` condition; a `require` call and `import x = require()` match `require`.
-/// Under NodeNext a `.cts` file is CommonJS, so its imports are `Require` too. The nearest
-/// `package.json`'s `type` is not consulted.
+/// Under NodeNext a `.cts` file is CommonJS, so its imports are `Require` too, and so is a
+/// `.ts` file whose nearest `package.json` is not `"type": "module"` (see `with_node_next`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResolveMode {
     Import,
@@ -36,6 +44,8 @@ impl ModuleResolver {
             resolver: Resolver::new(options(ResolveMode::Import)),
             require_resolver: Resolver::new(options(ResolveMode::Require)),
             reads_tsconfig: false,
+            node_next: false,
+            package_types: Mutex::new(HashMap::new()),
         }
     }
 
@@ -57,7 +67,47 @@ impl ModuleResolver {
             resolver: with_config(ResolveMode::Import),
             require_resolver: with_config(ResolveMode::Require),
             reads_tsconfig: true,
+            node_next: false,
+            package_types: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Makes the module format of a `.ts`, `.tsx`, `.js` or `.jsx` file follow the nearest
+    /// `package.json`'s `type`, as `moduleResolution`/`module` `node16` and `nodenext` do.
+    /// `ProjectConfig::uses_node_next` says whether the project asks for that.
+    pub fn with_node_next(mut self, on: bool) -> Self {
+        self.node_next = on;
+        self
+    }
+
+    /// Whether imports are read under the NodeNext rule set (see `with_node_next`).
+    pub fn is_node_next(&self) -> bool {
+        self.node_next
+    }
+
+    /// Whether the nearest `package.json` at or above `from`'s directory declares
+    /// `"type": "module"`. No `package.json`, or one without that value, is CommonJS.
+    pub fn nearest_package_is_module(&self, from: &Path) -> bool {
+        let mut visited = Vec::new();
+        let mut answer = false;
+        let mut dir = from.parent();
+        let mut cache = self.package_types.lock().unwrap_or_else(|e| e.into_inner());
+        while let Some(current) = dir {
+            if let Some(&cached) = cache.get(current) {
+                answer = cached;
+                break;
+            }
+            visited.push(current.to_path_buf());
+            if let Ok(text) = fs::read_to_string(current.join("package.json")) {
+                answer = package_type_is_module(&text);
+                break;
+            }
+            dir = current.parent();
+        }
+        for seen in visited {
+            cache.insert(seen, answer);
+        }
+        answer
     }
 
     /// Whether this resolver applies a `tsconfig.json`, that is, was made by `with_tsconfig`.
@@ -209,4 +259,8 @@ fn options(mode: ResolveMode) -> ResolveOptions {
         main_fields: strings(&["types", "typings", "module", "main"]),
         ..ResolveOptions::default()
     }
+}
+
+fn package_type_is_module(text: &str) -> bool {
+    super::config::package_json_type_is_module(text)
 }

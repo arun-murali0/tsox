@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -93,30 +93,36 @@ fn main() -> ExitCode {
         .unwrap_or(std::path::Path::new("."));
 
     // With the module graph, the config is read: `include`, `exclude` and `files` (after
-    // `extends`) select the entries, and `paths` and `baseUrl` resolve imports. If it
-    // cannot be read, every .ts/.tsx file under the root is checked and the config is
-    // ignored, with a warning. There is no support for multiple projects yet. The entries
-    // are the roots of the module graph; files they import are added from there.
+    // `extends`) select the entries, and `paths` and `baseUrl` resolve imports. A config
+    // that cannot be read stops the run with exit code 2, as tsc does: checking every file
+    // under the root instead would answer a question nobody asked and let a broken config
+    // pass a CI gate. There is no support for multiple projects yet. The entries are the
+    // roots of the module graph; files they import are added from there.
     #[cfg(feature = "module-resolution")]
-    let config = load_config(&tsconfig_path);
-    #[cfg(feature = "module-resolution")]
-    let source_files = match &config {
-        Some(config) => config.entry_files(),
-        None => files_under(project_root),
+    let config = match load_config(&tsconfig_path) {
+        Ok(config) => config,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::from(2);
+        }
     };
+    #[cfg(feature = "module-resolution")]
+    let source_files = config.entry_files();
     #[cfg(not(feature = "module-resolution"))]
     let source_files = files_under(project_root);
 
+    // tsc reports no inputs as an error (TS18003), not as a clean run: a config whose
+    // include matches nothing is a mistake, and exiting 0 would hide it.
     if source_files.is_empty() {
         eprintln!(
-            "warning: no .ts/.tsx files selected under {}",
+            "error: no .ts/.tsx files selected under {}",
             project_root.display()
         );
-        return ExitCode::SUCCESS;
+        return ExitCode::from(2);
     }
 
     #[cfg(feature = "module-resolution")]
-    let outcome = run(&source_files, &options, config.as_ref());
+    let outcome = run(&source_files, &options, Some(&config));
     #[cfg(not(feature = "module-resolution"))]
     let outcome = run(&source_files, &options);
     let tally = match outcome {
@@ -150,7 +156,9 @@ fn main() -> ExitCode {
 }
 
 // Every .ts/.tsx file under `root`, sorted, skipping the usual build and dependency
-// directories. What is checked when there is no configuration to select files.
+// directories. What is checked in a build without the module graph, which has no
+// configuration to select files.
+#[cfg(not(feature = "module-resolution"))]
 fn files_under(root: &std::path::Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     collect_ts_files(root, &mut files);
@@ -159,26 +167,10 @@ fn files_under(root: &std::path::Path) -> Vec<PathBuf> {
 }
 
 #[cfg(feature = "module-resolution")]
-fn load_config(tsconfig_path: &std::path::Path) -> Option<tsox::ProjectConfig> {
-    let absolute = match fs::canonicalize(tsconfig_path) {
-        Ok(absolute) => absolute,
-        Err(error) => {
-            eprintln!(
-                "warning: could not resolve {}: {error}",
-                tsconfig_path.display()
-            );
-            return None;
-        }
-    };
-    match tsox::ProjectConfig::load(&absolute) {
-        Ok(config) => Some(config),
-        Err(error) => {
-            eprintln!(
-                "warning: {error}; checking every .ts/.tsx file under the project directory and ignoring the configuration"
-            );
-            None
-        }
-    }
+fn load_config(tsconfig_path: &std::path::Path) -> Result<tsox::ProjectConfig, String> {
+    let absolute = fs::canonicalize(tsconfig_path)
+        .map_err(|error| format!("could not resolve {}: {error}", tsconfig_path.display()))?;
+    tsox::ProjectConfig::load(&absolute).map_err(|error| error.to_string())
 }
 
 #[cfg(feature = "module-resolution")]
@@ -255,7 +247,8 @@ fn check_with_modules(
     // resolver reads none and there is no root, so a missing package is never reported.
     let (resolver, root) = match config {
         Some(config) => (
-            ModuleResolver::with_tsconfig(config.config_file()),
+            ModuleResolver::with_tsconfig(config.config_file())
+                .with_node_next(config.uses_node_next()),
             Some(config.root().to_path_buf()),
         ),
         None => (ModuleResolver::new(), None),
@@ -378,7 +371,8 @@ fn parse_project_arg(args: &[String]) -> Option<String> {
     None
 }
 
-fn collect_ts_files(dir: &Path, out: &mut Vec<PathBuf>) {
+#[cfg(not(feature = "module-resolution"))]
+fn collect_ts_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
     // A deterministic, hardcoded skip list rather than reading tsconfig's own
     // exclude patterns, consistent with this CLI not parsing tsconfig.json at
     // all. These are the directories real-world TypeScript projects almost
@@ -416,10 +410,10 @@ fn print_help() {
          USAGE:\n    \
          tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--tsc-codes]\n\n\
          OPTIONS:\n    \
-         --project <path>    Locate the project root from a tsconfig.json path.\n                         \
-         Its contents are not parsed; every .ts/.tsx file under\n                         \
-         that directory is checked directly. See bin/tsox.rs\n                         \
-         for the exact scoping.\n    \
+         --project <path>    Read the tsconfig.json at <path> and check the files its\n                         \
+         include/exclude/files select, resolving imports with its\n                         \
+         paths, baseUrl, extends and references. If the config cannot\n                         \
+         be read, warn and check every .ts/.tsx file under its directory.\n    \
          --flat              Check each file on its own, without the module graph.\n                         \
          The only mode in a build without the `module-resolution`\n                         \
          feature.\n    \
