@@ -47,9 +47,11 @@ impl<R> Finished<'_, R> {
 }
 
 /// What each strongly connected component of `graph` waits for: the other components its
-/// members import, sorted and without duplicates. The index of a unit is its position in
-/// `ModuleGraph::sccs`, which lists dependencies first, so a unit only waits for lower
-/// indices.
+/// members import, and the files they load dynamically that `ModuleGraph::ordered_dynamic`
+/// lists, sorted and without duplicates. The index of a unit is its position in
+/// `ModuleGraph::sccs`, which lists dependencies first. A unit waits only for lower indices
+/// unless it waits on a dynamic import, which can point either way; none of them closes a
+/// cycle, so the units still form a DAG.
 pub fn unit_dependencies(graph: &ModuleGraph) -> Vec<Vec<usize>> {
     graph
         .sccs()
@@ -58,7 +60,12 @@ pub fn unit_dependencies(graph: &ModuleGraph) -> Vec<Vec<usize>> {
         .map(|(unit, members)| {
             let mut waits: Vec<usize> = members
                 .iter()
-                .flat_map(|member| graph.dependencies(*member))
+                .flat_map(|member| {
+                    graph
+                        .dependencies(*member)
+                        .iter()
+                        .chain(graph.ordered_dynamic(*member))
+                })
                 .map(|dependency| graph.scc_of(*dependency))
                 .filter(|component| *component != unit)
                 .collect();

@@ -53,6 +53,8 @@ pub struct ModuleGraph {
     dependencies: Vec<Vec<FileId>>,
     dependents: Vec<Vec<FileId>>,
     dynamic_dependents: Vec<Vec<FileId>>,
+    // The dynamic imports a file may wait for and read: see `ordered_dynamic`.
+    ordered_dynamic: Vec<Vec<FileId>>,
     sccs: Vec<Vec<FileId>>,
     scc_of: Vec<u32>,
     layers: Vec<Vec<FileId>>,
@@ -278,6 +280,7 @@ impl ModuleGraph {
             .iter()
             .map(|targets| targets.iter().map(|target| index_of(*target)).collect())
             .collect();
+        let ordered_dynamic = acyclic_dynamic_edges(&files, &edges, &adjacency);
         let components = crate::scc::components(&adjacency);
         let scc_of = crate::scc::component_of(adjacency.len(), &components);
         let layers = crate::scc::layers(&adjacency, &components)
@@ -295,6 +298,7 @@ impl ModuleGraph {
             dependencies,
             dependents,
             dynamic_dependents,
+            ordered_dynamic,
             sccs,
             scc_of,
             layers,
@@ -443,6 +447,18 @@ impl ModuleGraph {
     /// when `id` changes is `dependents` together with this list.
     pub fn dynamic_dependents(&self, id: FileId) -> &[FileId] {
         slice_of(&self.dynamic_dependents, id)
+    }
+
+    /// The files `id` loads with `import("...")` that the check may wait for, so `id` can read
+    /// what they export and type the call. Not in `dependencies`, which stays the graph's own
+    /// ordering. A dynamic import is in this list only when the loaded file does not already
+    /// reach `id`, directly or through the edges accepted before it, so waiting on it can never
+    /// make a cycle. The edges are taken in path order, which does not depend on file ids, so
+    /// which edge of a pair of mutual lazy imports is kept is the same however the project was
+    /// listed. A dynamic import of a file `id` also imports another way is not listed: that
+    /// import orders it already.
+    pub fn ordered_dynamic(&self, id: FileId) -> &[FileId] {
+        slice_of(&self.ordered_dynamic, id)
     }
 
     /// The text discovery read for `id`, so a later stage does not read the file again.
@@ -749,6 +765,65 @@ fn file_id(index: usize) -> FileId {
 
 fn index_of(id: FileId) -> usize {
     id.index() as usize
+}
+
+// The dynamic imports that can be waited for without making a cycle. See `ordered_dynamic`.
+fn acyclic_dynamic_edges(
+    files: &ProjectFiles,
+    edges: &[Vec<ModuleEdge>],
+    adjacency: &[Vec<usize>],
+) -> Vec<Vec<FileId>> {
+    let mut wanted: Vec<(usize, usize)> = Vec::new();
+    for (source, file_edges) in edges.iter().enumerate() {
+        for edge in file_edges {
+            if edge.kind != ModuleRequestKind::DynamicImport {
+                continue;
+            }
+            let Some(target) = edge.target else {
+                continue;
+            };
+            let target = index_of(target);
+            if target != source && !adjacency[source].contains(&target) {
+                wanted.push((source, target));
+            }
+        }
+    }
+    wanted.sort_by(|a, b| {
+        let key = |(source, target): &(usize, usize)| {
+            (files.path(file_id(*source)), files.path(file_id(*target)))
+        };
+        key(a).cmp(&key(b)).then(a.cmp(b))
+    });
+    wanted.dedup();
+    let mut reach: Vec<Vec<usize>> = adjacency.to_vec();
+    let mut accepted: Vec<Vec<FileId>> = vec![Vec::new(); edges.len()];
+    for (source, target) in wanted {
+        if reaches(&reach, target, source) {
+            continue;
+        }
+        reach[source].push(target);
+        accepted[source].push(file_id(target));
+    }
+    for list in &mut accepted {
+        list.sort();
+    }
+    accepted
+}
+
+// Whether `to` can be reached from `from` along `adjacency`.
+fn reaches(adjacency: &[Vec<usize>], from: usize, to: usize) -> bool {
+    let mut seen = vec![false; adjacency.len()];
+    let mut stack = vec![from];
+    while let Some(node) = stack.pop() {
+        if node == to {
+            return true;
+        }
+        if std::mem::replace(&mut seen[node], true) {
+            continue;
+        }
+        stack.extend(adjacency[node].iter().copied().filter(|next| !seen[*next]));
+    }
+    false
 }
 
 fn slice_of<T>(table: &[Vec<T>], id: FileId) -> &[T] {

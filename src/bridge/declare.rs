@@ -478,7 +478,13 @@ pub(super) fn declare_function(func: &Function<'_>, ctx: &mut CheckContext<'_, '
     let Some(symbol_id) = name.symbol_id.get() else {
         return;
     };
-    if let Some(function_type) = resolve_function_type(func, ctx) {
+    // Problem: an `async function` with no return annotation had no signature, so it was never
+    // declared and its body was never checked: every error inside it went unreported, and a call
+    // to it was unknown.
+    // Picked: a named one is declared with the same `any` placeholder as a sync function; the
+    // body pass replaces it with a Promise of what the body returns.
+    // Cost: until that replacement, a call to it is unchecked, as for a sync function.
+    if let Some(function_type) = resolve_function_signature(func, ctx, true) {
         ctx.symbols.declare(symbol_id, function_type);
     }
 }
@@ -490,6 +496,16 @@ pub(super) fn resolve_function_type(
     func: &Function<'_>,
     ctx: &mut CheckContext<'_, '_>,
 ) -> Option<crate::arena::TypeId> {
+    resolve_function_signature(func, ctx, false)
+}
+
+// `async_placeholder` gives an unannotated `async function` the `any` placeholder a sync one
+// gets. Only a named declaration with a body pass to replace it asks for that.
+fn resolve_function_signature(
+    func: &Function<'_>,
+    ctx: &mut CheckContext<'_, '_>,
+    async_placeholder: bool,
+) -> Option<crate::arena::TypeId> {
     let scope = ctx.namespace.push_type_params(&mut ctx.arena, func);
     let params = resolve_function_params(&func.params, &mut ctx.namespace, &mut ctx.arena);
     let return_type = match &func.return_type {
@@ -497,7 +513,8 @@ pub(super) fn resolve_function_type(
         // Without a return annotation this is only a placeholder. The body pass replaces
         // it for named functions, but export-only anonymous/overload signatures have no
         // symbol-backed body inference and must not claim that placeholder is a real API.
-        None if func.r#async || func.generator => None,
+        None if func.generator => None,
+        None if func.r#async && !async_placeholder => None,
         None => Some(ctx.arena.any()),
     };
     let type_params = resolve_function_type_params(

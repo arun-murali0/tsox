@@ -29,7 +29,7 @@ so the type system can evolve without repeatedly changing the project driver.
 | E3: SCC as one unit | Complete | The cross-file circular-return case (needs on-demand inference, later design) | `tests/scc_contract.rs`, `tests/circular_returns.rs` |
 | E4: Scheduler and pipeline | Complete for its exit condition (phases 1, 2 and 3a done); the single parse (3b) is deferred to E7 | None for E4. Whether to parse once is decided with the E7 ownership design (section 3, E4, and section 8) | `tests/scheduler.rs` on random graphs; `random_projects_give_the_same_report_whatever_the_timing` for the real checker; `tests/source_once.rs` for read-once |
 | E5: Project configuration and resolution | Complete for its exit condition, including NodeNext module format from `package.json` `type`; `typeRoots`/`types` (E6), the checker reading compiler options, and automatic graph updates on a config change (E7) are open | See "Not done" in section 3, E5 | `tests/tsconfig_resolution.rs`, `tests/project_config.rs`, `tests/cli_project.rs` |
-| E6: Library and ambient declarations | In progress: slice 1 (project globals and `declare global`) done; slice 2 partly done (array and Promise members, loosely typed); slice 3 (module augmentation) done for interfaces, added exports and order independence; real library shapes through the provider and typed `import()` not started | Library shapes through the provider (rest of slice 2, needs generic inference); class-plus-interface augmentation; typed `import()`/`typeof import()` (slice 4); `typeRoots`/`types` wiring (slice 5) | `tests/project_globals.rs` (slice 1), `tests/library_members.rs` (slice 2), `tests/module_augmentation.rs` (slice 3) |
+| E6: Library and ambient declarations | In progress: slices 1 (project globals, `declare global`), 3 (module augmentation) and 4 (`typeof import()`, `import("x").Name`, `import("x")`) done for what is listed; slice 2 partly done (array and Promise members, loosely typed); real library shapes through the provider and `typeRoots`/`types` wiring not started | Library shapes through the provider (rest of slice 2, needs generic inference); class-plus-interface augmentation; `typeRoots`/`types` wiring (slice 5) | `tests/project_globals.rs`, `tests/library_members.rs`, `tests/module_augmentation.rs`, `tests/import_types.rs`, `tests/async_functions.rs` |
 | E7: Query layer | Prototype only | Salsa integration and verified invalidation | One test per row of the LLD invalidation matrix |
 | E8: Limits, safety, measurement | Partially implemented | Budgets, recursion protection, memory checks, metrics | Adversarial-input suite; metrics from LLD 9.5 |
 
@@ -417,6 +417,26 @@ tests pass; the stride-1 corpus abort test passes; the regression test fails wit
 shape not yet checked, and members added this way are not checked); augmenting a namespace or
 an enum; an augmentation of a module that is only declared ambiently (`declare module "x"` in a
 script), which is a provider and not an augmentation.
+
+**Progress (slice 4, done for what is listed):** `typeof import("x")` is the module object, `import("x").Name` is the
+named type, and `import("x")` is a Promise of the module object, so `await import("x")` gives it. The module
+object is built the way `import * as ns` builds one and only when the module's exports are known in full. A
+lazy `import("x")` is read when the check can wait for `x` without making a cycle: `ModuleGraph::ordered_dynamic`
+takes the dynamic edges in path order (not file-id order) and keeps one only if its target does not already
+reach the importer, and the check waits for those units, so the answer is the same in every run. `dependencies`
+and `dependents` are unchanged. A lazy import that would close a cycle stays unread, and of two files that load
+each other the first by path is kept. Evidence: 9 tests in `tests/import_types.rs`, including the reversed
+listing order; the lazy-load probe matches `tsc` on all 3 errors; 1312 tests pass; the stride-1 corpus abort test
+passes; corpus diagnostics 24,761 to 24,720 with failures unchanged, allocations +0.15% and peak memory +0.6%.
+**Found on the way, fixed here:** an `async function` declaration with no return annotation was never declared and
+its body was never checked, so errors inside it went unreported and a call to it was unknown. It is now declared
+like a sync function and returns a Promise of what the body returns (`tests/async_functions.rs`, 5 tests; zustand
+errors unchanged at 94 and warnings 401 to 327). Unannotated async function expressions in a default export,
+overload signatures and generators are not covered. **Not done:** type arguments on `import()` types, a
+qualified `typeof import("x").y`, and a dynamic specifier that is not a plain string (all `Promise<any>` or
+unresolved). **Observed once, not explained:** in one of three full-suite runs `depth_guard`'s
+`a_very_long_alias_chain_is_cut_off_and_reported_once` got no nesting diagnostic; it passed alone three times and
+in the other full runs.
 
 ### E7: Integrate the query layer only after the unit boundary is stable
 

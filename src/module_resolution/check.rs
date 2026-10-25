@@ -997,13 +997,16 @@ impl ImportsOf<'_> {
         reads
     }
 
-    // Problem: a dynamic `import("x")` does not order units (lazy imports may form cycles), so
-    // a unit that only imports `x` dynamically does not wait for it. Reading its exports then
+    // Problem: a dynamic `import("x")` does not order the graph (lazy imports may form cycles),
+    // so a unit that only imports `x` dynamically did not wait for it. Reading its exports then
     // gave a different answer depending on whether `x` happened to have finished: typed in
     // one run, unknown in the next.
-    // Picked: the edge a specifier is read through is a waited-for one when the file has any
-    // (a static import, an `import type`, an import type); a dynamic-only edge is not read.
-    // Cost: `import("./lazy")` of a module the file does not also import stays `Promise<any>`.
+    // Picked: the edge a specifier is read through is a waited-for one when the file has any (a
+    // static import, an `import type`, an import type). A dynamic-only edge is read when
+    // `ModuleGraph::ordered_dynamic` lists it, that is, when waiting for it cannot make a cycle;
+    // the check waits for those units, so the answer is the same in every run.
+    // Cost: a lazy import that would close a cycle (`a` loads `b`, `b` imports `a`) stays
+    // `Promise<any>`, and so does one of two files that load each other.
     fn edge_for(&self, specifier: &str) -> Option<&super::ModuleEdge> {
         let edges = self.project.graph.edges(self.from);
         edges
@@ -1014,9 +1017,20 @@ impl ImportsOf<'_> {
             .or_else(|| edges.iter().find(|edge| edge.specifier == specifier))
     }
 
+    // A dynamic import this unit does not wait for, so what the target exports cannot be read.
+    fn is_unordered_dynamic(&self, edge: &super::ModuleEdge) -> bool {
+        edge.kind == super::ModuleRequestKind::DynamicImport
+            && !edge.target.is_some_and(|target| {
+                self.project
+                    .graph
+                    .ordered_dynamic(self.from)
+                    .contains(&target)
+            })
+    }
+
     fn target(&self, specifier: &str) -> Option<FileId> {
         let edge = self.edge_for(specifier)?;
-        if edge.kind == super::ModuleRequestKind::DynamicImport {
+        if self.is_unordered_dynamic(edge) {
             return None;
         }
         edge.target
@@ -1122,7 +1136,7 @@ impl ImportSource for ImportsOf<'_> {
         let Some(edge) = self.edge_for(specifier) else {
             return ModuleExports::Unknown;
         };
-        let dynamic_only = edge.kind == super::ModuleRequestKind::DynamicImport;
+        let dynamic_only = self.is_unordered_dynamic(edge);
         let Some(target) = edge.target else {
             // A relative specifier no file answers is missing. A package specifier is only
             // known to be missing when the project's configuration cannot be hiding it.
