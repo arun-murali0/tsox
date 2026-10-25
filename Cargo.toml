@@ -66,6 +66,10 @@ path = "bin/tsox.rs"
 name = "compare-tsc"
 path = "bin/compare-tsc.rs"
 
+[[bin]]
+name = "harness"
+path = "bin/harness.rs"
+
 [[bench]]
 name = "checker_benchmark"
 harness = false
