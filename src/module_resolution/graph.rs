@@ -1,14 +1,17 @@
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::project::ProjectFiles;
 use crate::topology::ModuleTopology;
 use crate::types::FileId;
 
+use super::config::ProjectConfig;
 use super::discovery::{ModuleRequest, ModuleRequestKind, scan_module_requests};
 use super::error::ModuleError;
 use super::metadata::{FileFingerprint, FileState, content_hash};
-use super::resolver::ModuleResolver;
+use super::resolver::{ModuleResolver, ResolveMode};
 
 // One import or re-export statement, kept whether or not it resolved. `target` is None
 // for an import that did not, and it stays in the graph: dropping it would make a file
@@ -50,14 +53,33 @@ pub struct ModuleGraph {
     dependencies: Vec<Vec<FileId>>,
     dependents: Vec<Vec<FileId>>,
     dynamic_dependents: Vec<Vec<FileId>>,
+    // The dynamic imports a file may wait for and read: see `ordered_dynamic`.
+    ordered_dynamic: Vec<Vec<FileId>>,
     sccs: Vec<Vec<FileId>>,
     scc_of: Vec<u32>,
     layers: Vec<Vec<FileId>>,
     states: Vec<FileState>,
     syntax_errors: Vec<bool>,
+    // Per file: a script that declares ambient modules, as the discovery parse saw it.
+    ambient_scripts: Vec<bool>,
     // The project root, an input of the graph (LLD 3.1.1). None until a caller sets it
     // with `with_root`; without one no file gets a Project key.
     root: Option<PathBuf>,
+    // Whether the resolver that built the graph applied a tsconfig.json, so a `paths` or
+    // `baseUrl` in it has already had its say in resolution.
+    tsconfig_applied: bool,
+    // The configuration the graph was built under, once a caller attaches it with
+    // `with_config`: an input of the graph like the root.
+    config: Option<ConfigInput>,
+}
+
+// The config files read for a project, as they were when attached, and whether the
+// effective configuration holds something that can answer a package specifier without a
+// file the checker reads.
+#[derive(Debug)]
+struct ConfigInput {
+    files: Vec<(PathBuf, FileState)>,
+    hides_bare_specifiers: bool,
 }
 
 impl ModuleGraph {
@@ -69,7 +91,9 @@ impl ModuleGraph {
         // nested syntax. It runs on the same 64 MB stack the checking workers have, so a
         // file this can parse is a file they can parse, and not on whatever stack the
         // caller happens to be on (8 MB for a main thread, 2 MB for a spawned one).
-        crate::stack_guard::on_big_stack(|| Self::discover(entries, resolver))
+        let mut graph = crate::stack_guard::on_big_stack(|| Self::discover(entries, resolver))?;
+        graph.tsconfig_applied = resolver.reads_tsconfig();
+        Ok(graph)
     }
 
     fn discover(entries: &[PathBuf], resolver: &ModuleResolver) -> Result<Self, ModuleError> {
@@ -85,6 +109,7 @@ impl ModuleGraph {
         let mut edges = Vec::new();
         let mut states = Vec::new();
         let mut syntax_errors = Vec::new();
+        let mut ambient_scripts = Vec::new();
 
         // Files are interned as their importers are scanned, so the list grows while it
         // is walked. Visiting ids in order is a breadth-first walk with no queue.
@@ -106,14 +131,23 @@ impl ModuleGraph {
                 path: path.clone(),
                 source,
             })?;
-            states.push(FileState::new(fingerprint, content_hash(&bytes)));
+            let state = FileState::new(fingerprint, content_hash(&bytes));
 
+            let mut kept: Option<Arc<str>> = None;
             let mut file_edges = Vec::new();
             let mut failed = false;
+            let mut declares_ambient = false;
             if is_scannable(&path) {
                 let source = String::from_utf8_lossy(&bytes);
+                // Borrowed means the bytes were valid UTF-8, which is the only text
+                // `read_to_string` would have given the checker. Anything else is not
+                // kept, so the checker reads the file itself and fails as before.
+                if let Cow::Borrowed(valid) = &source {
+                    kept = Some(Arc::from(*valid));
+                }
                 let scan = scan_module_requests(&source, &path.to_string_lossy());
                 failed = scan.parse_failed;
+                declares_ambient = scan.declares_ambient_modules;
                 for request in scan.requests {
                     let target = resolve_request(resolver, &path, &request)
                         .map(|resolved| files.intern(resolved));
@@ -126,12 +160,20 @@ impl ModuleGraph {
                     });
                 }
             }
+            states.push(state.with_text(kept));
             edges.push(file_edges);
             syntax_errors.push(failed);
+            ambient_scripts.push(declares_ambient);
             next += 1;
         }
 
-        Ok(Self::in_path_order(&files, edges, states, syntax_errors))
+        Ok(Self::in_path_order(
+            &files,
+            edges,
+            states,
+            syntax_errors,
+            ambient_scripts,
+        ))
     }
 
     // Discovery ids depend on the order the entries came in and on how imports are
@@ -146,6 +188,7 @@ impl ModuleGraph {
         edges: Vec<Vec<ModuleEdge>>,
         states: Vec<FileState>,
         syntax_errors: Vec<bool>,
+        ambient_scripts: Vec<bool>,
     ) -> Self {
         let paths: Vec<&Path> = (0..discovered.len())
             .map(|position| {
@@ -174,6 +217,7 @@ impl ModuleGraph {
         let mut sorted_edges = Vec::with_capacity(order.len());
         let mut sorted_states = Vec::with_capacity(order.len());
         let mut sorted_errors = Vec::with_capacity(order.len());
+        let mut sorted_ambient = Vec::with_capacity(order.len());
         for &old in &order {
             let mut file_edges = edges[old].take().expect("each file is moved once");
             for edge in &mut file_edges {
@@ -184,8 +228,15 @@ impl ModuleGraph {
             sorted_edges.push(file_edges);
             sorted_states.push(states[old].take().expect("each file is moved once"));
             sorted_errors.push(syntax_errors[old]);
+            sorted_ambient.push(ambient_scripts[old]);
         }
-        Self::assemble(files, sorted_edges, sorted_states, sorted_errors)
+        Self::assemble(
+            files,
+            sorted_edges,
+            sorted_states,
+            sorted_errors,
+            sorted_ambient,
+        )
     }
 
     fn assemble(
@@ -193,6 +244,7 @@ impl ModuleGraph {
         edges: Vec<Vec<ModuleEdge>>,
         states: Vec<FileState>,
         syntax_errors: Vec<bool>,
+        ambient_scripts: Vec<bool>,
     ) -> Self {
         let mut dependencies = Vec::with_capacity(edges.len());
         let mut dependents = vec![Vec::new(); edges.len()];
@@ -228,6 +280,7 @@ impl ModuleGraph {
             .iter()
             .map(|targets| targets.iter().map(|target| index_of(*target)).collect())
             .collect();
+        let ordered_dynamic = acyclic_dynamic_edges(&files, &edges, &adjacency);
         let components = crate::scc::components(&adjacency);
         let scc_of = crate::scc::component_of(adjacency.len(), &components);
         let layers = crate::scc::layers(&adjacency, &components)
@@ -245,12 +298,16 @@ impl ModuleGraph {
             dependencies,
             dependents,
             dynamic_dependents,
+            ordered_dynamic,
             sccs,
             scc_of,
             layers,
             states,
             syntax_errors,
+            ambient_scripts,
             root: None,
+            tsconfig_applied: false,
+            config: None,
         }
     }
 
@@ -263,6 +320,78 @@ impl ModuleGraph {
 
     pub fn root(&self) -> Option<&Path> {
         self.root.as_deref()
+    }
+
+    /// Attaches the project's configuration as an input of the graph: every config file it
+    /// was read from is recorded, so `config_changed` can say one has moved, and its
+    /// effective options decide whether a missing package can be reported (see
+    /// `config_hides_bare_specifiers`).
+    pub fn with_config(mut self, config: &ProjectConfig) -> Self {
+        let mut files = Vec::new();
+        for path in config.sources() {
+            if let (Ok(bytes), Ok(fingerprint)) = (fs::read(path), FileFingerprint::of(path)) {
+                files.push((
+                    path.clone(),
+                    FileState::new(fingerprint, content_hash(&bytes)),
+                ));
+            }
+        }
+        let has = |name: &str| config.compiler_option(name).is_some();
+        // `typeRoots` can bring in `declare module` declarations the checker does not read.
+        // `paths` and `baseUrl` can point a package at a file, unless the resolver was given
+        // the config and has already followed them. `rootDirs` only applies to relative
+        // specifiers, so it cannot answer a package name. `customConditions` and
+        // `moduleSuffixes` change which file a package specifier lands on and the resolver
+        // is not given either, so a package they would find must not be reported missing.
+        let hides_bare_specifiers = has("typeRoots")
+            || has("customConditions")
+            || has("moduleSuffixes")
+            || (!self.tsconfig_applied && (has("paths") || has("baseUrl")));
+        self.config = Some(ConfigInput {
+            files,
+            hides_bare_specifiers,
+        });
+        self
+    }
+
+    /// Whether any config file recorded by `with_config` has changed or gone since. False
+    /// when no configuration was attached. A changed config means resolution results, and
+    /// the files `include` selects, may be out of date: build the graph again.
+    pub fn config_changed(&self) -> bool {
+        self.config.as_ref().is_some_and(|config| {
+            config
+                .files
+                .iter()
+                .any(|(path, state)| !state.is_unchanged(path))
+        })
+    }
+
+    /// The config files recorded by `with_config`, the project's own first.
+    pub fn config_files(&self) -> Vec<&Path> {
+        self.config
+            .as_ref()
+            .map(|config| {
+                config
+                    .files
+                    .iter()
+                    .map(|(path, _)| path.as_path())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// For a graph with a configuration attached: whether it holds something that can
+    /// answer a package specifier that no file answers, so a missing package should not
+    /// be reported. None when no configuration was attached.
+    pub fn config_hides_bare_specifiers(&self) -> Option<bool> {
+        self.config
+            .as_ref()
+            .map(|config| config.hides_bare_specifiers)
+    }
+
+    /// Whether the resolver that built this graph applied a `tsconfig.json`.
+    pub fn tsconfig_applied(&self) -> bool {
+        self.tsconfig_applied
     }
 
     /// The stable identity of `id` (LLD 3.1.1): Project under the root, Package for a file
@@ -320,12 +449,40 @@ impl ModuleGraph {
         slice_of(&self.dynamic_dependents, id)
     }
 
+    /// The files `id` loads with `import("...")` that the check may wait for, so `id` can read
+    /// what they export and type the call. Not in `dependencies`, which stays the graph's own
+    /// ordering. A dynamic import is in this list only when the loaded file does not already
+    /// reach `id`, directly or through the edges accepted before it, so waiting on it can never
+    /// make a cycle. The edges are taken in path order, which does not depend on file ids, so
+    /// which edge of a pair of mutual lazy imports is kept is the same however the project was
+    /// listed. A dynamic import of a file `id` also imports another way is not listed: that
+    /// import orders it already.
+    pub fn ordered_dynamic(&self, id: FileId) -> &[FileId] {
+        slice_of(&self.ordered_dynamic, id)
+    }
+
+    /// The text discovery read for `id`, so a later stage does not read the file again.
+    /// None for a file that is not scanned or whose bytes are not valid UTF-8; the caller
+    /// then reads the file itself. It is the text the graph's hash and fingerprint
+    /// describe, and may be older than the disk: see `changed_files`.
+    pub fn source(&self, id: FileId) -> Option<&str> {
+        self.states.get(index_of(id)).and_then(FileState::text)
+    }
+
     /// Whether the parser reported a syntax error in `id`. Such a file may have fewer
     /// edges than its source suggests.
     pub fn has_syntax_errors(&self, id: FileId) -> bool {
         self.syntax_errors
             .get(index_of(id))
             .is_some_and(|failed| *failed)
+    }
+
+    /// Whether `id` is a script, with no `import` or `export`, that declares ambient
+    /// modules with `declare module "x"`. Known from the discovery parse.
+    pub fn declares_ambient_modules(&self, id: FileId) -> bool {
+        self.ambient_scripts
+            .get(index_of(id))
+            .is_some_and(|declares| *declares)
     }
 
     pub fn unresolved(&self) -> impl Iterator<Item = (FileId, &ModuleEdge)> {
@@ -458,15 +615,36 @@ fn resolve_request(
     from: &Path,
     request: &ModuleRequest,
 ) -> Option<PathBuf> {
+    let mode = resolve_mode(resolver, from, request.kind);
     if request.is_type {
         return resolver
-            .resolve_dts_from_file(from, &request.specifier)
+            .resolve_dts_from_file_as(mode, from, &request.specifier)
             .ok();
     }
     resolver
-        .resolve_from_file(from, &request.specifier)
-        .or_else(|_| resolver.resolve_dts_from_file(from, &request.specifier))
+        .resolve_from_file_as(mode, from, &request.specifier)
+        .or_else(|_| resolver.resolve_dts_from_file_as(mode, from, &request.specifier))
         .ok()
+}
+
+// A package's `exports` are read under `require` for `import x = require()`, for any import
+// in a `.cts`/`.cjs` file, and, when the resolver follows NodeNext, for an import in a
+// `.ts`/`.tsx`/`.js`/`.jsx` file whose nearest package.json is not `"type": "module"`.
+// A dynamic `import()` and everything else is read under `import`.
+fn resolve_mode(resolver: &ModuleResolver, from: &Path, kind: ModuleRequestKind) -> ResolveMode {
+    match kind {
+        ModuleRequestKind::ImportEquals => return ResolveMode::Require,
+        ModuleRequestKind::DynamicImport => return ResolveMode::Import,
+        _ => {}
+    }
+    match extension(from) {
+        Some("cts" | "cjs") => ResolveMode::Require,
+        Some("mts" | "mjs") => ResolveMode::Import,
+        _ if resolver.is_node_next() && !resolver.nearest_package_is_module(from) => {
+            ResolveMode::Require
+        }
+        _ => ResolveMode::Import,
+    }
 }
 
 fn extension(path: &Path) -> Option<&str> {
@@ -589,6 +767,65 @@ fn index_of(id: FileId) -> usize {
     id.index() as usize
 }
 
+// The dynamic imports that can be waited for without making a cycle. See `ordered_dynamic`.
+fn acyclic_dynamic_edges(
+    files: &ProjectFiles,
+    edges: &[Vec<ModuleEdge>],
+    adjacency: &[Vec<usize>],
+) -> Vec<Vec<FileId>> {
+    let mut wanted: Vec<(usize, usize)> = Vec::new();
+    for (source, file_edges) in edges.iter().enumerate() {
+        for edge in file_edges {
+            if edge.kind != ModuleRequestKind::DynamicImport {
+                continue;
+            }
+            let Some(target) = edge.target else {
+                continue;
+            };
+            let target = index_of(target);
+            if target != source && !adjacency[source].contains(&target) {
+                wanted.push((source, target));
+            }
+        }
+    }
+    wanted.sort_by(|a, b| {
+        let key = |(source, target): &(usize, usize)| {
+            (files.path(file_id(*source)), files.path(file_id(*target)))
+        };
+        key(a).cmp(&key(b)).then(a.cmp(b))
+    });
+    wanted.dedup();
+    let mut reach: Vec<Vec<usize>> = adjacency.to_vec();
+    let mut accepted: Vec<Vec<FileId>> = vec![Vec::new(); edges.len()];
+    for (source, target) in wanted {
+        if reaches(&reach, target, source) {
+            continue;
+        }
+        reach[source].push(target);
+        accepted[source].push(file_id(target));
+    }
+    for list in &mut accepted {
+        list.sort();
+    }
+    accepted
+}
+
+// Whether `to` can be reached from `from` along `adjacency`.
+fn reaches(adjacency: &[Vec<usize>], from: usize, to: usize) -> bool {
+    let mut seen = vec![false; adjacency.len()];
+    let mut stack = vec![from];
+    while let Some(node) = stack.pop() {
+        if node == to {
+            return true;
+        }
+        if std::mem::replace(&mut seen[node], true) {
+            continue;
+        }
+        stack.extend(adjacency[node].iter().copied().filter(|next| !seen[*next]));
+    }
+    false
+}
+
 fn slice_of<T>(table: &[Vec<T>], id: FileId) -> &[T] {
     table.get(index_of(id)).map(Vec::as_slice).unwrap_or(&[])
 }
@@ -617,7 +854,7 @@ mod tests {
             });
         }
         let states = Vec::new();
-        ModuleGraph::assemble(files, edges, states, vec![false; count])
+        ModuleGraph::assemble(files, edges, states, vec![false; count], vec![false; count])
     }
 
     fn ids(indexes: &[usize]) -> Vec<FileId> {

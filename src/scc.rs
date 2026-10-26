@@ -121,12 +121,12 @@ pub(crate) fn layers(dependencies: &[Vec<usize>], components: &[Vec<usize>]) -> 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{component_of, components, layers};
 
     // A small deterministic generator, so a failing case can be replayed from its seed
     // and the test needs no new dependency.
-    struct Xorshift(u64);
+    pub(crate) struct Xorshift(pub(crate) u64);
 
     impl Xorshift {
         fn next(&mut self) -> u64 {
@@ -138,7 +138,7 @@ mod tests {
             x
         }
 
-        fn below(&mut self, bound: usize) -> usize {
+        pub(crate) fn below(&mut self, bound: usize) -> usize {
             (self.next() % bound as u64) as usize
         }
     }
@@ -166,7 +166,7 @@ mod tests {
         reach
     }
 
-    fn random_graph(rng: &mut Xorshift) -> Vec<Vec<usize>> {
+    pub(crate) fn random_graph(rng: &mut Xorshift) -> Vec<Vec<usize>> {
         let count = 1 + rng.below(40);
         // Sparse graphs have long chains and few cycles, dense ones the opposite.
         let density = 1 + rng.below(6);

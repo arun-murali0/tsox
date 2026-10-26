@@ -40,6 +40,11 @@ pub(crate) fn resolve_identifier_type(
         if is_ambient_global(&ident.name) {
             return ctx.arena.any();
         }
+        // A project global whose declaration could not be carried over: it exists, but its
+        // type is not known.
+        if ctx.namespace.is_unmodelled_global(&ident.name) {
+            return ctx.arena.any();
+        }
         // Problem: `Iterator` or a user's own `interface I {}` used as a value read as "Cannot
         // find name", where tsc says the name only refers to a type (TS2693).
         // Picked: a name this checker knows as a type, or one of the library types that have

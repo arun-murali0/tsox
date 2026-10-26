@@ -113,9 +113,15 @@ pub struct UnitOutput {
     /// `export as namespace Name` aliases that expose this module's value exports as a
     /// global namespace in script consumers.
     pub umd_namespaces: Vec<String>,
+    /// The names the file uses that nothing in it declares.
+    pub unresolved_names: Vec<String>,
     /// Module declarations inside an external module augment an existing module instead
     /// of introducing a standalone ambient module.
     pub augmentations: Vec<AmbientExports>,
+    /// What this file declares globally: the top-level declarations of a script file and the
+    /// members of each `declare global { }` block. At most one entry, with an empty
+    /// specifier; the names are not exports of the file.
+    pub globals: Vec<AmbientExports>,
 }
 
 /// The exports of one `declare module "x"` block (see `UnitOutput`).
@@ -125,6 +131,12 @@ pub struct AmbientExports {
     pub exports: Vec<PortableDecl>,
     pub export_names: Vec<(String, DeclKey)>,
     pub complete: bool,
+    /// Global names (see `UnitOutput::globals`) whose declaration could not be carried over.
+    pub unmodelled: Vec<String>,
+    /// `true` for a script's globals when only the names were listed (`unmodelled`), not the
+    /// declarations. The project builds the declarations in a later run if another file uses
+    /// one of the names.
+    pub names_only: bool,
     /// `true` for `declare module "x"` inside an external module.
     pub augmentation: bool,
 }
@@ -216,10 +228,27 @@ impl Worker {
                             complete: ambient.collected && !ambient.is_incomplete(),
                             exports: ambient.decls,
                             export_names: ambient.names,
+                            unmodelled: Vec::new(),
+                            names_only: false,
                             augmentation: false,
                         })
                         .collect(),
                     umd_namespaces: table.umd_namespaces,
+                    unresolved_names: table.unresolved_names,
+                    globals: if table.global_names.is_empty() && table.global_unmodelled.is_empty()
+                    {
+                        Vec::new()
+                    } else {
+                        vec![AmbientExports {
+                            specifier: String::new(),
+                            complete: true,
+                            unmodelled: table.global_unmodelled,
+                            names_only: table.global_names_only,
+                            exports: table.global_decls,
+                            export_names: table.global_names,
+                            augmentation: false,
+                        }]
+                    },
                     augmentations: table
                         .augmentations
                         .into_iter()
@@ -228,6 +257,8 @@ impl Worker {
                             complete: augmentation.collected && !augmentation.is_incomplete(),
                             exports: augmentation.decls,
                             export_names: augmentation.names,
+                            unmodelled: Vec::new(),
+                            names_only: false,
                             augmentation: true,
                         })
                         .collect(),
@@ -278,7 +309,9 @@ fn crashed(ctx: &UnitContext<'_>) -> UnitOutput {
         exports_complete: false,
         ambient: Vec::new(),
         umd_namespaces: Vec::new(),
+        unresolved_names: Vec::new(),
         augmentations: Vec::new(),
+        globals: Vec::new(),
     }
 }
 

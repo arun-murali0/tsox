@@ -79,7 +79,16 @@ fn lookup_member(arena: &mut TypeArena, type_id: TypeId, property_name: &str) ->
                 // looks a name up on the object's own members and on `Object` before it
                 // falls back to an index signature, so `rec.hasOwnProperty(k)` on a
                 // `Record<string, string>` is the method, not a string.
+                // A Promise<T> reads as its empty body here, so it is told apart by the
+                // application it came from.
                 None => universal_member(arena, effective, property_name)
+                    .or_else(|| {
+                        if arena.is_promise(effective) {
+                            promise_member(arena, property_name)
+                        } else {
+                            None
+                        }
+                    })
                     .or_else(|| arena.record_value_type(effective)),
             }
         }
@@ -121,12 +130,16 @@ fn lookup_member(arena: &mut TypeArena, type_id: TypeId, property_name: &str) ->
         // members every value has.
         Type::String | Type::StringLiteral(_) => string_member(arena, property_name)
             .or_else(|| universal_member(arena, effective, property_name)),
+        Type::Array(element) => {
+            let element = *element;
+            array_member(arena, element, property_name)
+                .or_else(|| universal_member(arena, effective, property_name))
+        }
         Type::Number
         | Type::Boolean
         | Type::NumberLiteral(_)
         | Type::BooleanLiteral(_)
-        | Type::Function(_)
-        | Type::Array(_) => universal_member(arena, effective, property_name),
+        | Type::Function(_) => universal_member(arena, effective, property_name),
         _ => None,
     }
 }
@@ -215,6 +228,142 @@ fn string_member(arena: &mut TypeArena, property_name: &str) -> Option<TypeId> {
     Some(arena.alloc(Type::Function(FunctionType {
         params: list,
         return_type,
+        type_params: Vec::new(),
+        is_untyped: false,
+    })))
+}
+
+// Problem: `arr.map(f)`, `arr.push(x)` and every other array method reported "Property does
+// not exist", because an array only had `length`: a false error on some of the most used code
+// in any project.
+// Picked: the methods of tsc's default library, by name, as strings got theirs. A method whose
+// real signature needs generic inference (`map`, `reduce`, `flatMap`, `find`, and `filter`,
+// which has a type-guard overload) takes callbacks and returns what it can say for certain,
+// and `any` otherwise. A method that only moves or reports elements is typed from the element
+// type, so `arr.push("s")` on a `number[]` and `const s: string = arr.indexOf(1)` are still
+// rejected, as tsc rejects them.
+// Cost: callbacks are not checked against the element type, and what `map`, `reduce`, `find`
+// and `flat` return is `any`, so what is done with it is unchecked; this loses errors and never
+// invents one. Methods the library only adds for later targets (`at`, `flat`) are all offered.
+fn array_member(arena: &mut TypeArena, element: TypeId, property_name: &str) -> Option<TypeId> {
+    use crate::types::{FunctionType, Param};
+    let any = arena.any();
+    let number = arena.number();
+    let string = arena.string();
+    let boolean = arena.boolean();
+    let void = arena.void();
+    let undefined = arena.undefined();
+    let elements = arena.alloc(Type::Array(element));
+    let any_elements = arena.alloc(Type::Array(any));
+    let param = |type_id: TypeId, optional: bool, rest: bool| Param {
+        type_id,
+        optional,
+        rest,
+        name: None,
+    };
+    let maybe_element = arena.alloc_union(vec![element, undefined]);
+    let (params, return_type) = match property_name {
+        "indexOf" | "lastIndexOf" => (
+            vec![param(any, false, false), param(number, true, false)],
+            number,
+        ),
+        "includes" => (
+            vec![param(any, false, false), param(number, true, false)],
+            boolean,
+        ),
+        "join" => (vec![param(string, true, false)], string),
+        "push" | "unshift" => (vec![param(elements, false, true)], number),
+        "pop" | "shift" => (Vec::new(), maybe_element),
+        "at" => (vec![param(number, false, false)], maybe_element),
+        "slice" => (
+            vec![param(number, true, false), param(number, true, false)],
+            elements,
+        ),
+        "splice" => (
+            vec![
+                param(number, false, false),
+                param(number, true, false),
+                param(any_elements, false, true),
+            ],
+            elements,
+        ),
+        "concat" => (vec![param(any_elements, false, true)], elements),
+        "reverse" => (Vec::new(), elements),
+        "sort" => (vec![param(any, true, false)], elements),
+        "fill" => (
+            vec![
+                param(element, false, false),
+                param(number, true, false),
+                param(number, true, false),
+            ],
+            elements,
+        ),
+        "copyWithin" => (
+            vec![
+                param(number, false, false),
+                param(number, false, false),
+                param(number, true, false),
+            ],
+            elements,
+        ),
+        "filter" => (
+            vec![param(any, false, false), param(any, true, false)],
+            any_elements,
+        ),
+        "map" | "flatMap" => (
+            vec![param(any, false, false), param(any, true, false)],
+            any_elements,
+        ),
+        "flat" => (vec![param(number, true, false)], any_elements),
+        "forEach" => (
+            vec![param(any, false, false), param(any, true, false)],
+            void,
+        ),
+        "some" | "every" => (
+            vec![param(any, false, false), param(any, true, false)],
+            boolean,
+        ),
+        "find" | "findLast" => (vec![param(any, false, false), param(any, true, false)], any),
+        "findIndex" | "findLastIndex" => (
+            vec![param(any, false, false), param(any, true, false)],
+            number,
+        ),
+        "reduce" | "reduceRight" => (vec![param(any, false, false), param(any, true, false)], any),
+        "keys" | "values" | "entries" => (Vec::new(), any),
+        "toString" | "toLocaleString" => (Vec::new(), string),
+        _ => return None,
+    };
+    Some(arena.alloc(Type::Function(FunctionType {
+        params,
+        return_type,
+        type_params: Vec::new(),
+        is_untyped: false,
+    })))
+}
+
+// `then`, `catch` and `finally` of a Promise. Their real signatures chain a new Promise from
+// what the callbacks return, which takes generic inference, so each takes callbacks and returns
+// `any`: a chain after the first call is unchecked, and nothing it says is wrong.
+fn promise_member(arena: &mut TypeArena, property_name: &str) -> Option<TypeId> {
+    use crate::types::{FunctionType, Param};
+    if !matches!(property_name, "then" | "catch" | "finally") {
+        return None;
+    }
+    let any = arena.any();
+    let callback = |optional: bool| Param {
+        type_id: any,
+        optional,
+        rest: false,
+        name: None,
+    };
+    let params = if property_name == "then" {
+        vec![callback(true), callback(true)]
+    } else {
+        vec![callback(true)]
+    };
+    Some(arena.alloc(Type::Function(FunctionType {
+        params,
+        return_type: any,
         type_params: Vec::new(),
         is_untyped: false,
     })))

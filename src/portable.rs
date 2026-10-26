@@ -426,6 +426,29 @@ pub trait ImportSource: DeclProvider {
     fn global_namespaces(&self) -> Vec<GlobalNamespace> {
         Vec::new()
     }
+
+    /// The project's global declarations of `name`: top-level declarations of script files
+    /// and members of `declare global { }` blocks, in a fixed order that does not depend on
+    /// which file was read first. Empty when no file declares the name. A name declared
+    /// several times (an interface in two files) returns every declaration, for merging.
+    fn global_decls(&self, _name: &str) -> Vec<DeclKey> {
+        Vec::new()
+    }
+
+    /// Whether the project declares `name` globally but its declaration could not be carried
+    /// over (see `IncompleteReason::UnrepresentableDeclaration`). The name exists, so a use of
+    /// it is not a missing name, but nothing is known about its type.
+    /// Whether a script file should build portable declarations for its global names. A
+    /// project that has not yet seen a use of any of them says no, and the script lists only
+    /// its names; building a declaration for every top-level item of every script is the
+    /// cost, and most scripts' names are never used by another file.
+    fn collect_global_decls(&self) -> bool {
+        true
+    }
+
+    fn global_name_unmodelled(&self, _name: &str) -> bool {
+        false
+    }
 }
 
 /// The UMD global binding contributed by one or more project exports.

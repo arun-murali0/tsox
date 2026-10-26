@@ -852,6 +852,33 @@ impl TypeArena {
         self.display_name(type_id).is_some() || self.app_parts(type_id).is_some()
     }
 
+    // A `Promise<inner>`, the same node a written `Promise<T>` annotation makes.
+    pub fn alloc_promise(&mut self, inner: TypeId) -> TypeId {
+        let body = self.alloc(Type::Object(ObjectType::new(Vec::new())));
+        let slot = self.builtin_slot("Promise");
+        self.alloc_app(slot, vec![inner], body)
+    }
+
+    // The T of a `Promise<T>`, or None when `type_id` is not one.
+    pub fn promise_value_type(&self, type_id: TypeId) -> Option<TypeId> {
+        let promise = *self.builtin_slots.get("Promise")?;
+        match self.types.get(type_id.0 as usize) {
+            Some(Type::App(slot, args, _)) if *slot == promise => args.first().copied(),
+            _ => None,
+        }
+    }
+
+    // Whether `type_id` is a `Promise<T>`: an App of the built-in Promise slot.
+    pub fn is_promise(&self, type_id: TypeId) -> bool {
+        let Some(&promise) = self.builtin_slots.get("Promise") else {
+            return false;
+        };
+        matches!(
+            self.types.get(type_id.0 as usize),
+            Some(Type::App(slot, _, _)) if *slot == promise
+        )
+    }
+
     // The value type V of a `Record<K, V>`: any key reads as V. Record has no real index
     // signature here, so this is the narrower stand-in the member access code uses (see
     // type_annotation::resolve_builtin_generic), and it does not model K at all.

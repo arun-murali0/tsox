@@ -128,6 +128,15 @@ pub(crate) fn check_statement(stmt: &Statement, scoping: &Scoping, ctx: &mut Che
         | Statement::TSInterfaceDeclaration(_)
         | Statement::TSEnumDeclaration(_) => {}
         Statement::TSNamespaceDeclaration(ns) => check_namespace(ns, scoping, ctx),
+        // `declare global { ... }` is ambient, and its members were declared at the top
+        // level, so they are checked in place with no scope of their own.
+        Statement::TSGlobalDeclaration(block) => {
+            ctx.ambient_depth += 1;
+            for statement in &block.body.body {
+                check_statement(statement, scoping, ctx);
+            }
+            ctx.ambient_depth -= 1;
+        }
         // `declare module "x" { ... }`: the block is checked with `x` as its scope, so a
         // name written in it is found. A shorthand `declare module "x";` has no body.
         Statement::TSExternalModuleDeclaration(module) => {

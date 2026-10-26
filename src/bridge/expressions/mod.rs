@@ -246,6 +246,28 @@ pub fn infer_expression_type(
             infer_expression_type(&inner.expression, scoping, ctx)
         }
 
+        // `await x` is the T of a Promise<T>; anything that is not a Promise is its own value.
+        Expression::AwaitExpression(await_expr) => {
+            let operand = infer_expression_type(&await_expr.argument, scoping, ctx);
+            ctx.arena.promise_value_type(operand).unwrap_or(operand)
+        }
+
+        // `import("x")` is a Promise of the module object `typeof import("x")`, which the
+        // import pass bound under that name when the specifier is a plain string and the
+        // module's exports are known in full. Anything else is a Promise of `any`.
+        Expression::ImportExpression(import) => {
+            if let Some(specifier) = import_specifier_text(&import.source) {
+                let name = format!("typeof import({specifier:?})");
+                if let crate::namespace::Resolution::Resolved(module) =
+                    ctx.namespace.resolve(&name, &mut ctx.arena)
+                {
+                    return ctx.arena.alloc_promise(module);
+                }
+            }
+            let any = ctx.arena.any();
+            ctx.arena.alloc_promise(any)
+        }
+
         _ => {
             ctx.warning(
                 crate::diagnostic_messages::messages::unimplemented_expression_kind(),
@@ -253,5 +275,19 @@ pub fn infer_expression_type(
             );
             ctx.arena.error()
         }
+    }
+}
+
+// The text of an `import("x")` specifier when it is a plain string: a string literal or a
+// template with no substitutions.
+pub(super) fn import_specifier_text(source: &Expression<'_>) -> Option<String> {
+    match source {
+        Expression::StringLiteral(literal) => Some(literal.value.to_string()),
+        Expression::TemplateLiteral(template) if template.expressions.is_empty() => template
+            .quasis
+            .first()
+            .and_then(|quasi| quasi.value.cooked.as_ref())
+            .map(|cooked| cooked.to_string()),
+        _ => None,
     }
 }

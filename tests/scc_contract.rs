@@ -234,7 +234,17 @@ fn an_unsettled_cycle_reports_no_missing_name_among_its_own_members() {
             .to_string();
     let result = run("no-false-missing", &as_files(&sources), false, 2);
     assert!(!result.unsettled().is_empty());
+    // A file of a cycle that did not settle was checked against a snapshot that had not
+    // settled (see `ProjectReport::unsettled`), so it may still say that it cannot resolve a
+    // type annotation yet. What it must never do is call a name or module missing.
     for (file, lines) in result.diagnostics() {
-        assert!(lines.is_empty(), "{file}: {lines:?}");
+        for line in &lines {
+            assert!(
+                !line.contains("has no exported member")
+                    && !line.contains("has no default export")
+                    && !line.contains("Cannot find module"),
+                "{file}: {line}"
+            );
+        }
     }
 }

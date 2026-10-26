@@ -109,6 +109,10 @@ pub struct TypeNamespace<'a> {
     // Set when the stack guard cut a resolution short, so the check can report it once.
     depth_cut: bool,
 
+    // Project globals this file uses whose declaration could not be carried over. They
+    // exist, so they are not reported as missing, but they have no type here.
+    unmodelled_globals: std::collections::HashSet<String>,
+
     // The namespaces the checker is currently inside, as full prefixes, outermost first.
     // A declaration registered now is stored under its qualified name (`N.I`), and an
     // unqualified name is looked up innermost prefix first. Empty at the top of a file.
@@ -283,6 +287,7 @@ impl<'a> TypeNamespace<'a> {
             file_id,
             entries: FxHashMap::default(),
             depth_cut: false,
+            unmodelled_globals: std::collections::HashSet::new(),
             scope: Vec::new(),
             active_type_params: Vec::new(),
             merged_interface_parts: FxHashMap::default(),
@@ -382,6 +387,17 @@ impl<'a> TypeNamespace<'a> {
             instantiation_hits: self.instantiation_hits,
             instantiation_misses: self.instantiation_misses,
         }
+    }
+
+    /// Records that the project declares `name` globally but no type for it could be carried
+    /// over.
+    pub fn mark_unmodelled_global(&mut self, name: &str) {
+        self.unmodelled_globals.insert(name.to_owned());
+    }
+
+    /// True when `name` is a project global whose declaration could not be carried over.
+    pub fn is_unmodelled_global(&self, name: &str) -> bool {
+        self.unmodelled_globals.contains(name)
     }
 
     pub fn contains(&self, name: &str) -> bool {

@@ -137,8 +137,13 @@ check meaningless.
 **`scripts/harness.sh`** is the one aimed at a real external project (Zustand
 by default) rather than curated fixtures — see the "Running it locally" section
 in the README for usage. It benchmarks `tsc`, `tsgo`, and `tsox` against the
-same project and records reproducibility information: compiler versions,
-source revision, timings, normalized diagnostics, and output hashes.
+same project and reports speed, peak memory and CPU, and how tsox's errors
+compare with tsc's and tsgo's (matches, false positives, gaps, lines that
+agree, files by class), plus what tsox skipped. It saves every run's raw
+output and timings with the compiler versions, project revision and exact
+commands, so each figure can be recomputed by hand. `--dhat` adds the
+allocation profile from `examples/dhat_heap`; the criterion benches
+(`cargo bench`) stay the place for fine-grained speed.
 
 None of the three are a semantic-equivalence proof. A matching diagnostic or
 exit code does not establish that two implementations have identical type

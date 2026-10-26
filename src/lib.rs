@@ -18,6 +18,7 @@ mod namespace;
 #[allow(dead_code)]
 mod portable;
 mod project;
+#[cfg(feature = "module-resolution")]
 mod scc;
 #[cfg(feature = "scratchpad")]
 mod scratchpad;
@@ -72,9 +73,11 @@ pub use topology::ModuleTopology;
 
 #[cfg(feature = "module-resolution")]
 pub use module_resolution::{
-    FileFingerprint, FileOutcome, FileReport, ModuleEdge, ModuleError, ModuleGraph, ModuleRequest,
-    ModuleRequestKind, ModuleResolver, ModuleScan, PartialRow, PartialSummary, ProjectReport,
-    ReasonKind, check_project, content_hash, scan_module_requests, summarize_partial,
+    ConfigError, Cyclic, FileFingerprint, FileOutcome, FileReport, Finished, Json, ModuleEdge,
+    ModuleError, ModuleGraph, ModuleRequest, ModuleRequestKind, ModuleResolver, ModuleScan,
+    PartialRow, PartialSummary, ProjectConfig, ProjectReport, ReasonKind, ResolveMode, UnitOutcome,
+    check_project, content_hash, parse_jsonc, run_units, scan_module_requests, summarize_partial,
+    unit_dependencies,
 };
 
 // Exposed only so a test can make an import cycle run out of recheck rounds (see
@@ -83,6 +86,11 @@ pub use module_resolution::{
 #[cfg(feature = "module-resolution")]
 #[doc(hidden)]
 pub use module_resolution::check_project_bounded;
+
+// Public API, unlike the one above, but `module_resolution` only exists with its feature,
+// so the export needs the same gate or a build without the feature fails to resolve it.
+#[cfg(feature = "module-resolution")]
+pub use module_resolution::check_project_cancellable;
 
 pub use arena::TypeArenaStats;
 pub use bridge::{CheckMetrics, IncompleteReason};

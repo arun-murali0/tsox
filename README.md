@@ -325,21 +325,16 @@ Each milestone document explains the semantic rule, implementation choice, and p
 
 ## Compatibility harness
 
-The repository contains an experimental harness for comparing tsox with TypeScript implementations such as `tsc` and `tsgo`.
+`scripts/harness.sh` compares tsox with `tsc` and `tsgo` on one real project and writes a report you can check by hand. The program is `bin/harness.rs`.
 
-It records information such as:
+It measures:
 
-- exit codes
-- normalized diagnostics
-- timing
-- repeated-run statistics
-- output hashes
+- **Speed:** wall time of each compiler after warm-up runs, with the runs interleaved so a slow minute hurts all three alike. Median, mean, standard deviation, min, max, quartiles and a noise flag.
+- **Memory and CPU:** peak resident memory and CPU time of each process. Each program is started by a small measuring process, because the kernel otherwise counts the parent's size as the child's.
+- **Agreement:** tsox's errors against tsc's and tsgo's, matched by file, line and tsc error code. It counts matches, false positives (tsox errors the reference lacks), gaps (reference errors tsox misses), lines that agree, and files by class. tsc and tsgo are also compared with each other, to show whether the reference itself is consistent.
+- **Coverage:** what tsox skipped. Every `TSR9xxx` warning is a construct it did not check, and a partial export is a file whose exports are incomplete. The report says how many agreeing files tsox fully checked, since agreement on a skipped file is weak evidence.
 
-The harness is useful for finding compatibility gaps and performance questions.
-
-**It is not a semantic-equivalence oracle.**
-
-A matching result does not prove that two compilers implement the same TypeScript semantics.
+**It is not a semantic-equivalence oracle.** A matching result does not prove two compilers implement the same TypeScript semantics, and tsox checks a smaller language than tsc, so a speed ratio only means something next to the agreement numbers.
 
 ### Running it locally
 
@@ -347,23 +342,30 @@ A matching result does not prove that two compilers implement the same TypeScrip
 ./scripts/harness.sh
 ```
 
-This clones a fixture project (Zustand, by default), installs its dependencies, builds `tsox` in release mode if needed, and benchmarks whichever of `tsc`/`tsgo`/`tsox` are available. Results are written to `.harness/results/<timestamp>/summary.json`.
+This clones Zustand (by default), installs its dependencies with its own lockfile, installs tsc and tsgo under `.harness/tools`, builds `tsox` in release mode, and runs everything. Open `.harness/results/<UTC time>/report.md`.
+
+Each results folder holds `report.md`, `summary.json`, `per-file.csv`, `tsox-false-positives.txt`, `tsox-missed.txt`, `tsc-vs-tsgo-differences.txt`, `REPRODUCE.sh` with the exact commands, and `raw/` with the output and `timings.csv` of every run.
 
 Common variations:
 
 ```bash
-# Benchmark your own project instead of Zustand
+# Your own project instead of Zustand (needs a tsconfig.json)
 ./scripts/harness.sh /path/to/your/ts/project
 
-# Skip dependency install if node_modules is already set up
-SKIP_INSTALL=1 ./scripts/harness.sh
-
 # More timed runs for steadier medians
-HARNESS_RUNS=10 ./scripts/harness.sh
+./scripts/harness.sh --runs 10
 
-# Reuse whatever fixture is already cached instead of auto-refreshing it
-HARNESS_REFRESH=0 ./scripts/harness.sh
+# Also run the allocation profile of the benchmark workloads (examples/dhat_heap)
+./scripts/harness.sh --dhat
+
+# A pinned Zustand revision, and exit 1 if the run is invalid or tsox has false positives
+./scripts/harness.sh --ref <commit> --strict
+
+# Every option
+./scripts/harness.sh --help
 ```
+
+Use a release build of tsox for speed and memory. The report marks a debug build as not meaningful, and marks the whole run invalid when the compilers cannot run or the project's dependencies are missing. Linux and macOS, 64-bit.
 
 ### Running it in CI
 

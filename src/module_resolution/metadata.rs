@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use xxhash_rust::xxh3::xxh3_64;
@@ -33,15 +34,45 @@ pub fn content_hash(bytes: &[u8]) -> u64 {
 // A file as it was when the graph read it. The fingerprint is the fast answer and the
 // hash is the confirmation: a touched file whose bytes did not change has a new
 // fingerprint and the old hash, and is still unchanged.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct FileState {
     fingerprint: FileFingerprint,
     hash: u64,
+    // The text discovery read, kept so the checker does not read the file again. Only a
+    // scannable file whose bytes are valid UTF-8 has one; for any other file this is None
+    // and the checker reads the disk itself, as it always did. It is the text the hash
+    // and the fingerprint describe, so a file edited after the walk is still checked as
+    // it was seen, and `is_unchanged` is what says it has moved on.
+    text: Option<SourceText>,
+}
+
+// The text of one file, shared and cheap to hand out. Debug prints its length, because
+// the graph derives Debug and a printed graph should not contain every source file.
+#[derive(Clone)]
+struct SourceText(Arc<str>);
+
+impl std::fmt::Debug for SourceText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SourceText({} bytes)", self.0.len())
+    }
 }
 
 impl FileState {
     pub(super) fn new(fingerprint: FileFingerprint, hash: u64) -> Self {
-        Self { fingerprint, hash }
+        Self {
+            fingerprint,
+            hash,
+            text: None,
+        }
+    }
+
+    pub(super) fn with_text(mut self, text: Option<Arc<str>>) -> Self {
+        self.text = text.map(SourceText);
+        self
+    }
+
+    pub(super) fn text(&self) -> Option<&str> {
+        self.text.as_ref().map(|text| &*text.0)
     }
 
     // An unreadable file is reported as changed. Calling it unchanged would keep stale
