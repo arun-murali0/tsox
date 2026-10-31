@@ -133,3 +133,37 @@ fn while_loop_with_a_break_does_not_narrow_after_the_loop() {
         DiagnosticCode::DeclaredTypeMismatch,
     );
 }
+
+// A standard library class the file does not declare. `Date` and `Error` have no type
+// here, so `unknown` narrows to `any` and the members are not an error.
+#[test]
+fn instanceof_date_narrows_unknown() {
+    assert_clean(
+        "instanceof_date_narrows_unknown.ts",
+        fixture!("instanceof_date_narrows_unknown.ts"),
+    );
+}
+
+#[test]
+fn instanceof_error_narrows_unknown() {
+    assert_clean(
+        "instanceof_error_narrows_unknown.ts",
+        fixture!("instanceof_error_narrows_unknown.ts"),
+    );
+}
+
+#[test]
+fn instanceof_promise_leaves_the_function_member() {
+    assert_clean(
+        "instanceof_promise_leaves_the_function_member.ts",
+        fixture!("instanceof_promise_leaves_the_function_member.ts"),
+    );
+}
+
+#[test]
+fn instanceof_array_separates_an_array_member() {
+    assert_clean(
+        "instanceof_array_separates_an_array_member.ts",
+        fixture!("instanceof_array_separates_an_array_member.ts"),
+    );
+}
