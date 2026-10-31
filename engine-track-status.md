@@ -24,13 +24,13 @@ so the type system can evolve without repeatedly changing the project driver.
 | Stage | Status | Remaining exit condition | Check that closes it |
 |---|---|---|---|
 | E0: Safety net | Complete for the corpus | Preserve full-corpus and determinism evidence | `TSOX_CORPUS_STRIDE=1 cargo test --test corpus_aborts` |
-| E1: Cross-file completeness | Complete | Real-project runs of `tsox --partial` beyond the corpus; the reach columns only mean something on multi-file projects | `tsox --partial` summary (corpus: 518 partial files of 10,083, 449 of them `UnrepresentableDeclaration`) |
-| E2: Graph shape and edge kinds | Complete | Typed dynamic-import tracking (deferred to E6); `ModuleTopology` decision (after E4) | `only_a_dynamic_import_is_kept_out_of_the_ordering_and_is_listed_apart`; dependents lists for dynamic imports |
-| E3: SCC as one unit | Complete | The cross-file circular-return case (needs on-demand inference, later design) | `tests/scc_contract.rs`, `tests/circular_returns.rs` |
+| E1: Cross-file completeness | Complete | More real-project `--partial` runs. One is done (zustand at its default branch, 2026-10-26, no `node_modules`): 34 files, 0 cycles, 14 partial files (11 `UnrepresentableDeclaration`, 1 `DeclarationFileWithoutExportStatement`, 1 `UnresolvedReExport`, 1 passed on by `export *`), 28 unresolved imports. The project is tsc-clean, yet tsox reports 127 errors there (89 TS2345, 23 TS2307 from the missing packages, 8 TS2339, 3 TS2322, 5 others), so the remaining ones are false positives to triage, e.g. a type parameter whose constraint does not resolve loses its members (`S` in `src/react.ts`) | `tsox --partial` summary (corpus: 518 partial files of 10,083, 449 of them `UnrepresentableDeclaration`) |
+| E2: Graph shape and edge kinds | Complete | Typed dynamic-import tracking (deferred to E6); `ModuleTopology` removed (decided after E4: no production consumer) | `only_a_dynamic_import_is_kept_out_of_the_ordering_and_is_listed_apart`; dependents lists for dynamic imports |
+| E3: SCC as one unit | Complete | A circle through a function that is not exported (the cross-file circular-return case is reported on exported functions, `tests/project_imports.rs`) | `tests/scc_contract.rs`, `tests/circular_returns.rs` |
 | E4: Scheduler and pipeline | Complete for its exit condition (phases 1, 2 and 3a done); the single parse (3b) is deferred to E7 | None for E4. Whether to parse once is decided with the E7 ownership design (section 3, E4, and section 8) | `tests/scheduler.rs` on random graphs; `random_projects_give_the_same_report_whatever_the_timing` for the real checker; `tests/source_once.rs` for read-once |
-| E5: Project configuration and resolution | Complete for its exit condition, including NodeNext module format from `package.json` `type`; `typeRoots`/`types` (E6), the checker reading compiler options, and automatic graph updates on a config change (E7) are open | See "Not done" in section 3, E5 | `tests/tsconfig_resolution.rs`, `tests/project_config.rs`, `tests/cli_project.rs` |
-| E6: Library and ambient declarations | In progress: slices 1 (project globals, `declare global`), 3 (module augmentation) and 4 (`typeof import()`, `import("x").Name`, `import("x")`) done for what is listed; slice 2 partly done (array and Promise members, loosely typed); real library shapes through the provider and `typeRoots`/`types` wiring not started | Library shapes through the provider (rest of slice 2, needs generic inference); class-plus-interface augmentation; `typeRoots`/`types` wiring (slice 5) | `tests/project_globals.rs`, `tests/library_members.rs`, `tests/module_augmentation.rs`, `tests/import_types.rs`, `tests/async_functions.rs` |
-| E7: Query layer | Prototype only | Salsa integration and verified invalidation | One test per row of the LLD invalidation matrix |
+| E5: Project configuration and resolution | Complete for its exit condition, including NodeNext module format from `package.json` `type`; `typeRoots`/`types` (E6), automatic graph updates on a config change (E7) are open. The checker reads `noUncheckedIndexedAccess`, `allowUnreachableCode` and `useUnknownInCatchVariables` from the tsconfig (`CheckOptions`, `tests/check_options.rs`); a key left out keeps the old fixed behavior | See "Not done" in section 3, E5 | `tests/tsconfig_resolution.rs`, `tests/project_config.rs`, `tests/cli_project.rs` |
+| E6: Library and ambient declarations | Done for slices 1, 3, 4 and 5 and for what slice 2 lists as done; open: real generic library shapes through the provider (needs generic inference, with the advanced types work), `Record`/`Promise<T>` assignability, tuple, `Map`, `Set` and `ReadonlyArray` members, a generic interface merged across files, a dotted `typeof import("x").A.b` | See the progress notes under E6 | `tests/project_globals.rs` (1), `tests/library_members.rs` (2), `tests/module_augmentation.rs` (3), `tests/import_types.rs`, `tests/async_functions.rs` (4), `tests/type_roots.rs`, `tests/reference_directives.rs` (5) |
+| E7: Query layer | Implemented behind `incremental` (`IncrementalProject`); see `docs/architecture/query-layer.md` | Cold check is about 1.9 times the full driver on 1,000 files; a file added early in path order moves ids and reruns the units that see them; the global-declaration second pass is not memoized; no LSP layer or debouncing | `tests/incremental_project.rs` (29: one per LLD 6.5 row, buffers, cancellation, ambient providers, and random content, graph and provider edits against a cold run); the Salsa spike in `src/incremental.rs` (8) |
 | E8: Limits, safety, measurement | Partially implemented | Budgets, recursion protection, memory checks, metrics | Adversarial-input suite; metrics from LLD 9.5 |
 
 **E0 evidence.** The whole corpus (10,083 files) and the 8 known crashers ran one file per
@@ -112,10 +112,8 @@ can pick up an edge that must not order. What has to rerun when a file changes i
 together with `dynamic_dependents`. `only_a_dynamic_import_is_kept_out_of_the_ordering_and_is_listed_apart`
 pins the rule for dynamic imports, side-effect imports, re-exports and import-equals. Static, type-only and augmentation edges are not in that fixture, and nothing pins one file importing the same file both ways, which lists the importer in both `dependents` and `dynamic_dependents` *(verified)*.
 
-`ModuleTopology` is called only from tests and benches today *(verified)*. It should remain only
-if it continues to provide useful graph operations or test and benchmark coverage. Otherwise,
-remove it rather than keeping a second representation without a production responsibility.
-Decide after E4, when the scheduler shows whether it needs the extra operations.
+`ModuleTopology` was called only from tests and benches *(verified)*, and the scheduler orders by
+`ModuleGraph::sccs`, so it was removed together with the `petgraph` dependency.
 
 **Exit condition:** Dependency ordering and edge kinds have defined semantics, with typed
 dynamic-import handling deferred until E6.
@@ -438,11 +436,83 @@ unresolved). **Observed once, not explained:** in one of three full-suite runs `
 `a_very_long_alias_chain_is_cut_off_and_reported_once` got no nesting diagnostic; it passed alone three times and
 in the other full runs.
 
+**Progress (slice 5, and the second pass):** `types` and `typeRoots` are applied. The declaration
+files `types` names are entries of the graph, found in `typeRoots` first and then as ordinary packages
+(a package subpath goes through `exports`); unset, `types` takes nothing, because TypeScript 6.0 changed
+the default to `[]` (tsc 6.0.3 was checked on seven cases and tsox matches all of them). With them
+loaded, an `@types` directory or a `typeRoots` setting no longer holds back the report of a missing
+package. `/// <reference path="..." />` and `/// <reference types="..." />` at the top of a file are now
+edges, so the files they name are read and their globals count (matching tsc on a package that
+references a sibling file and another package; a directive after the first statement is ordinary
+comment). The second pass now checks again only the files that can change: users of a global name or a
+UMD alias, files that import a specifier an ambient module or augmentation declares, files that read
+from an augmented module, and everything that reads from those; a wildcard module (`declare module
+"*.css"`) still checks every file; unit tests compare the narrowed result with a forced full pass.
+Evidence: 1347 tests pass; `cargo check` passes under `-D warnings` with and without default features.
+**Cost, measured:** corpus as one project, check step, against E5: wall 1,139 to 1,596 ms (+40%), CPU
+1,116 to 1,567 ms, allocated 1,322 to 1,977 MB, peak memory 26.7 to 79.8 MB. The narrowing took about
+12% off slice 4's wall time but changed neither allocations nor peak memory, so on the corpus it still
+behaves like a full second pass; the cause is not yet confirmed (the likely one is a wildcard module or
+a near-total set of users in the corpus). The corpus as one project is a stress case, not a real
+project. **Not done:** `/// <reference lib>` and `no-default-lib` are ignored; an unresolvable
+directive is a warning where tsc reports TS2688; the stride-1 corpus abort test has not been run on
+this change.
+
+**Progress (E6 close-out):** type arguments on `import()` types (`import("x").Box<number>`) and a
+qualified `typeof import("x").y` resolve; the type-reference reader is shared
+(`resolve_named_reference`). An unresolved `/// <reference types>` is TS2688 and an unresolved
+`/// <reference path>` is TS6053, judged like an import (only when the graph is sure); `lib` and
+`no-default-lib` are accepted and ignored, because the checker's library is fixed. A file that
+declares a global interface itself now joins the other files' parts of it (script files and
+`declare global`, either listing order); two files declaring one global name trigger the second pass
+for both. In module augmentation, an interface merged into a class reaches `new C()`, an enum
+augmentation keeps the original members and adds the new ones, and a namespace augmentation adds
+values and types. Checked against tsc 6.0.3 on probes: same error codes. Evidence: 1366 tests pass
+under `-D warnings`; narrowed and forced-full second passes still agree. **Not done:** a generic
+interface merged across files keeps only the first declaration's shape; merged interfaces print as
+an anonymous shape in messages; `typeof import("x").A.b` (dotted) stays unresolved; a dynamic
+specifier that is not a plain string; the stride-1 corpus abort test was not run on this change.
+
 ### E7: Integrate the query layer only after the unit boundary is stable
 
 The existing Salsa integration is a prototype: `incremental.rs` is 206 lines, with Salsa pinned
 at 0.28.5 behind the `incremental` feature, one input and one demonstration query *(verified)*.
 The real checking pipeline is not connected to a complete incremental query graph.
+
+**Baseline (measured, before any E7 code).** Salsa 0.28.5 behaviors the design may rely on are
+pinned by tests in `src/incremental.rs` (`cargo test --features incremental --lib incremental`, 8
+pass): (1) early cutoff: a query whose result did not change does not rerun its dependents, even
+though the input changed; (2) editing one file reruns only the queries that read it; (3) a database
+clone is the per-thread handle, and one query runs once across 8 threads; (4) a write cancels a
+running query (`Cancelled::PendingWrite`) and the setter waits for it to unwind, and a
+`CancellationToken` cancels without a write (`Cancelled::Local`); a query must poll
+`unwind_if_revision_cancelled()` for either to take effect.
+
+What an edit costs today (no reuse: every edit re-checks the whole project), release build at
+opt-level 1 without LTO, 2 cores, 1,000 generated files with 3 imports each: full check 0.10-0.11 s,
+13.7 MB peak; after a one-line comment edit 0.12 s (the same). zustand (31 files): 0.04 s warm. This
+is the number E7 has to beat on a large project; small projects will not show a gain, because the
+whole check is already cheaper than a query graph's bookkeeping. Measure again on a 10,000-file
+project and on the corpus before judging.
+
+**The plan against the code.** The two-plane split matches `check_unit` / `UnitOutput`, which are
+Salsa-free. Differences to settle in the design step: Salsa does not dispatch work to the tsox pool;
+parallelism is one database clone per thread, so the scheduler (`run_units`) and Salsa must agree on
+who owns the order; the plan's global static library arena does not exist (each file's arena is
+built per unit, and the library is a name list); cancellation and LRU eviction are built into Salsa
+(`Cancelled`, `#[salsa::tracked(lru = N)]`) and need no hand-made flag; there is no LSP layer yet,
+so debouncing has no home. The three epochs (resolution, global scope, per-unit) map to a
+high-durability input for config, an input for the ambient declaration set, and per-file inputs.
+
+**Implemented.** The design is `docs/architecture/e7-system-design-plan.txt` and LLD 6.2 to 6.7;
+what was built and where it differs is in `docs/architecture/query-layer.md`. Inputs are per-file
+`SourceFile`s and one `ProjectInput` (graph and epoch). Queries: `module_header`, `check_scc` (one
+component, LRU-bounded), `decl_shape` and `export_names` (declaration-level cutoff), `file_report`.
+The scheduler of `check_project` keeps the order and asks the layer for each first-pass unit.
+Measured on 1,000 files (release, opt-level 1, 2 cores): nothing changed 7-8 ms against 62-67 ms
+for the full driver; a body edit 10.6 ms with 1 unit run; a signature edit 11.5 ms with 4 units run;
+the cold check is 143-156 ms, slower than the full driver. 1387 tests pass under `-D warnings`.
+Ownership decision for the parse: see the note; nothing keeps a tree between revisions.
 
 Before implementing the full query layer, verify the behavior of the pinned Salsa version:
 early cutoff, query reuse, thread handles, and cancellation.
@@ -485,17 +555,20 @@ refused at 10,000 and at 100,000 levels with no abort *(verified)*.
 
 **Still open.**
 
-- Statement recursion (`check_statement`, `check_block_statements`) has no guard. A
-  100,000-level `else if` chain passed in a release build; a debug build was not tried.
-- Three parser shapes use no counted bracket and still abort at 100,000 levels: a ternary chain
-  (`a ? 1 : a ? 1 : ...`), an arrow chain (`y => y => ...`) and nested `Array<Array<...>>`
-  *(verified on release)*. They pass at 10,000. The count is also not a parse, so a regular
-  expression holding a quote or backtick can skew it for a line.
-- The type system will need instantiation-depth limits with a TS2589-style error. None exists.
+- Statement recursion: `check_statement` now has the stack guard. Not yet re-run on a release
+  build at 100,000 levels *(not verified)*.
+- The three parser shapes (ternary chain, arrow chain, nested `Array<...>`) are now counted by
+  `src/source_depth.rs` and refused before the parse, like bracket nesting. `tests/depth_guard.rs`
+  covers them through the real binary in a debug build; the 100,000-level run on a release binary
+  is not done. The count is still not a parse, so a regular expression holding a quote or backtick
+  can skew it for a line.
+- Instantiation depth is capped (`MAX_INSTANTIATION_DEPTH`); past it the result is cut and the file
+  gets the `TSR9102` warning once. A real TS2589 error needs a source position and is not done.
 - Budgets for recursive work, instantiation, and memory are still undefined.
 - Run Miri or ASan on appropriate arena and reset paths, add a compile-fail ownership check if
-  the arena design supports it, audit nondeterministic hash-map iteration in output paths (clippy
-  already flags three uses of `HashMap` iteration), and implement the remaining LLD metrics.
+  the arena design supports it, audit nondeterministic hash-map iteration in output paths (the three flagged uses are now
+  annotated as order-independent), and implement the remaining LLD metrics (not started). Miri and
+  ASan are not installed here; `src` has no `unsafe`.
 
 Resource protection should progress alongside E3 and E4. It should not be postponed until the
 whole type system has been rewritten.
