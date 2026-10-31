@@ -61,6 +61,8 @@ OPTIONS:
     --tsc-version V      typescript version to install for tsc (default 6.0.3)
     --tsgo-version V     typescript version to install for tsgo (default 7)
     --no-install         do not install project dependencies or compilers
+    --tsox-only          measure tsox alone: no tsc, no tsgo, no comparison (time, memory,
+                         diagnostics by code, determinism)
     --dhat               also run examples/dhat_heap (allocation profile of the benchmark workloads)
     --out DIR            results folder (default .harness/results/<UTC time>)
     --cleanup            delete the cloned Zustand checkout afterwards
@@ -1053,6 +1055,7 @@ struct Args {
     tsc_version: String,
     tsgo_version: String,
     no_install: bool,
+    tsox_only: bool,
     dhat: bool,
     out: Option<PathBuf>,
     cleanup: bool,
@@ -1090,6 +1093,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>, String> {
         tsc_version: env_text("HARNESS_TSC_VERSION").unwrap_or_else(|| "6.0.3".to_owned()),
         tsgo_version: env_text("HARNESS_TSGO_VERSION").unwrap_or_else(|| "7".to_owned()),
         no_install: env_flag("SKIP_INSTALL"),
+        tsox_only: env_flag("HARNESS_TSOX_ONLY"),
         dhat: false,
         out: None,
         cleanup: env_flag("CLEANUP"),
@@ -1138,6 +1142,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>, String> {
             "--tsc-version" => args.tsc_version = value("--tsc-version")?,
             "--tsgo-version" => args.tsgo_version = value("--tsgo-version")?,
             "--no-install" => args.no_install = true,
+            "--tsox-only" => args.tsox_only = true,
             "--dhat" => args.dhat = true,
             "--out" => args.out = Some(PathBuf::from(value("--out")?)),
             "--cleanup" => args.cleanup = true,
@@ -1447,74 +1452,76 @@ fn prepare_tools(args: &Args, root: &Path, cwd: &Path) -> Result<Vec<Tool>, Stri
 
     // tsc: classic JavaScript compiler.
     let mut notes = Vec::new();
-    let tsc_argv = match &args.tsc {
-        Some(command) => {
-            notes.push("command given with --tsc or TSC_BIN".to_owned());
-            split_command(command)
-        }
-        None if args.no_install && !tools_dir.join("tsc").exists() => {
-            return Err("no tsc: pass --tsc or drop --no-install".to_owned());
-        }
-        None => {
-            let dir = ensure_typescript(&tools_dir, "tsc", &args.tsc_version)?;
-            vec![
-                dir.join("node_modules")
-                    .join(".bin")
-                    .join("tsc")
-                    .to_string_lossy()
-                    .into_owned(),
-            ]
-        }
-    };
-    let version = probe_version(&tsc_argv, cwd)?;
-    tools.push(Tool {
-        kind: Kind::Tsc,
-        argv: tsc_argv,
-        version,
-        notes,
-    });
+    if !args.tsox_only {
+        let tsc_argv = match &args.tsc {
+            Some(command) => {
+                notes.push("command given with --tsc or TSC_BIN".to_owned());
+                split_command(command)
+            }
+            None if args.no_install && !tools_dir.join("tsc").exists() => {
+                return Err("no tsc: pass --tsc or drop --no-install".to_owned());
+            }
+            None => {
+                let dir = ensure_typescript(&tools_dir, "tsc", &args.tsc_version)?;
+                vec![
+                    dir.join("node_modules")
+                        .join(".bin")
+                        .join("tsc")
+                        .to_string_lossy()
+                        .into_owned(),
+                ]
+            }
+        };
+        let version = probe_version(&tsc_argv, cwd)?;
+        tools.push(Tool {
+            kind: Kind::Tsc,
+            argv: tsc_argv,
+            version,
+            notes,
+        });
 
-    // tsgo: the native port, called directly.
-    let mut notes = Vec::new();
-    let tsgo_argv = match &args.tsgo {
-        Some(command) => {
-            notes.push("command given with --tsgo or TSGO_BIN".to_owned());
-            split_command(command)
-        }
-        None if args.no_install && !tools_dir.join("tsgo").exists() => {
-            return Err("no tsgo: pass --tsgo or drop --no-install".to_owned());
-        }
-        None => {
-            let dir = ensure_typescript(&tools_dir, "tsgo", &args.tsgo_version)?;
-            match native_tsgo(&dir) {
-                Some(binary) => {
-                    notes.push("native binary, called directly (no Node launcher)".to_owned());
-                    vec![binary.to_string_lossy().into_owned()]
-                }
-                None => {
-                    notes.push(
-                        "NOTE: native binary not found; running through the Node launcher, so \
+        // tsgo: the native port, called directly.
+        let mut notes = Vec::new();
+        let tsgo_argv = match &args.tsgo {
+            Some(command) => {
+                notes.push("command given with --tsgo or TSGO_BIN".to_owned());
+                split_command(command)
+            }
+            None if args.no_install && !tools_dir.join("tsgo").exists() => {
+                return Err("no tsgo: pass --tsgo or drop --no-install".to_owned());
+            }
+            None => {
+                let dir = ensure_typescript(&tools_dir, "tsgo", &args.tsgo_version)?;
+                match native_tsgo(&dir) {
+                    Some(binary) => {
+                        notes.push("native binary, called directly (no Node launcher)".to_owned());
+                        vec![binary.to_string_lossy().into_owned()]
+                    }
+                    None => {
+                        notes.push(
+                            "NOTE: native binary not found; running through the Node launcher, so \
                          timing includes Node startup"
-                            .to_owned(),
-                    );
-                    vec![
-                        dir.join("node_modules")
-                            .join(".bin")
-                            .join("tsc")
-                            .to_string_lossy()
-                            .into_owned(),
-                    ]
+                                .to_owned(),
+                        );
+                        vec![
+                            dir.join("node_modules")
+                                .join(".bin")
+                                .join("tsc")
+                                .to_string_lossy()
+                                .into_owned(),
+                        ]
+                    }
                 }
             }
-        }
-    };
-    let version = probe_version(&tsgo_argv, cwd)?;
-    tools.push(Tool {
-        kind: Kind::Tsgo,
-        argv: tsgo_argv,
-        version,
-        notes,
-    });
+        };
+        let version = probe_version(&tsgo_argv, cwd)?;
+        tools.push(Tool {
+            kind: Kind::Tsgo,
+            argv: tsgo_argv,
+            version,
+            notes,
+        });
+    }
 
     // tsox: the checker under test.
     let target_dir = env_text("CARGO_TARGET_DIR")
@@ -1695,6 +1702,235 @@ struct ToolResult {
     tsox: Option<TsoxParse>,
 }
 
+// `--tsox-only`: what tsox does on its own on the project. No reference compiler, so no claim
+// about right or wrong; the numbers are speed, memory, what it reports by code, what it could not
+// check, and whether two runs agree.
+#[allow(clippy::too_many_arguments)]
+fn tsox_only_report(
+    args: &Args,
+    out_dir: &Path,
+    fixture: &Fixture,
+    install: &str,
+    machine_info: &[(String, String)],
+    load: (&Option<String>, &Option<String>),
+    tools: &[Tool],
+    results: &[ToolResult],
+    mut warnings: Vec<String>,
+    mut invalid: Vec<String>,
+) -> Result<u8, String> {
+    let tool = tools.first().ok_or("internal: no tsox tool")?;
+    let result = results.first().ok_or("internal: no tsox result")?;
+    let parse = result.tsox.as_ref().ok_or("internal: no tsox parse")?;
+    let series = &result.series;
+    if let Some(error) = &series.spawn_error {
+        invalid.push(format!("tsox: {error}"));
+    }
+    if series.samples.len() < args.runs && series.spawn_error.is_none() {
+        invalid.push(format!(
+            "tsox: only {} of {} runs finished",
+            series.samples.len(),
+            args.runs
+        ));
+    }
+    if series.samples.iter().any(|s| s.timed_out) {
+        invalid.push(format!(
+            "tsox: a run hit the {}s timeout",
+            args.timeout.as_secs()
+        ));
+    }
+    if let Some(signal) = series.samples.iter().find_map(|s| s.exit.signal) {
+        invalid.push(format!("tsox: a run was killed by signal {signal} (crash)"));
+    }
+    if !series.output_stable() {
+        invalid.push("tsox: the output differed between runs (nondeterministic)".to_owned());
+    }
+    for note in &tool.notes {
+        if note.starts_with("WARNING") {
+            warnings.push(note.clone());
+        }
+    }
+    let wall: Vec<f64> = series.samples.iter().map(|s| s.wall_ms).collect();
+    let cpu: Vec<f64> = series.samples.iter().map(|s| s.cpu_ms).collect();
+    let rss: Vec<f64> = series.samples.iter().filter_map(|s| s.rss_mb).collect();
+    let mut by_code: BTreeMap<&str, usize> = BTreeMap::new();
+    for diag in &parse.errors {
+        *by_code.entry(diag.code.as_str()).or_default() += 1;
+    }
+    let mut by_file: BTreeMap<&str, usize> = BTreeMap::new();
+    for diag in &parse.errors {
+        *by_file.entry(diag.file.as_str()).or_default() += 1;
+    }
+
+    let mut report = String::new();
+    let _ = writeln!(report, "# tsox on {} (tsox only)\n", fixture.description);
+    let _ = writeln!(
+        report,
+        "No reference compiler ran, so this says how tsox performs and what it reports, not whether          the reports are right.
+"
+    );
+    if invalid.is_empty() {
+        report.push_str("**Valid run.**\n\n");
+    } else {
+        report.push_str(
+            "**INVALID RUN:**
+",
+        );
+        for reason in &invalid {
+            let _ = writeln!(report, "- {reason}");
+        }
+        report.push('\n');
+    }
+    for warning in &warnings {
+        let _ = writeln!(report, "- warning: {warning}");
+    }
+    let _ = writeln!(report, "- tsox: {}", tool.version);
+    let _ = writeln!(
+        report,
+        "- project: {} @ {}",
+        fixture.description, fixture.revision
+    );
+    let _ = writeln!(report, "- dependencies: {install}");
+    let _ = writeln!(
+        report,
+        "- runs: {} timed after {} warm-up; load average {} then {}",
+        args.runs,
+        args.warmup,
+        load.0.as_deref().unwrap_or("n/a"),
+        load.1.as_deref().unwrap_or("n/a"),
+    );
+    for (key, value) in machine_info {
+        let _ = writeln!(report, "- {key}: {value}");
+    }
+    report.push_str("\n## Speed and memory\n\n");
+    let row = |name: &str, values: &[f64]| -> Vec<String> {
+        match stats(values) {
+            Some(s) => vec![
+                name.to_owned(),
+                f1(s.median),
+                f1(s.min),
+                f1(s.max),
+                f1(s.mean),
+                format!("{:.1}%", s.cv),
+            ],
+            None => vec![
+                name.to_owned(),
+                "n/a".into(),
+                "n/a".into(),
+                "n/a".into(),
+                "n/a".into(),
+                "n/a".into(),
+            ],
+        }
+    };
+    report.push_str(&md_table(
+        &["", "median", "min", "max", "mean", "cv"],
+        &[
+            row("wall (ms)", &wall),
+            row("cpu (ms)", &cpu),
+            row("peak memory (MB)", &rss),
+        ],
+    ));
+    report.push_str("\n## What tsox says\n\n");
+    let _ = writeln!(
+        report,
+        "- Files checked: {}; module graph: {} file(s), {} cycle(s), {} unresolved import(s)",
+        parse.checked.map_or("n/a".to_owned(), |n| n.to_string()),
+        parse
+            .graph_files
+            .map_or("n/a".to_owned(), |n| n.to_string()),
+        parse.cycles.map_or("n/a".to_owned(), |n| n.to_string()),
+        parse
+            .unresolved_imports
+            .map_or("n/a".to_owned(), |n| n.to_string()),
+    );
+    let _ = writeln!(
+        report,
+        "- Errors reported: {} ({} in project files); warnings: {}",
+        parse.reported_errors.unwrap_or(parse.errors.len()),
+        parse
+            .errors
+            .iter()
+            .filter(|d| is_project_file(&d.file))
+            .count(),
+        parse.reported_warnings.unwrap_or(parse.warnings.len()),
+    );
+    let _ = writeln!(
+        report,
+        "- Files tsox could only partly check: {}",
+        parse.partial.len()
+    );
+    let _ = writeln!(
+        report,
+        "- Exit: {}; output identical across runs: {}",
+        series
+            .samples
+            .last()
+            .map_or("n/a".to_owned(), |s| s.exit.describe()),
+        if series.output_stable() { "yes" } else { "NO" }
+    );
+    if !by_code.is_empty() {
+        report.push_str("\n### Errors by code\n\n");
+        let mut rows: Vec<(&&str, &usize)> = by_code.iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let table: Vec<Vec<String>> = rows
+            .iter()
+            .map(|(code, count)| vec![(**code).to_owned(), count.to_string()])
+            .collect();
+        report.push_str(&md_table(&["code", "count"], &table));
+    }
+    if !by_file.is_empty() {
+        report.push_str("\n### Files with the most errors\n\n");
+        let mut rows: Vec<(&&str, &usize)> = by_file.iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let table: Vec<Vec<String>> = rows
+            .iter()
+            .take(15)
+            .map(|(file, count)| vec![(**file).to_owned(), count.to_string()])
+            .collect();
+        report.push_str(&md_table(&["file", "errors"], &table));
+    }
+    if !parse.partial.is_empty() {
+        report.push_str("\n### Partly checked\n\n");
+        for (file, reason) in parse.partial.iter().take(25) {
+            let _ = writeln!(report, "- {file}: {reason}");
+        }
+    }
+    save(out_dir, "report.md", &report);
+    let summary = obj(vec![
+        ("mode", jstr("tsox-only")),
+        ("valid", J::Bool(invalid.is_empty())),
+        ("tsox_version", jstr(&tool.version)),
+        ("runs", jnum(series.samples.len() as f64)),
+        (
+            "wall_ms_median",
+            jnum(stats(&wall).map_or(f64::NAN, |s| s.median)),
+        ),
+        (
+            "cpu_ms_median",
+            jnum(stats(&cpu).map_or(f64::NAN, |s| s.median)),
+        ),
+        (
+            "peak_mb_median",
+            jnum(stats(&rss).map_or(f64::NAN, |s| s.median)),
+        ),
+        ("errors", jnum(parse.errors.len() as f64)),
+        ("warnings", jnum(parse.warnings.len() as f64)),
+        ("checked_files", jnum(parse.checked.unwrap_or(0) as f64)),
+        ("partial_files", jnum(parse.partial.len() as f64)),
+        ("output_stable", J::Bool(series.output_stable())),
+    ]);
+    let mut text = String::new();
+    summary.render(0, &mut text);
+    save(out_dir, "summary.json", &text);
+    println!("{report}");
+    println!("results: {}", out_dir.display());
+    Ok(if args.strict && !invalid.is_empty() {
+        1
+    } else {
+        0
+    })
+}
+
 fn run(args: &Args) -> Result<u8, String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let started_at = now_secs();
@@ -1869,6 +2105,21 @@ fn run(args: &Args) -> Result<u8, String> {
                 result.tsox = Some(TsoxParse { partial, ..parsed });
             }
         }
+    }
+
+    if args.tsox_only {
+        return tsox_only_report(
+            args,
+            &out_dir,
+            &fixture,
+            &install,
+            &machine_info,
+            (&load_before, &load_after),
+            &tools,
+            &results,
+            warnings,
+            invalid,
+        );
     }
 
     let by_kind = |kind: Kind| results.iter().find(|r| r.kind == kind);

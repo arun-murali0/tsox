@@ -230,6 +230,12 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
         return;
     }
 
+    // An application of a conditional alias that came out to a type prints as that type.
+    if let Some(body) = arena.decided_conditional_body(type_id) {
+        write_type(arena, body, out, depth);
+        return;
+    }
+
     // An instantiation is written out from its declaration and its arguments as they
     // read now, so `Box<Dog>` is never a spelling made before Dog had its name.
     if let Some((name, arguments)) = arena.app_parts(type_id) {
@@ -282,7 +288,7 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
             // `A | B[]` reads as `A | (B[])`, not what an array of a union means, and
             // `(A & B)[]` is not `A & B[]` either. A named intersection prints as its name.
             let needs_parens = match arena.get(*element) {
-                Type::Union(_) => true,
+                Type::Union(_) | Type::Conditional(_) => true,
                 Type::Intersection(_) => !arena.is_named(*element),
                 _ => false,
             };
@@ -294,6 +300,39 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
                 write_type(arena, *element, out, depth - 1);
             }
             out.push_str("[]");
+        }
+
+        // `[string, number?, ...boolean[]]`, the way tsc prints it: an optional element
+        // takes a `?`, the rest element reads as the array it stands for.
+        Type::Tuple(elements) => {
+            out.push('[');
+            for (index, element) in elements.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                if element.rest {
+                    out.push_str("...");
+                    let needs_parens = match arena.get(element.type_id) {
+                        Type::Union(_) => true,
+                        Type::Intersection(_) => !arena.is_named(element.type_id),
+                        _ => false,
+                    };
+                    if needs_parens {
+                        out.push('(');
+                    }
+                    write_type(arena, element.type_id, out, depth - 1);
+                    if needs_parens {
+                        out.push(')');
+                    }
+                    out.push_str("[]");
+                } else {
+                    write_type(arena, element.type_id, out, depth - 1);
+                    if element.optional {
+                        out.push('?');
+                    }
+                }
+            }
+            out.push(']');
         }
 
         Type::Union(members) => {
@@ -328,6 +367,16 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
                     out.push(')');
                 }
             }
+        }
+
+        Type::Conditional(conditional) => {
+            write_type(arena, conditional.check_type, out, depth - 1);
+            out.push_str(" extends ");
+            write_type(arena, conditional.extends_type, out, depth - 1);
+            out.push_str(" ? ");
+            write_type(arena, conditional.true_type, out, depth - 1);
+            out.push_str(" : ");
+            write_type(arena, conditional.false_type, out, depth - 1);
         }
 
         Type::Object(object) => {

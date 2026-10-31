@@ -94,3 +94,22 @@ fn literals_of_different_primitives_are_not_combined() {
         DiagnosticCode::ArgumentNotAssignable,
     );
 }
+
+// `T extends string` returned as `T | undefined`: the union names T itself, so T is a
+// subtype of it whatever its bound is.
+#[test]
+fn bounded_parameter_returned_as_union_with_itself() {
+    assert_clean(
+        "bounded_parameter_returned_as_union_with_itself.ts",
+        fixture!("bounded_parameter_returned_as_union_with_itself.ts"),
+    );
+}
+
+#[test]
+fn bounded_parameter_is_not_a_member_of_an_unrelated_union() {
+    assert_one_error(
+        "bounded_parameter_is_not_a_member_of_an_unrelated_union.ts",
+        fixture!("bounded_parameter_is_not_a_member_of_an_unrelated_union.ts"),
+        DiagnosticCode::ReturnTypeMismatch,
+    );
+}

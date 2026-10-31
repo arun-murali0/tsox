@@ -43,7 +43,6 @@ smallvec = "1.16"
 oxc_resolver = { version = "=11.24.3", optional = true }
 rayon = { version = "1.10", optional = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-petgraph = { version = "=0.8.3", optional = true }
 salsa = { version = "=0.28.5", optional = true }
 bumpalo = { version = "=3.20.3", optional = true }
 proc-macro2 = "1.0.107"
@@ -101,6 +100,10 @@ name = "foundation_benchmark"
 harness = false
 required-features = ["module-resolution", "incremental", "scratchpad"]
 
+[[example]]
+name = "incremental_baseline"
+required-features = ["incremental"]
+
 [features]
 default = ["module-resolution"]
 wasm = [
@@ -114,11 +117,13 @@ dhat-heap = ["dep:dhat"]
 # Project-level module resolution and the module graph. On by default since the checker
 # is cross-file now. It reads the filesystem through oxc_resolver, so single-file,
 # in-memory and wasm callers build with --no-default-features.
-module-resolution = ["dep:oxc_resolver", "dep:rayon", "dep:petgraph"]
+module-resolution = ["dep:oxc_resolver", "dep:rayon"]
 
-# Salsa inputs and memoized queries over project files. A shell around the checker for
-# now; see docs/architecture/foundation-dependencies.md.
-incremental = ["dep:salsa"]
+# Salsa inputs and memoized queries over project files. Off by default, so a normal build does not
+# compile Salsa: the default CLI uses the full driver, and `--incremental` / `--watch` need this
+# feature (without it they say so and stop). CI builds with --all-features, which includes it. See
+# docs/architecture/foundation-dependencies.md.
+incremental = ["dep:salsa", "module-resolution"]
 
 # Worker-local bump allocation for scratch data that does not outlive a job.
 scratchpad = ["dep:bumpalo"]

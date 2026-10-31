@@ -1,5 +1,6 @@
 mod arena;
 mod bridge;
+mod check_options;
 mod diagnostic_codes;
 mod diagnostic_messages;
 mod diagnostic_view;
@@ -18,6 +19,7 @@ mod namespace;
 #[allow(dead_code)]
 mod portable;
 mod project;
+mod reference_directives;
 #[cfg(feature = "module-resolution")]
 mod scc;
 #[cfg(feature = "scratchpad")]
@@ -31,8 +33,6 @@ mod stable_walk;
 mod stack_guard;
 mod subtyping;
 mod symbol_map;
-#[cfg(feature = "module-resolution")]
-mod topology;
 mod type_annotation;
 mod type_display;
 mod types;
@@ -43,6 +43,7 @@ mod wasm;
 #[cfg(feature = "wasm")]
 pub use wasm::TsoxChecker;
 
+pub use check_options::CheckOptions;
 pub use diagnostic_codes::DiagnosticCode;
 pub use diagnostic_view::{DiagnosticView, Position, Range};
 pub use diagnostics::{Diagnostic, Severity};
@@ -58,8 +59,12 @@ pub use portable::{
 };
 pub use stable_hash::Prim;
 pub use stack_guard::with_deep_stack;
-pub use unit::{AmbientExports, CancelToken, UnitContext, UnitError, UnitOutput, Worker};
+pub use unit::{
+    AmbientExports, CancelToken, ReturnRead, UnitContext, UnitError, UnitOutput, Worker,
+};
 
+#[cfg(feature = "incremental")]
+pub use incremental::{CheckStats, IncrementalProject, ModuleHeader, SecondPass};
 #[cfg(feature = "incremental")]
 pub use incremental::{
     Database as IncrementalDatabase, IncrementalDb, SourceFile, SourceKind, source_len,
@@ -67,9 +72,6 @@ pub use incremental::{
 
 #[cfg(feature = "scratchpad")]
 pub use scratchpad::WorkerScratch;
-
-#[cfg(feature = "module-resolution")]
-pub use topology::ModuleTopology;
 
 #[cfg(feature = "module-resolution")]
 pub use module_resolution::{

@@ -71,12 +71,9 @@ fn recursive_type_literal_alias_resolves() {
     assert_eq!(errors[0].code, DiagnosticCode::ReturnTypeMismatch);
 }
 
-// The common recursive-generic shape, referring to itself with its own,
-// same type parameter (`next: Box<T>`), resolves correctly. A self-reference
-// with a *different*, fixed type argument (e.g. a Box<T> that also carries a
-// hardcoded Box<string>) is a known remaining gap: the placeholder is still
-// empty at that point, so substitution can't yet tell it apart from the bare
-// generic shape. Not exercised here since it doesn't work yet.
+// The common recursive-generic shape refers to itself with its own type
+// parameter (`next: Box<T>`). Phase 13 also covers changed-argument recursive
+// edges in the dedicated test below.
 //
 // This fixture's own body has no variable declaration; box.value (number)
 // is returned from a function declared to return string, so the real
@@ -108,4 +105,52 @@ fn generic_recursive_property_is_substituted_through_the_cycle() {
     let errors = errors(&diagnostics);
     assert_eq!(errors.len(), 1, "got: {diagnostics:?}");
     assert_eq!(errors[0].code, DiagnosticCode::ReturnTypeMismatch);
+}
+
+// A recursive generic edge with a different argument must not reuse the unfinished
+// declaration's empty placeholder. `fixed` is RecursiveBox<string> even when the outer
+// instance is RecursiveBox<number>.
+#[test]
+fn generic_recursive_alias_specializes_changed_arguments() {
+    let source =
+        include_str!("fixtures/recursive-types/generic_recursive_alias_changed_arguments.ts");
+    let diagnostics = check(source, "generic_recursive_alias_changed_arguments.ts");
+    let errors = errors(&diagnostics);
+    assert_eq!(errors.len(), 1, "got: {diagnostics:?}");
+    assert_eq!(errors[0].code, DiagnosticCode::ReturnTypeMismatch);
+}
+
+#[test]
+fn recursive_conditional_alias_flattens_nested_arrays() {
+    let source = "type Flatten<T> = T extends (infer Item)[] ? Flatten<Item> : T;\n\
+                  type Result = Flatten<number[][]>;\n\
+                  const good: number = null as unknown as Result;\n\
+                  const bad: string = null as unknown as Result;\n";
+    let diagnostics = check(source, "recursive_conditional_flatten.ts");
+    let errors = errors(&diagnostics);
+    assert_eq!(errors.len(), 1, "got: {diagnostics:?}");
+    assert_eq!(errors[0].code, DiagnosticCode::DeclaredTypeMismatch);
+}
+
+#[test]
+fn recursive_union_alias_preserves_element_types() {
+    let source = "type ValueOrArray<T> = T | ValueOrArray<T>[];\n\
+                  const good: ValueOrArray<number> = [1, [2, 3]];\n\
+                  const bad: ValueOrArray<number> = ['no'];\n";
+    let diagnostics = check(source, "recursive_union_alias.ts");
+    let errors = errors(&diagnostics);
+    assert_eq!(errors.len(), 1, "got: {diagnostics:?}");
+    assert_eq!(errors[0].code, DiagnosticCode::DeclaredTypeMismatch);
+}
+
+#[test]
+fn recursively_awaited_conditional_alias_reaches_the_base_type() {
+    let source = "type RecursiveAwaited<T> = T extends Promise<infer Item> ? RecursiveAwaited<Item> : T;\n\
+                  type Result = RecursiveAwaited<Promise<Promise<number>>>;\n\
+                  const good: number = null as unknown as Result;\n\
+                  const bad: string = null as unknown as Result;\n";
+    let diagnostics = check(source, "recursive_conditional_awaited.ts");
+    let errors = errors(&diagnostics);
+    assert_eq!(errors.len(), 1, "got: {diagnostics:?}");
+    assert_eq!(errors[0].code, DiagnosticCode::DeclaredTypeMismatch);
 }

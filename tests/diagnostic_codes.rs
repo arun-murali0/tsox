@@ -105,6 +105,14 @@ fn generics_diagnostic_codes_are_stable() {
         "TSR1501"
     );
     assert_eq!(DiagnosticCode::TypeIsNotGeneric.as_str(), "TSR1502");
+    assert_eq!(
+        DiagnosticCode::TypeArgumentListCountMismatch.as_str(),
+        "TSR1506"
+    );
+    assert_eq!(
+        DiagnosticCode::TypeArgumentListCountMismatch.tsc_code(),
+        Some(2558)
+    );
 }
 
 #[test]

@@ -408,35 +408,9 @@ fn a_rewrite_with_the_same_bytes_is_not_a_change_but_new_bytes_are() {
 }
 
 #[test]
-fn the_topology_has_the_same_edges_as_the_graph() {
+fn the_components_come_dependencies_first() {
     let graph = build(&["cycles/entry.ts"]);
-    let topology = graph.topology();
-    assert_eq!(topology.len(), graph.len());
-    for position in 0..graph.len() {
-        let id = FileId::new(u32::try_from(position).expect("fixture is small"));
-        assert_eq!(topology.dependencies(id), graph.dependencies(id));
-        assert_eq!(topology.dependents(id), graph.dependents(id));
-    }
-}
-
-#[test]
-fn petgraph_and_the_graphs_own_search_find_the_same_cycles() {
-    for entry in [
-        "cycles/entry.ts",
-        "self-import/self_import.ts",
-        "basic/main.ts",
-    ] {
-        let graph = build(&[entry]);
-        let mut expected = graph.cycles();
-        expected.sort();
-        assert_eq!(graph.topology().cycles(), expected, "cycles under {entry}");
-    }
-}
-
-#[test]
-fn petgraph_orders_the_components_dependencies_first() {
-    let graph = build(&["cycles/entry.ts"]);
-    let components = graph.topology().components();
+    let components = graph.sccs();
     let position = |name: &str| {
         let file = id_of(&graph, name);
         components

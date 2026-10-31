@@ -130,7 +130,6 @@ src/
 ├── line_index.rs
 ├── project.rs
 ├── module_resolution/     # opt-in `module-resolution` feature
-├── topology.rs            # petgraph view of the module graph (`module-resolution`)
 ├── incremental.rs         # Salsa input and first query (`incremental`)
 ├── scratchpad.rs          # bump scratch for one worker (`scratchpad`)
 ├── error.rs
@@ -302,7 +301,7 @@ Start with the [documentation index](docs/README.md), then inspect the relevant 
 | Module Resolution | `tests/module_resolution.rs` (feature `module-resolution`) | `tests/module-resolution-fixtures/` | [Module Resolution](docs/architecture/module-resolution.md) |
 | Intersection Types | `tests/intersection_types.rs`, `tests/intersection_overloads.rs` | `tests/fixtures/intersection-types/`, `intersection-calls/`, `intersection-edges/` | [Intersection Types](docs/architecture/intersections.md) |
 | Cross-File Types | `tests/unit_exports.rs`, `tests/unit_imports.rs`, `tests/project_imports.rs`, `tests/import_diagnostics.rs` | sources inline in the tests | [Cross-File Types](docs/architecture/cross-file-types.md) |
-| Architecture Foundation | unit tests in `src/topology.rs`, `src/incremental.rs`, `src/scratchpad.rs` | none | [Architecture Foundation](docs/architecture/foundation-dependencies.md) |
+| Architecture Foundation | unit tests in `src/incremental.rs`, `src/scratchpad.rs` | none | [Architecture Foundation](docs/architecture/foundation-dependencies.md) |
 | Generics | `tests/generics_tier1.rs`, `tests/generics_tier2.rs`, `tests/generic_classes.rs`, `tests/recursive_types.rs`, `tests/builtin_generics.rs`, `tests/interface_methods.rs` | `tests/fixtures/generics-tier1/`, `generics-tier2/`, `generic-classes/`, `recursive-types/`, `builtin-generics/`, `interface-methods/` | [Generics](docs/architecture/generics.md) |
 
 
@@ -317,7 +316,7 @@ Start with [docs/README.md](docs/README.md) for the milestone map and architectu
 - [Arena](docs/architecture/arena.md): ids, interning, `Ref` slots, named nodes and the performance phases.
 - [Case study](docs/case-study.md): why the checker is built the way it is, one decision per section.
 - [Decisions](docs/decisions.md): the choices that closed the open questions in `HLD.md`, with what would reopen each.
-- [Architecture Foundation](docs/architecture/foundation-dependencies.md): the optional dependencies from the design documents (petgraph, Salsa, Bumpalo, mimalloc), each behind its own feature and not yet used by the checker.
+- [Architecture Foundation](docs/architecture/foundation-dependencies.md): the optional dependencies from the design documents (Salsa, Bumpalo, mimalloc), each behind its own feature and not yet used by the checker.
 - [Testing](docs/testing.md): fixture conventions, regression policy, benchmarks, and compatibility harness.
 - [Purpose and boundaries](docs/purpose-and-overdesign.md): why the project exists and what it deliberately does not rebuild.
 

@@ -2,11 +2,15 @@
 ///
 /// This is tsox's own namespace ("TSR####"), not TypeScript's TS####
 /// numbering: tsox never emits tsc's codes as its own. What it does keep is a
-/// one-to-one map to them. Every variant here stands for exactly one tsc
-/// diagnostic (`tsc_code`), which is why a condition tsc reports under several codes
-/// (a missing property is TS2741, a missing list TS2739, ...) has several variants
-/// here and not one that is "mostly" right. A variant with no tsc equivalent (the
-/// 9000s, which are "not yet checked" markers) maps to `None`.
+/// map to them (`tsc_code`): every variant stands for one tsc diagnostic, and a
+/// condition tsc reports under several codes (a missing property is TS2741, a
+/// missing list TS2739, ...) has several variants here and not one that is
+/// "mostly" right. The map is not one-to-one in the other direction: where tsc
+/// has a single code for several sites, several variants share it (a declaration, a
+/// return, a static field and a destructuring pattern are all TS2322), and one variant
+/// can carry more than one phrasing of its code (`ArgumentArityMismatch` says
+/// "Expected 2 arguments" and "Expected 1-2 arguments"). A variant with no tsc
+/// equivalent (the 9000s, which are "not yet checked" markers) maps to `None`.
 ///
 /// The map is what lets scripts/ts-diag-tool/compare.js compare code and message
 /// text, and not only the line a diagnostic is on.
@@ -47,6 +51,8 @@ pub enum DiagnosticCode {
     UnresolvedIdentifier,
     PropertyDoesNotExist,
     ModuleNotFound,
+    TypeDefinitionNotFound,
+    ReferencedFileNotFound,
     NoExportedMember,
     NoDefaultExport,
     TypeUsedAsValue,
@@ -54,24 +60,33 @@ pub enum DiagnosticCode {
     // 1300s: destructuring
     ArrayDestructuringRequiresArray,
 
-    // 1500s: generics
-    TypeArgumentCountMismatch,
-    TypeArgumentCountRange,
-    TypeIsNotGeneric,
-    DuplicateTypeDeclaration,
-    EnumDeclarationMerge,
-
     // 1400s: implicit any
     ImplicitAnyParameter,
     ImplicitAnyElement,
     ImplicitAnyThis,
     ImplicitAnyReturn,
+    ImplicitAnySetter,
+
+    // 1500s: generics
+    TypeArgumentCountMismatch,
+    TypeArgumentCountRange,
+    TypeArgumentListCountMismatch,
+    TypeIsNotGeneric,
+    DuplicateTypeDeclaration,
+    EnumDeclarationMerge,
 
     // 1600s: reachability
     UnreachableCode,
 
     // 1700s: type construction
     ExpressionTooComplex,
+
+    // 1800s: tuples
+    TupleIndexOutOfBounds,
+    TupleRequiredAfterOptional,
+    TupleRestAfterRest,
+    TupleOptionalAfterRest,
+    TupleNegativeIndex,
 
     // 9000s: not yet implemented (all currently emitted as warnings)
     UnimplementedCallExpressionKind,
@@ -129,22 +144,36 @@ impl DiagnosticCode {
             UnresolvedIdentifier => "TSR1201",
             PropertyDoesNotExist => "TSR1202",
             ModuleNotFound => "TSR1203",
+            TypeDefinitionNotFound => "TSR1207",
+            ReferencedFileNotFound => "TSR1208",
             NoExportedMember => "TSR1204",
             NoDefaultExport => "TSR1205",
             TypeUsedAsValue => "TSR1206",
 
             ArrayDestructuringRequiresArray => "TSR1301",
 
+            ImplicitAnyParameter => "TSR1401",
+            ImplicitAnyElement => "TSR1402",
+            ImplicitAnyThis => "TSR1403",
+            ImplicitAnyReturn => "TSR1404",
+            ImplicitAnySetter => "TSR1405",
+
             TypeArgumentCountMismatch => "TSR1501",
             TypeIsNotGeneric => "TSR1502",
             DuplicateTypeDeclaration => "TSR1503",
             TypeArgumentCountRange => "TSR1504",
             EnumDeclarationMerge => "TSR1505",
+            TypeArgumentListCountMismatch => "TSR1506",
 
-            ImplicitAnyParameter => "TSR1401",
-            ImplicitAnyElement => "TSR1402",
-            ImplicitAnyThis => "TSR1403",
-            ImplicitAnyReturn => "TSR1404",
+            UnreachableCode => "TSR1601",
+
+            ExpressionTooComplex => "TSR1701",
+
+            TupleIndexOutOfBounds => "TSR1801",
+            TupleRequiredAfterOptional => "TSR1802",
+            TupleRestAfterRest => "TSR1803",
+            TupleOptionalAfterRest => "TSR1804",
+            TupleNegativeIndex => "TSR1805",
 
             UnimplementedCallExpressionKind => "TSR9001",
             UnimplementedNewExpressionTarget => "TSR9002",
@@ -162,9 +191,6 @@ impl DiagnosticCode {
             UnresolvableTypeParameterConstraint => "TSR9014",
             InternalCheckerError => "TSR9101",
             NestingTooDeep => "TSR9102",
-
-            UnreachableCode => "TSR1601",
-            ExpressionTooComplex => "TSR1701",
         }
     }
 }
@@ -210,6 +236,8 @@ impl DiagnosticCode {
             UnresolvedIdentifier => 2304,
             PropertyDoesNotExist => 2339,
             ModuleNotFound => 2307,
+            TypeDefinitionNotFound => 2688,
+            ReferencedFileNotFound => 6053,
             NoExportedMember => 2305,
             NoDefaultExport => 1192,
             TypeUsedAsValue => 2693,
@@ -218,6 +246,7 @@ impl DiagnosticCode {
 
             TypeArgumentCountMismatch => 2314,
             TypeArgumentCountRange => 2707,
+            TypeArgumentListCountMismatch => 2558,
             TypeIsNotGeneric => 2315,
             DuplicateTypeDeclaration => 2300,
             EnumDeclarationMerge => 2567,
@@ -226,6 +255,13 @@ impl DiagnosticCode {
             ImplicitAnyElement => 7053,
             ImplicitAnyThis => 2683,
             ImplicitAnyReturn => 7023,
+            ImplicitAnySetter => 7032,
+
+            TupleIndexOutOfBounds => 2493,
+            TupleRequiredAfterOptional => 1257,
+            TupleRestAfterRest => 1265,
+            TupleOptionalAfterRest => 1266,
+            TupleNegativeIndex => 2514,
 
             UnreachableCode => 7027,
             ExpressionTooComplex => 2590,

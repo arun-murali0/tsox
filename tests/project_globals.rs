@@ -252,3 +252,28 @@ fn a_global_that_could_not_be_carried_over_is_not_reported_missing_but_others_st
     assert_eq!(codes_of(&result, "c.ts"), ["Some(2304)"]);
     assert!(errors_of(&result, "c.ts")[0].contains("nothing"));
 }
+
+#[test]
+fn a_file_that_declares_a_global_itself_sees_the_other_files_parts_of_it() {
+    // `G` is one interface of both members, in either file and in either listing order.
+    // Before, each file saw only its own member and reported the other's as unknown.
+    let files = [
+        (
+            "one.ts",
+            "interface G { a: number }\n\
+             const ok: G = { a: 1, b: 2 };\n\
+             const missing: G = { a: 1 };\n",
+        ),
+        (
+            "two.ts",
+            "export {};\ndeclare global { interface G { b: number } }\n\
+             export const ok2: G = { a: 1, b: 2 };\n\
+             export const bad: G = { a: 's', b: 2 };\n",
+        ),
+    ];
+    for reversed in [false, true] {
+        let result = run("same-file-merge", &files, reversed);
+        assert_eq!(codes_of(&result, "one.ts"), ["Some(2741)"], "{result:?}");
+        assert_eq!(codes_of(&result, "two.ts"), ["Some(2322)"], "{result:?}");
+    }
+}

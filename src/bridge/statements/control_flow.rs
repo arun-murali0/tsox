@@ -324,7 +324,12 @@ pub(super) fn check_do_while_statement(
 // What `for (const x of xs)` binds x to. An array gives its element type; a string gives
 // string; anything else (a Set, a Map, a generator, a union) is not modelled and gives
 // `any`, so a gap in the model never becomes an error on the source.
-fn for_of_element_type(iterable: TypeId, ctx: &CheckContext<'_, '_>) -> TypeId {
+fn for_of_element_type(iterable: TypeId, ctx: &mut CheckContext<'_, '_>) -> TypeId {
+    if let Type::Tuple(elements) = ctx.arena.get(iterable).clone() {
+        // Whatever any of the elements is; an optional one is not skipped, it is a value
+        // (or `undefined`) when the loop reaches it.
+        return super::super::expressions::tuple_element_union(&mut ctx.arena, &elements, true);
+    }
     match ctx.arena.get(iterable) {
         Type::Array(element) => *element,
         _ if iterable == ctx.arena.string() => ctx.arena.string(),
@@ -503,8 +508,12 @@ pub(super) fn check_try_statement(
         }
         ctx.narrow = at_catch;
         if let Some(param) = &handler.param {
-            let any = ctx.arena.any();
-            bind_pattern(&param.pattern, any, scoping, ctx);
+            let catch_type = if ctx.options.use_unknown_in_catch_variables {
+                ctx.arena.unknown()
+            } else {
+                ctx.arena.any()
+            };
+            bind_pattern(&param.pattern, catch_type, scoping, ctx);
         }
         check_block_statements(&handler.body.body, scoping, ctx);
         if !handler.body.body.last().is_some_and(statement_leaves_flow) {

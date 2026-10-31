@@ -714,11 +714,11 @@ fn an_inferred_return_type_crosses_a_cycle_once_it_settles() {
     );
 }
 
-// Two functions whose return types are each inferred from the other have no answer. tsc
-// reports TS7023 on both. tsox reads them as any, which loses that error but never
-// invents one, and the cycle still settles instead of running out of rounds.
+// Two functions in two files whose return types are each inferred from the other have no
+// answer. tsc reports TS7023 on both; so does the project, which joins what each file read.
+// The functions read as `any`, so `const n: number = g()` adds nothing, and the cycle settles.
 #[test]
-fn mutually_inferred_return_types_read_as_any_and_the_cycle_settles() {
+fn mutually_inferred_return_types_across_files_are_reported_on_both() {
     let project = run(
         "cycle-circular-return",
         &[
@@ -737,6 +737,54 @@ fn mutually_inferred_return_types_read_as_any_and_the_cycle_settles() {
         "{:?}",
         project.unsettled_names()
     );
+    for file in ["a.ts", "b.ts"] {
+        let errors = project.errors(file);
+        assert_eq!(errors.len(), 1, "{file}: {errors:?}");
+        assert_eq!(errors[0].code.tsc_code(), Some(7023), "{file}: {errors:?}");
+    }
+}
+
+#[test]
+fn a_circle_through_three_files_is_reported_on_each() {
+    let project = run(
+        "cycle-circular-return-ring",
+        &[
+            (
+                "a.ts",
+                "import { b } from './b';\nexport function a() { return b(); }",
+            ),
+            (
+                "b.ts",
+                "import { c } from './c';\nexport function b() { return c(); }",
+            ),
+            (
+                "c.ts",
+                "import { a } from './a';\nexport function c() { return a(); }",
+            ),
+        ],
+    );
+    for file in ["a.ts", "b.ts", "c.ts"] {
+        let errors = project.errors(file);
+        assert_eq!(errors.len(), 1, "{file}: {errors:?}");
+        assert_eq!(errors[0].code.tsc_code(), Some(7023), "{file}: {errors:?}");
+    }
+}
+
+#[test]
+fn a_return_annotation_breaks_the_circle_across_files() {
+    let project = run(
+        "cycle-circular-return-annotated",
+        &[
+            (
+                "a.ts",
+                "import { g } from './b';\nexport function f() { return g(); }",
+            ),
+            (
+                "b.ts",
+                "import { f } from './a';\nexport function g(): number { return f(); }",
+            ),
+        ],
+    );
     assert!(
         project.errors("a.ts").is_empty(),
         "{:?}",
@@ -747,6 +795,55 @@ fn mutually_inferred_return_types_read_as_any_and_the_cycle_settles() {
         "{:?}",
         project.errors("b.ts")
     );
+}
+
+#[test]
+fn a_call_outside_a_return_expression_is_not_a_circle_across_files() {
+    let project = run(
+        "cycle-circular-return-not-returned",
+        &[
+            (
+                "a.ts",
+                "import { g } from './b';\nexport function f() { g(); return 1; }",
+            ),
+            (
+                "b.ts",
+                "import { f } from './a';\nexport function g() { f(); return 2; }",
+            ),
+        ],
+    );
+    assert!(
+        project.errors("a.ts").is_empty(),
+        "{:?}",
+        project.errors("a.ts")
+    );
+    assert!(
+        project.errors("b.ts").is_empty(),
+        "{:?}",
+        project.errors("b.ts")
+    );
+}
+
+#[test]
+fn a_circle_that_passes_through_a_function_of_the_same_file_is_reported_on_the_exports() {
+    let project = run(
+        "cycle-circular-return-via-local",
+        &[
+            (
+                "a.ts",
+                "import { g } from './b';\nfunction h() { return g(); }\nexport function f() { return h(); }",
+            ),
+            (
+                "b.ts",
+                "import { f } from './a';\nexport function g() { return f(); }",
+            ),
+        ],
+    );
+    for file in ["a.ts", "b.ts"] {
+        let errors = project.errors(file);
+        assert_eq!(errors.len(), 1, "{file}: {errors:?}");
+        assert_eq!(errors[0].code.tsc_code(), Some(7023), "{file}: {errors:?}");
+    }
 }
 
 #[test]

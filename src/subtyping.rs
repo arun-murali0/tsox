@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 use crate::arena::{PairStack, TypeArena, TypeId};
-use crate::types::{ObjectType, Param, Type};
+use crate::types::{ObjectType, Param, TupleElement, Type, TypeParameterId};
 
 // Structural subtyping: is sub usable wherever sup is expected. The identity check
 // comes first since it is the cheapest and covers the common case of comparing a
@@ -10,7 +10,7 @@ use crate::types::{ObjectType, Param, Type};
 // that already failed to check, would need its own arm in every single case of that
 // match instead of one shared escape hatch here.
 pub fn is_subtype(arena: &TypeArena, sub: TypeId, sup: TypeId) -> bool {
-    is_subtype_inner(arena, sub, sup, &mut PairStack::new())
+    is_subtype_inner(arena, sub, sup, &mut PairStack::new(), &[])
 }
 
 // A recursive type (Node { next: Node }, whose declaration's Ref namespace::resolve
@@ -20,9 +20,35 @@ pub fn is_subtype(arena: &TypeArena, sub: TypeId, sup: TypeId) -> bool {
 // as true (coinductively: two types that only differ by "going in circles"
 // are equivalent) rather than as a fresh comparison to keep making; this is
 // the standard rule for equirecursive subtyping and is what breaks the loop.
-fn is_subtype_inner(arena: &TypeArena, sub: TypeId, sup: TypeId, seen: &mut PairStack) -> bool {
+fn is_subtype_inner(
+    arena: &TypeArena,
+    sub: TypeId,
+    sup: TypeId,
+    seen: &mut PairStack,
+    binders: &[(TypeParameterId, TypeParameterId)],
+) -> bool {
+    // Generic function signatures are alpha-equivalent when their corresponding
+    // bound parameters differ only by declaration identity. Check this before the
+    // ordinary bound-parameter rule below, which would otherwise compare constraints.
+    if let (Type::GenericParameter(sub_id, _, _), Type::GenericParameter(sup_id, _, _)) =
+        (arena.get(sub), arena.get(sup))
+        && binders
+            .iter()
+            .any(|(a, b)| (*a == *sub_id && *b == *sup_id) || (*a == *sup_id && *b == *sub_id))
+    {
+        return true;
+    }
     if is_trivial_subtype(arena, sub, sup) {
         return true;
+    }
+
+    // `Promise<T>` is an application over an empty body (there is no lib to read its
+    // members from), so looking through it would make every promise a subtype of every
+    // other. It is covariant in T, so two promises are compared by their value types.
+    if let (Some(sub_value), Some(sup_value)) =
+        (arena.promise_value_type(sub), arena.promise_value_type(sup))
+    {
+        return is_subtype_inner(arena, sub_value, sup_value, seen, binders);
     }
 
     let pair = (sub, sup);
@@ -30,12 +56,18 @@ fn is_subtype_inner(arena: &TypeArena, sub: TypeId, sup: TypeId, seen: &mut Pair
         return true;
     }
     seen.push(pair);
-    let result = is_subtype_uncached(arena, sub, sup, seen);
+    let result = is_subtype_uncached(arena, sub, sup, seen, binders);
     seen.pop();
     result
 }
 
-fn is_subtype_uncached(arena: &TypeArena, sub: TypeId, sup: TypeId, seen: &mut PairStack) -> bool {
+fn is_subtype_uncached(
+    arena: &TypeArena,
+    sub: TypeId,
+    sup: TypeId,
+    seen: &mut PairStack,
+    binders: &[(TypeParameterId, TypeParameterId)],
+) -> bool {
     match (arena.get(sub), arena.get(sup)) {
         (_, Type::Unknown) => true,
 
@@ -44,6 +76,16 @@ fn is_subtype_uncached(arena: &TypeArena, sub: TypeId, sup: TypeId, seen: &mut P
         // (see TypeArena::intersection_reduces_to_never for why), which is why this is
         // asked here and not decided when it was built.
         (Type::Intersection(_), _) if arena.intersection_reduces_to_never(sub) => true,
+
+        // A bounded parameter against a union that names it (`T | undefined`) is
+        // already a subtype through that member, whatever the bound is. Asked first,
+        // because the bound alone is not enough: `string` is not a `T`.
+        (Type::GenericParameter(_, _, Some(bound)), Type::Union(sup_members)) => {
+            sup_members
+                .iter()
+                .any(|&member| is_subtype_inner(arena, sub, member, seen, binders))
+                || is_subtype_inner(arena, *bound, sup, seen, binders)
+        }
 
         // A type parameter stands for some type that satisfies its `extends`
         // bound, so whatever the bound is assignable to, the parameter is too:
@@ -54,8 +96,18 @@ fn is_subtype_uncached(arena: &TypeArena, sub: TypeId, sup: TypeId, seen: &mut P
         // itself (identity, checked before we get here) or never/any is a
         // subtype *of* a parameter, since it could be instantiated as anything.
         (Type::GenericParameter(_, _, Some(bound)), _) => {
-            is_subtype_inner(arena, *bound, sup, seen)
+            is_subtype_inner(arena, *bound, sup, seen, binders)
         }
+
+        // The same primitive reached through a wrapper: `Wrap<number>` and a conditional
+        // that reduced to `number` are not the fixed id of `number`, so the identity check
+        // above misses them, and they read as that primitive once looked through.
+        (Type::Number, Type::Number)
+        | (Type::String, Type::String)
+        | (Type::Boolean, Type::Boolean)
+        | (Type::Null, Type::Null)
+        | (Type::Undefined, Type::Undefined)
+        | (Type::Void, Type::Void) => true,
 
         (Type::StringLiteral(a), Type::StringLiteral(b)) => a == b,
         (Type::NumberLiteral(a), Type::NumberLiteral(b)) => a == b,
@@ -78,14 +130,14 @@ fn is_subtype_uncached(arena: &TypeArena, sub: TypeId, sup: TypeId, seen: &mut P
         // matching one alternative is enough to satisfy an expected union.
         (Type::Union(sub_members), _) => sub_members
             .iter()
-            .all(|&member| is_subtype_inner(arena, member, sup, seen)),
+            .all(|&member| is_subtype_inner(arena, member, sup, seen, binders)),
 
         // To be an `A & B` a value has to be an `A` and a `B`: every member must accept
         // it. Ahead of the arms below so that an intersection against an intersection
         // is asked member by member.
         (_, Type::Intersection(sup_members)) => sup_members
             .iter()
-            .all(|&member| is_subtype_inner(arena, sub, member, seen)),
+            .all(|&member| is_subtype_inner(arena, sub, member, seen, binders)),
 
         // An `A & B` is a subtype of sup when either member already is: it can do
         // everything both can. Against a union both directions are tried, since the
@@ -94,15 +146,15 @@ fn is_subtype_uncached(arena: &TypeArena, sub: TypeId, sup: TypeId, seen: &mut P
         (Type::Intersection(sub_members), Type::Union(sup_members)) => {
             sup_members
                 .iter()
-                .any(|&member| is_subtype_inner(arena, sub, member, seen))
+                .any(|&member| is_subtype_inner(arena, sub, member, seen, binders))
                 || sub_members
                     .iter()
-                    .any(|&member| is_subtype_inner(arena, member, sup, seen))
+                    .any(|&member| is_subtype_inner(arena, member, sup, seen, binders))
         }
 
         (_, Type::Union(sup_members)) => sup_members
             .iter()
-            .any(|&member| is_subtype_inner(arena, sub, member, seen)),
+            .any(|&member| is_subtype_inner(arena, sub, member, seen, binders)),
 
         // Neither member of `{ a: number } & { b: string }` is assignable to `{ a:
         // number; b: string }`, but together they are. So an object target is also
@@ -110,22 +162,86 @@ fn is_subtype_uncached(arena: &TypeArena, sub: TypeId, sup: TypeId, seen: &mut P
         (Type::Intersection(sub_members), Type::Object(target)) => {
             sub_members
                 .iter()
-                .any(|&member| is_subtype_inner(arena, member, sup, seen))
-                || intersection_satisfies_object(arena, sub_members, target, seen)
+                .any(|&member| is_subtype_inner(arena, member, sup, seen, binders))
+                || intersection_satisfies_object(arena, sub_members, target, seen, binders)
         }
 
         (Type::Intersection(sub_members), _) => sub_members
             .iter()
-            .any(|&member| is_subtype_inner(arena, member, sup, seen)),
+            .any(|&member| is_subtype_inner(arena, member, sup, seen, binders)),
 
-        (Type::Function(a), Type::Function(b)) => function_is_subtype(arena, a, b, seen),
+        (Type::Function(a), Type::Function(b)) => function_is_subtype(arena, a, b, seen, binders),
 
-        (Type::Array(a), Type::Array(b)) => is_subtype_inner(arena, *a, *b, seen),
+        (Type::Array(a), Type::Array(b)) => is_subtype_inner(arena, *a, *b, seen, binders),
 
-        (Type::Object(a), Type::Object(b)) => object_is_subtype(arena, a, b, seen),
+        (Type::Tuple(a), Type::Tuple(b)) => tuple_is_subtype(arena, a, b, seen, binders),
+
+        // A tuple is an array of whatever its elements can be: `[string, number]` is a
+        // `(string | number)[]`. The reverse does not hold, an array has no fixed length.
+        (Type::Tuple(elements), Type::Array(target)) => elements
+            .iter()
+            .all(|e| is_subtype_inner(arena, e.type_id, *target, seen, binders)),
+
+        (Type::Object(a), Type::Object(b)) => object_is_subtype(arena, a, b, seen, binders),
 
         _ => false,
     }
+}
+
+// Tuple against tuple. The source has to promise at least as many elements as the target
+// requires, and no more than the target allows; every element it can supply then has to
+// fit the target element at the same position (or the target's rest element past the
+// last fixed one). `[string, number?]` fits `[string, number?]` and `[string, ...number[]]`
+// but not `[string, number]`, which needs the second element to be there.
+fn tuple_is_subtype(
+    arena: &TypeArena,
+    source: &[TupleElement],
+    target: &[TupleElement],
+    seen: &mut PairStack,
+    binders: &[(TypeParameterId, TypeParameterId)],
+) -> bool {
+    let required = |t: &[TupleElement]| t.iter().filter(|e| !e.optional && !e.rest).count();
+    let split = |t: &'_ [TupleElement]| -> (usize, Option<TupleElement>) {
+        match t.last() {
+            Some(last) if last.rest => (t.len() - 1, Some(*last)),
+            _ => (t.len(), None),
+        }
+    };
+    let (source_fixed, source_rest) = split(source);
+    let (target_fixed, target_rest) = split(target);
+
+    if required(source) < required(target) {
+        return false;
+    }
+    // Without a rest element the target has a largest length the source must stay under,
+    // and a source with a rest element has no largest length at all.
+    if target_rest.is_none() && (source_rest.is_some() || source_fixed > target_fixed) {
+        return false;
+    }
+    for (position, element) in source[..source_fixed].iter().enumerate() {
+        let wanted = match target[..target_fixed].get(position) {
+            Some(t) => t.type_id,
+            None => match target_rest {
+                Some(rest) => rest.type_id,
+                None => return false,
+            },
+        };
+        if !is_subtype_inner(arena, element.type_id, wanted, seen, binders) {
+            return false;
+        }
+    }
+    // A source rest element can stand at every target position from here on.
+    if let Some(rest) = source_rest {
+        for t in target[..target_fixed].iter().skip(source_fixed) {
+            if !is_subtype_inner(arena, rest.type_id, t.type_id, seen, binders) {
+                return false;
+            }
+        }
+        if let Some(target_rest) = target_rest {
+            return is_subtype_inner(arena, rest.type_id, target_rest.type_id, seen, binders);
+        }
+    }
+    true
 }
 
 // Contravariant in parameters, covariant in return type: a function can stand in
@@ -139,8 +255,9 @@ fn function_is_subtype(
     sub: &crate::types::FunctionType,
     sup: &crate::types::FunctionType,
     seen: &mut PairStack,
+    binders: &[(TypeParameterId, TypeParameterId)],
 ) -> bool {
-    function_is_subtype_with(arena, sub, sup, false, seen)
+    function_is_subtype_with(arena, sub, sup, false, seen, binders)
 }
 
 // `bivariant_params` is tsc's rule for methods: a parameter position is compatible
@@ -152,7 +269,32 @@ fn function_is_subtype_with(
     sup: &crate::types::FunctionType,
     bivariant_params: bool,
     seen: &mut PairStack,
+    binders: &[(TypeParameterId, TypeParameterId)],
 ) -> bool {
+    // A generic signature is universally quantified. Compare corresponding binders
+    // under one shared alpha-renaming environment instead of treating their parameter
+    // IDs as unrelated free variables. A generic/non-generic pair is not equivalent.
+    if sub.type_params.len() != sup.type_params.len() {
+        return false;
+    }
+    let mut active_binders = binders.to_vec();
+    for (source, target) in sub.type_params.iter().zip(&sup.type_params) {
+        active_binders.push((source.id, target.id));
+    }
+    for (source, target) in sub.type_params.iter().zip(&sup.type_params) {
+        match (source.constraint, target.constraint) {
+            // The target's constraint describes the values callers may instantiate.
+            // That set must fit inside the source's allowed set. An unconstrained
+            // source can accept a constrained target, but not the reverse.
+            (None, _) => {}
+            (Some(_), None) => return false,
+            (Some(source_bound), Some(target_bound)) => {
+                if !is_subtype_inner(arena, target_bound, source_bound, seen, &active_binders) {
+                    return false;
+                }
+            }
+        }
+    }
     // sub cannot require more arguments than callers of sup are guaranteed to
     // supply. It is free to require fewer; its extra optional or rest slots simply
     // never get filled by such a caller.
@@ -165,14 +307,26 @@ fn function_is_subtype_with(
         if let (Some(sub_param), Some(sup_param)) = (
             param_type_at(arena, &sub.params, position),
             param_type_at(arena, &sup.params, position),
-        ) && !is_subtype_inner(arena, sup_param, sub_param, seen)
-            && !(bivariant_params && is_subtype_inner(arena, sub_param, sup_param, seen))
+        ) && !is_subtype_inner(arena, sup_param, sub_param, seen, &active_binders)
+            && !(bivariant_params
+                && is_subtype_inner(arena, sub_param, sup_param, seen, &active_binders))
         {
             return false;
         }
     }
 
-    is_subtype_inner(arena, sub.return_type, sup.return_type, seen)
+    // TypeScript permits a value-returning function wherever a void-returning
+    // callback is expected: the caller promises to ignore the result. This is a
+    // function-compatibility rule, not a general rule that `number` is a subtype
+    // of `void`, so keep it here rather than weakening the primitive relation.
+    matches!(arena.get(sup.return_type), Type::Void)
+        || is_subtype_inner(
+            arena,
+            sub.return_type,
+            sup.return_type,
+            seen,
+            &active_binders,
+        )
 }
 
 fn required_param_count(params: &[Param]) -> usize {
@@ -195,6 +349,17 @@ pub(crate) fn param_type_at(
     Some(if param.rest {
         match arena.get(param.type_id) {
             Type::Array(element) => *element,
+            // `...args: [string, number?]`: the argument at this position is the tuple
+            // element at the same offset into the rest, or its rest element past the end.
+            Type::Tuple(elements) => {
+                let offset = position.saturating_sub(params.len() - 1);
+                let rest = elements.last().filter(|e| e.rest);
+                let fixed = elements.len() - usize::from(rest.is_some());
+                match elements.get(offset).filter(|_| offset < fixed) {
+                    Some(element) => element.type_id,
+                    None => rest?.type_id,
+                }
+            }
             _ => param.type_id,
         }
     } else {
@@ -213,6 +378,7 @@ fn object_is_subtype(
     sub: &ObjectType,
     sup: &ObjectType,
     seen: &mut PairStack,
+    binders: &[(TypeParameterId, TypeParameterId)],
 ) -> bool {
     // The merge-join below silently gives wrong answers on unsorted input, so an
     // unsorted ObjectType reaching here is a construction bug elsewhere, not
@@ -237,7 +403,13 @@ fn object_is_subtype(
                     if sub_property.optional && !sup_property.optional {
                         return false;
                     }
-                    if !property_is_subtype(arena, sub_property.type_id, sup_property, seen) {
+                    if !property_is_subtype(
+                        arena,
+                        sub_property.type_id,
+                        sup_property,
+                        seen,
+                        binders,
+                    ) {
                         return false;
                     }
                     continue 'sup_properties;
@@ -263,6 +435,7 @@ fn intersection_satisfies_object(
     members: &[TypeId],
     target: &ObjectType,
     seen: &mut PairStack,
+    binders: &[(TypeParameterId, TypeParameterId)],
 ) -> bool {
     target.properties.iter().all(|wanted| {
         let provided: Vec<&crate::types::PropertyEntry> = members
@@ -279,7 +452,7 @@ fn intersection_satisfies_object(
         (wanted.optional || required_here)
             && provided
                 .iter()
-                .any(|property| property_is_subtype(arena, property.type_id, wanted, seen))
+                .any(|property| property_is_subtype(arena, property.type_id, wanted, seen, binders))
     })
 }
 
@@ -293,14 +466,15 @@ fn property_is_subtype(
     sub_type: TypeId,
     sup_property: &crate::types::PropertyEntry,
     seen: &mut PairStack,
+    binders: &[(TypeParameterId, TypeParameterId)],
 ) -> bool {
     if sup_property.is_method
         && let (Type::Function(sub_function), Type::Function(sup_function)) =
             (arena.get(sub_type), arena.get(sup_property.type_id))
     {
-        return function_is_subtype_with(arena, sub_function, sup_function, true, seen);
+        return function_is_subtype_with(arena, sub_function, sup_function, true, seen, binders);
     }
-    is_subtype_inner(arena, sub_type, sup_property.type_id, seen)
+    is_subtype_inner(arena, sub_type, sup_property.type_id, seen, binders)
 }
 
 // The same property rule `object_is_subtype` applies, for a caller that has already
@@ -311,7 +485,7 @@ pub(crate) fn property_relates(
     sub_type: TypeId,
     sup_property: &crate::types::PropertyEntry,
 ) -> bool {
-    property_is_subtype(arena, sub_type, sup_property, &mut PairStack::new())
+    property_is_subtype(arena, sub_type, sup_property, &mut PairStack::new(), &[])
 }
 
 fn is_sorted_by_name(properties: &[crate::types::PropertyEntry]) -> bool {
@@ -410,6 +584,8 @@ pub(crate) fn primitive_domain(ty: &Type) -> Option<PrimitiveDomain> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     fn literal(arena: &mut TypeArena, value: &str) -> TypeId {
         arena.alloc(Type::StringLiteral(value.to_string()))
     }
@@ -579,6 +755,112 @@ mod tests {
     }
 
     #[test]
+    fn generic_function_signatures_are_compared_alpha_equivalently() {
+        use crate::types::{FunctionType, FunctionTypeParam, TypeParameterId};
+
+        let mut arena = TypeArena::new();
+        let source_id = TypeParameterId::new(100, 0);
+        let target_id = TypeParameterId::new(200, 0);
+        let source_t = arena.alloc(Type::GenericParameter(source_id, "T".into(), None));
+        let target_u = arena.alloc(Type::GenericParameter(target_id, "U".into(), None));
+        let source = arena.alloc(Type::Function(FunctionType {
+            params: vec![Param::required(source_t)],
+            return_type: source_t,
+            type_params: vec![FunctionTypeParam {
+                id: source_id,
+                name: "T".into(),
+                constraint: None,
+                default: None,
+            }],
+            is_untyped: false,
+        }));
+        let target = arena.alloc(Type::Function(FunctionType {
+            params: vec![Param::required(target_u)],
+            return_type: target_u,
+            type_params: vec![FunctionTypeParam {
+                id: target_id,
+                name: "U".into(),
+                constraint: None,
+                default: None,
+            }],
+            is_untyped: false,
+        }));
+
+        assert!(is_subtype(&arena, source, target));
+        assert!(is_subtype(&arena, target, source));
+    }
+
+    #[test]
+    fn generic_signature_constraints_are_compared_in_the_target_to_source_direction() {
+        use crate::types::{FunctionType, FunctionTypeParam, TypeParameterId};
+
+        let mut arena = TypeArena::new();
+        let source_id = TypeParameterId::new(100, 0);
+        let target_id = TypeParameterId::new(200, 0);
+        let string = arena.string();
+        let only_foo = arena.alloc(Type::StringLiteral("foo".into()));
+        let source_t = arena.alloc(Type::GenericParameter(source_id, "T".into(), Some(string)));
+        let target_u = arena.alloc(Type::GenericParameter(
+            target_id,
+            "U".into(),
+            Some(only_foo),
+        ));
+        let source = arena.alloc(Type::Function(FunctionType {
+            params: vec![Param::required(source_t)],
+            return_type: source_t,
+            type_params: vec![FunctionTypeParam {
+                id: source_id,
+                name: "T".into(),
+                constraint: Some(string),
+                default: None,
+            }],
+            is_untyped: false,
+        }));
+        let target = arena.alloc(Type::Function(FunctionType {
+            params: vec![Param::required(target_u)],
+            return_type: target_u,
+            type_params: vec![FunctionTypeParam {
+                id: target_id,
+                name: "U".into(),
+                constraint: Some(only_foo),
+                default: None,
+            }],
+            is_untyped: false,
+        }));
+
+        assert!(is_subtype(&arena, source, target));
+        assert!(!is_subtype(&arena, target, source));
+    }
+
+    #[test]
+    fn generic_signature_does_not_satisfy_a_universal_contract_with_one_concrete_signature() {
+        use crate::types::{FunctionType, FunctionTypeParam, TypeParameterId};
+
+        let mut arena = TypeArena::new();
+        let id = TypeParameterId::new(100, 0);
+        let t = arena.alloc(Type::GenericParameter(id, "T".into(), None));
+        let generic = arena.alloc(Type::Function(FunctionType {
+            params: vec![Param::required(t)],
+            return_type: t,
+            type_params: vec![FunctionTypeParam {
+                id,
+                name: "T".into(),
+                constraint: None,
+                default: None,
+            }],
+            is_untyped: false,
+        }));
+        let concrete = arena.alloc(Type::Function(FunctionType {
+            params: vec![Param::required(arena.string())],
+            return_type: arena.string(),
+            type_params: Vec::new(),
+            is_untyped: false,
+        }));
+
+        assert!(!is_subtype(&arena, concrete, generic));
+    }
+
+    #[test]
     fn function_subtyping_is_contravariant_in_params_covariant_in_return() {
         use crate::types::FunctionType;
 
@@ -600,6 +882,32 @@ mod tests {
 
         assert!(is_subtype(&arena, sub, sup));
         assert!(!is_subtype(&arena, sup, sub));
+    }
+
+    #[test]
+    fn value_returning_function_is_compatible_with_void_callback() {
+        use crate::types::FunctionType;
+
+        let mut arena = TypeArena::new();
+        let returns_number = arena.alloc(Type::Function(FunctionType {
+            params: Vec::new(),
+            return_type: arena.number(),
+            type_params: Vec::new(),
+            is_untyped: false,
+        }));
+        let returns_void = arena.alloc(Type::Function(FunctionType {
+            params: Vec::new(),
+            return_type: arena.void(),
+            type_params: Vec::new(),
+            is_untyped: false,
+        }));
+
+        assert!(is_subtype(&arena, returns_number, returns_void));
+        // The exception is intentionally one-way: a void callback cannot promise
+        // to return a number to a caller that expects to consume one.
+        assert!(!is_subtype(&arena, returns_void, returns_number));
+        // This must not change ordinary value assignability.
+        assert!(!is_subtype(&arena, arena.number(), arena.void()));
     }
 
     #[test]

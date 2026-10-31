@@ -105,12 +105,47 @@ pub(crate) fn elaborate_mismatch(
             // `const xs: number[] = [1, "a"]` is an error on `"a"` alone. Only elements
             // whose type is known from the text (a literal) are taken apart; for any
             // other element the whole expression is reported, on the same line.
-            let Type::Array(element_type) = ctx.arena.get(expected).clone() else {
+            //
+            // Against a tuple the same is done position by position, as tsc does: an
+            // element that fits no position is left to the whole literal's error (a literal
+            // of the wrong length is reported as one mismatch, not element by element). A
+            // spread makes positions unknown, so a tuple target is then not taken apart.
+            let expected_type = ctx.arena.get(expected).clone();
+            if !matches!(expected_type, Type::Array(_) | Type::Tuple(_)) {
                 return false;
+            }
+            if matches!(expected_type, Type::Tuple(_))
+                && array
+                    .elements
+                    .iter()
+                    .any(|e| matches!(e, oxc_ast::ast::ArrayExpressionElement::SpreadElement(_)))
+            {
+                return false;
+            }
+            let wanted_at = |position: usize| -> Option<TypeId> {
+                match &expected_type {
+                    Type::Array(element_type) => Some(*element_type),
+                    Type::Tuple(elements) => {
+                        let rest = elements.last().filter(|e| e.rest);
+                        let fixed = elements.len() - usize::from(rest.is_some());
+                        // A position that lands on the rest element is not taken apart: tsc
+                        // reports the whole literal there, with the range of positions in the
+                        // reason beneath it.
+                        if position < fixed {
+                            Some(elements[position].type_id)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
             };
             let mut reported = false;
-            for element in &array.elements {
+            for (position, element) in array.elements.iter().enumerate() {
                 let Some(element_expr) = element.as_expression() else {
+                    continue;
+                };
+                let Some(element_type) = wanted_at(position) else {
                     continue;
                 };
                 let have = match element_expr {

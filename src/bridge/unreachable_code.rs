@@ -84,7 +84,7 @@ impl Walker<'_, '_, '_, '_> {
             return false;
         }
         let span = stmt.span();
-        if !self.reported.contains(&span.start) {
+        if !self.ctx.options.allow_unreachable_code && !self.reported.contains(&span.start) {
             self.reported.push(span.start);
             self.ctx.error(
                 crate::diagnostic_messages::messages::unreachable_code(),

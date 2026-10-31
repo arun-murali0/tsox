@@ -270,3 +270,38 @@ fn await_unwraps_a_promise_and_leaves_other_values_alone() {
     );
     assert_eq!(codes(&result, "use.ts"), ["Some(2322)", "Some(2322)"]);
 }
+
+#[test]
+fn a_qualified_typeof_import_is_the_type_of_that_export() {
+    let result = run(
+        "typeof_qualified",
+        &[
+            ("a.ts", MODULE),
+            (
+                "use.ts",
+                "export const ok: typeof import('./a').k = 1;\n\
+                 export const bad: typeof import('./a').k = 'x';\n",
+            ),
+        ],
+        false,
+    );
+    assert_eq!(codes(&result, "use.ts"), ["Some(2322)"]);
+}
+
+#[test]
+fn an_import_type_with_type_arguments_is_the_instantiated_generic() {
+    let result = run(
+        "type_arguments",
+        &[
+            ("a.ts", "export interface Box<T> { v: T }\n"),
+            (
+                "use.ts",
+                "export const ok: import('./a').Box<number> = { v: 1 };\n\
+                 export const bad: import('./a').Box<number> = { v: 's' };\n\
+                 export const arr: import('./a').Box<string>[] = [{ v: 's' }];\n",
+            ),
+        ],
+        false,
+    );
+    assert_eq!(codes(&result, "use.ts"), ["Some(2322)"]);
+}

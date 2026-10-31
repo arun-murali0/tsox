@@ -12,7 +12,7 @@
 
 use crate::arena::{DeclSlot, TypeArena, TypeId};
 use crate::keys::{DeclKey, NodeHash, TypeParamKey};
-use crate::stable_hash::{NodeIn, ParamIn, Prim, PropIn, hash_node};
+use crate::stable_hash::{NodeIn, ParamIn, Prim, PropIn, TupleIn, hash_node};
 use crate::types::{Type, TypeParameterId};
 
 /// Maps run-local ids to stable keys. The unit that owns the declarations implements it;
@@ -22,6 +22,18 @@ pub(crate) trait KeyResolver {
     /// The name the declaration prints under, carried so an importer can print it.
     fn decl_name(&self, slot: DeclSlot) -> Option<String>;
     fn type_param_key(&self, id: TypeParameterId) -> Option<TypeParamKey>;
+    /// The name and constraint of an `infer` binder, which have one canonical answer per
+    /// binder even where the checker holds several nodes for it (a placeholder before its
+    /// constraint was read, and the constrained one). None for anything that is not one.
+    fn infer_binder(&self, _id: TypeParameterId) -> Option<InferBinder> {
+        None
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct InferBinder {
+    pub name: String,
+    pub bound: Option<TypeId>,
 }
 
 pub(crate) struct StableHasher<'a, R: KeyResolver> {
@@ -109,6 +121,43 @@ impl<'a, R: KeyResolver> StableHasher<'a, R> {
             Type::Intersection(members) => {
                 let hs = self.all(members)?;
                 return Some(hash_node(&NodeIn::Intersection(&hs)));
+            }
+            Type::Conditional(conditional) => {
+                // The `infer` binders are part of the type: which key each one has and what it
+                // is constrained to. A reference to one hashes as that key (`TypeParam`), so
+                // two scopes that both say `infer U` are two different binders.
+                let mut infers = Vec::with_capacity(conditional.infer_params.len());
+                for id in &conditional.infer_params {
+                    let key = self.resolver.type_param_key(*id)?;
+                    let bound = match self.resolver.infer_binder(*id)?.bound {
+                        Some(bound) => Some(self.hash(bound)?),
+                        None => None,
+                    };
+                    infers.push((key, bound));
+                }
+                let check = self.hash(conditional.check_type)?;
+                let extends = self.hash(conditional.extends_type)?;
+                let true_type = self.hash(conditional.true_type)?;
+                let false_type = self.hash(conditional.false_type)?;
+                return Some(hash_node(&NodeIn::Conditional {
+                    check,
+                    extends,
+                    true_type,
+                    false_type,
+                    distributive: conditional.distributive_param.is_some(),
+                    infers: &infers,
+                }));
+            }
+            Type::Tuple(elements) => {
+                let mut parts = Vec::with_capacity(elements.len());
+                for e in elements {
+                    parts.push(TupleIn {
+                        optional: e.optional,
+                        rest: e.rest,
+                        ty: self.hash(e.type_id)?,
+                    });
+                }
+                return Some(hash_node(&NodeIn::Tuple(&parts)));
             }
             Type::Object(object) => {
                 let mut hs = Vec::with_capacity(object.properties.len());

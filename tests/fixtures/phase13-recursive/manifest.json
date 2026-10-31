@@ -1,0 +1,20 @@
+{
+  "name": "TSOX Phase 13 recursive type fixtures",
+  "typescript_version_oracle": "5.8.3",
+  "command": "tsc --noEmit --strict --skipLibCheck --target ES2020 <fixture.ts>",
+  "pass": [
+    "pass/generic_recursive_alias_changed_arguments.ts",
+    "pass/recursive_conditional_flatten.ts",
+    "pass/recursive_union_alias.ts",
+    "pass/recursive_conditional_awaited.ts",
+    "pass/unguarded_nonrecursive_alias.ts"
+  ],
+  "fail": [
+    "fail/generic_recursive_alias_wrong_argument.ts",
+    "fail/recursive_conditional_flatten_wrong_type.ts",
+    "fail/recursive_union_alias_wrong_element.ts",
+    "fail/recursive_conditional_awaited_wrong_type.ts",
+    "fail/direct_self_alias_remains_invalid.ts"
+  ],
+  "note": "These fixtures validate expected TypeScript behavior. They do not execute TSOX; run TSOX integration tests separately."
+}

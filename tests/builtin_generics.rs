@@ -119,3 +119,33 @@ fn record_bracket_access_returns_value_type() {
     let diagnostics = check(source, "record_bracket_access_returns_value_type.ts");
     assert!(errors(&diagnostics).is_empty(), "got: {diagnostics:?}");
 }
+
+// Promise<T> and Record<K, V> read as an empty body, so a call such as unwrap(load())
+// bound nothing and returned the bare T. The arguments are now matched off the
+// applications.
+#[test]
+fn promise_argument_infers_the_type_parameter() {
+    let source =
+        include_str!("fixtures/builtin-generics/promise_argument_infers_the_type_parameter.ts");
+    let diagnostics = check(source, "promise_argument_infers_the_type_parameter.ts");
+    assert!(errors(&diagnostics).is_empty(), "got: {diagnostics:?}");
+}
+
+#[test]
+fn promise_argument_inference_still_rejects_a_mismatch() {
+    let source = include_str!(
+        "fixtures/builtin-generics/promise_argument_inference_still_rejects_a_mismatch.ts"
+    );
+    let diagnostics = check(
+        source,
+        "promise_argument_inference_still_rejects_a_mismatch.ts",
+    );
+    single_error(&diagnostics, DiagnosticCode::DeclaredTypeMismatch);
+}
+
+#[test]
+fn record_argument_infers_the_value_type() {
+    let source = include_str!("fixtures/builtin-generics/record_argument_infers_the_value_type.ts");
+    let diagnostics = check(source, "record_argument_infers_the_value_type.ts");
+    assert!(errors(&diagnostics).is_empty(), "got: {diagnostics:?}");
+}

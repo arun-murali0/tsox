@@ -139,6 +139,9 @@ fn note(reasons: &mut Vec<IncompleteReason>, reason: IncompleteReason) {
 /// and whether anything exported had to be left out.
 #[derive(Default)]
 pub(crate) struct ExportTable {
+    /// Exported unannotated functions that read imported ones in a return expression (see
+    /// `UnitOutput::return_reads`). Filled by `check_file`, after the collector ran.
+    pub return_reads: Vec<crate::unit::ReturnRead>,
     pub decls: Vec<PortableDecl>,
     /// Export name to the declaration's key. A name that is both a type and a value
     /// (`interface Foo` and `const Foo`) appears once for each; the declaration's kind
@@ -1081,6 +1084,8 @@ fn collect_in<'ast>(
                     table.names.push((spec.exported.clone(), *key));
                 }
                 let qualified = format!("{}.", spec.local);
+                // Sorted by name just below, so the order of the map does not reach the table.
+                #[allow(clippy::disallowed_methods)]
                 let mut inner: Vec<(&String, &Vec<DeclKey>)> = ctx
                     .imported_names
                     .iter()
@@ -1637,6 +1642,12 @@ fn register<'ast>(
         if let Resolution::Resolved(type_id) = ctx.namespace.resolve(&p.name, &mut ctx.arena) {
             if let Some((slot, _)) = ctx.arena.decl_parts(type_id) {
                 keys.slots.insert(slot, (p.key, p.name.clone()));
+            } else if p.kind == DeclKind::Alias && !p.type_params.is_empty() {
+                // A generic alias has no slot of its own, only its body; applications of
+                // it are traced back to this key through the body.
+                let slot = ctx.arena.alloc_name(&p.name);
+                keys.slots.insert(slot, (p.key, p.name.clone()));
+                ctx.arena.set_body_origin(type_id, slot);
             }
         }
     }
@@ -1779,6 +1790,13 @@ fn register_nested_signature_keys(
                     }
                 }
                 Type::Array(element) => step(path, TAG_ELEMENT, None, |p| self.visit(*element, p)),
+                Type::Tuple(elements) => {
+                    for (index, element) in elements.iter().enumerate() {
+                        step(path, TAG_ELEMENT, Some(index as u32), |p| {
+                            self.visit(element.type_id, p)
+                        });
+                    }
+                }
                 Type::Union(members) | Type::Intersection(members) => {
                     for (index, &member) in members.iter().enumerate() {
                         step(path, TAG_MEMBER, Some(index as u32), |p| {
@@ -1792,6 +1810,22 @@ fn register_nested_signature_keys(
                     }
                 }
                 Type::Named(_, inner) => step(path, TAG_INNER, None, |p| self.visit(*inner, p)),
+                // A conditional's four parts, each a step of its own under the member tag.
+                Type::Conditional(conditional) => {
+                    for (index, part) in [
+                        conditional.check_type,
+                        conditional.extends_type,
+                        conditional.true_type,
+                        conditional.false_type,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        step(path, TAG_MEMBER, Some(index as u32), |p| {
+                            self.visit(part, p)
+                        });
+                    }
+                }
                 // An App's body belongs to its declaration, which is registered separately;
                 // the application only introduces its own arguments at this use site.
                 Type::App(_, arguments, _body) => {

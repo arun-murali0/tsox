@@ -6,6 +6,14 @@ use oxc_span::SourceType;
 
 use crate::error::CheckerError;
 
+// The parser's wording for the three tuple shape rules (TS1257, TS1265, TS1266). They are the
+// parser's own text for tsc's, so they are matched whole.
+const TUPLE_SHAPE_ERRORS: [&str; 3] = [
+    "A required element cannot follow an optional element.",
+    "A rest element cannot follow another rest element.",
+    "An optional element cannot follow a rest element.",
+];
+
 #[tracing::instrument(skip(allocator, source), fields(file_name, source_len = source.len()))]
 pub fn parse<'a>(
     allocator: &'a Allocator,
@@ -37,9 +45,20 @@ pub fn parse<'a>(
             .diagnostics
             .errors()
             .map(ToString::to_string)
+            .filter(|message| !TUPLE_SHAPE_ERRORS.contains(&message.as_str()))
             .collect();
-        tracing::warn!(error_count = messages.len(), "parse completed with errors");
-        return Err(CheckerError::Parse(messages.join("; ")));
+        // Problem: `type T = [string?, number]` made the parser report a syntax error, and a
+        // syntax error refuses the whole file, so one misplaced `?` stopped every other
+        // check in it, with no position and no code. tsc reports these three tuple rules as
+        // ordinary errors at the element and keeps checking.
+        // Picked: the parser still builds the whole tree for them, so a file whose only
+        // errors are these three is parsed normally and tuple_grammar.rs reports each one
+        // at its element, under its own code. Any other error still refuses the file.
+        if !messages.is_empty() {
+            tracing::warn!(error_count = messages.len(), "parse completed with errors");
+            return Err(CheckerError::Parse(messages.join("; ")));
+        }
+        tracing::debug!("parse reported only tuple shape errors; continuing");
     }
 
     tracing::debug!(

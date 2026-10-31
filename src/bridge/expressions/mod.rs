@@ -32,6 +32,7 @@ use logical::{
     infer_as_expression_type, infer_conditional_expression_type, infer_logical_expression_type,
     infer_non_null_expression_type,
 };
+pub(crate) use members::tuple_element_union;
 use members::{
     infer_chain_element_type, infer_computed_member_access_type,
     infer_member_access_type_with_optional,
@@ -147,10 +148,12 @@ pub fn infer_expression_type(
         }
 
         Expression::ArrowFunctionExpression(arrow) => {
-            infer_arrow_function_type(arrow, scoping, ctx)
+            infer_arrow_function_type(arrow, scoping, expected, ctx)
         }
 
-        Expression::FunctionExpression(func) => infer_function_expression_type(func, scoping, ctx),
+        Expression::FunctionExpression(func) => {
+            infer_function_expression_type(func, scoping, expected, ctx)
+        }
 
         Expression::LogicalExpression(logical) => {
             infer_logical_expression_type(logical, scoping, ctx)

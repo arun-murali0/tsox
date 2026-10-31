@@ -1,0 +1,97 @@
+[
+  {
+    "file": "pass/p01-conditional-branches.ts",
+    "expected_tsc": "pass",
+    "summary": "type IsString<T> = T extends string ? true : false;"
+  },
+  {
+    "file": "pass/p02-distributive-union.ts",
+    "expected_tsc": "pass",
+    "summary": "type ToArray<T> = T extends unknown ? T[] : never;"
+  },
+  {
+    "file": "pass/p03-exclude.ts",
+    "expected_tsc": "pass",
+    "summary": "type ExcludeLocal<T, U> = T extends U ? never : T;"
+  },
+  {
+    "file": "pass/p04-infer-literal-array.ts",
+    "expected_tsc": "pass",
+    "summary": "type ElementOf<T> = T extends (infer U)[] ? U : never;"
+  },
+  {
+    "file": "pass/p05-infer-object-property.ts",
+    "expected_tsc": "pass",
+    "summary": "type ValueOf<T> = T extends { value: infer U } ? U : never;"
+  },
+  {
+    "file": "pass/p06-constrained-infer.ts",
+    "expected_tsc": "pass",
+    "summary": "type StringValue<T> = T extends { value: infer U extends string } ? U : never;"
+  },
+  {
+    "file": "pass/p07-deferred-generic.ts",
+    "expected_tsc": "pass",
+    "summary": "type Kind<T> = T extends string ? 'text' : 'other';"
+  },
+  {
+    "file": "pass/p08-any-both-branches.ts",
+    "expected_tsc": "pass",
+    "summary": "type IsString<T> = T extends string ? 'yes' : 'no';"
+  },
+  {
+    "file": "pass/p09-infer-promise.ts",
+    "expected_tsc": "pass",
+    "summary": "type AwaitedLocal<T> = T extends Promise<infer U> ? U : T;"
+  },
+  {
+    "file": "pass/p10-infer-false-arm-scope.ts",
+    "expected_tsc": "pass",
+    "summary": "type Select<U, T> = T extends { value: infer U } ? U : U;"
+  },
+  {
+    "file": "pass/p11-repeated-infer-name.ts",
+    "expected_tsc": "pass",
+    "summary": "type BothValues<T> = T extends { left: infer U; right: infer U } ? U : never;"
+  },
+  {
+    "file": "pass/p12-infer-record-value.ts",
+    "expected_tsc": "pass",
+    "summary": "type RecordValue<T> = T extends Record<string, infer U> ? U : never;"
+  },
+  {
+    "file": "pass/p13-parenthesized-distribution.ts",
+    "expected_tsc": "pass",
+    "summary": "type ToArray<T> = (T) extends unknown ? T[] : never;"
+  },
+  {
+    "file": "fail/f01-distributive-union-array.ts",
+    "expected_tsc": "fail",
+    "summary": "type ToArray<T> = T extends unknown ? T[] : never;"
+  },
+  {
+    "file": "fail/f02-exclude-keeps-no-filtered-member.ts",
+    "expected_tsc": "fail",
+    "summary": "type ExcludeLocal<T, U> = T extends U ? never : T;"
+  },
+  {
+    "file": "fail/f03-constrained-infer-rejects-bad-candidate.ts",
+    "expected_tsc": "fail",
+    "summary": "type StringValue<T> = T extends { value: infer U extends string } ? U : never;"
+  },
+  {
+    "file": "fail/f04-never-distribution.ts",
+    "expected_tsc": "fail",
+    "summary": "type ToArray<T> = T extends unknown ? T[] : never;"
+  },
+  {
+    "file": "fail/f05-wrong-conditional-branch.ts",
+    "expected_tsc": "fail",
+    "summary": "type IsString<T> = T extends string ? true : false;"
+  },
+  {
+    "file": "fail/f06-promise-argument-mismatch.ts",
+    "expected_tsc": "fail",
+    "summary": "type IsPromiseNumber<T> = T extends Promise<number> ? true : false;"
+  }
+]

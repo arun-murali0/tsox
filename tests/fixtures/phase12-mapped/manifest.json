@@ -1,0 +1,5 @@
+{
+  "expected_pass": ["pass/p01-partial-empty.ts", "pass/p02-partial-retains-values.ts", "pass/p03-required-complete.ts", "pass/p04-pick-union-keys.ts", "pass/p05-omit-key.ts"],
+  "expected_fail": ["fail/f01-partial-wrong-value.ts", "fail/f02-required-missing-property.ts", "fail/f03-pick-wrong-value.ts", "fail/f04-omit-does-not-expose-key.ts", "fail/f05-omit-keeps-other-required-fields.ts"],
+  "not_implemented": ["Readonly", "arbitrary mapped type syntax", "key remapping with as", "readonly write checking"]
+}

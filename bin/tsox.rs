@@ -23,6 +23,10 @@ struct Options {
     flat: bool,
     cycles: bool,
     partial: bool,
+    // Check through the query layer (`IncrementalProject`): slower on a first run, much faster
+    // on every later one. `--watch` implies it.
+    incremental: bool,
+    watch: bool,
 }
 
 // Set once from `--tsc-codes`: print each diagnostic under the tsc code it maps to.
@@ -133,14 +137,7 @@ fn main() -> ExitCode {
         }
     };
 
-    println!();
-    println!(
-        "Checked {} file(s): {} error(s), {} warning(s).",
-        tally.files, tally.errors, tally.warnings
-    );
-    if let Some(note) = &tally.note {
-        println!("{note}");
-    }
+    print_summary(&tally);
 
     if tally.fatal {
         // A file that failed to read or parse at all is distinguished from a file
@@ -152,6 +149,17 @@ fn main() -> ExitCode {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+fn print_summary(tally: &Tally) {
+    println!();
+    println!(
+        "Checked {} file(s): {} error(s), {} warning(s).",
+        tally.files, tally.errors, tally.warnings
+    );
+    if let Some(note) = &tally.note {
+        println!("{note}");
     }
 }
 
@@ -182,7 +190,70 @@ fn run(
     if options.flat {
         return Ok(tsox::with_deep_stack(|| check_flat(files)));
     }
+    if options.incremental {
+        return check_incremental(options, config);
+    }
     check_with_modules(files, options, config)
+}
+
+#[cfg(all(feature = "module-resolution", not(feature = "incremental")))]
+fn check_incremental(_: &Options, _: Option<&tsox::ProjectConfig>) -> Result<Tally, String> {
+    Err("this build has no `incremental` feature; rebuild with --features incremental".to_owned())
+}
+
+// The query layer: the same checker, with every unit's result kept, so a later check runs only
+// what an edit reaches. By itself (`--incremental`) one run is the first run and costs more than
+// the default; `--watch` is where it pays, checking again whenever a file changes.
+#[cfg(all(feature = "module-resolution", feature = "incremental"))]
+fn check_incremental(
+    options: &Options,
+    config: Option<&tsox::ProjectConfig>,
+) -> Result<Tally, String> {
+    let config = config.ok_or("--incremental needs a tsconfig.json")?;
+    let mut project = tsox::IncrementalProject::open(config.config_file())?;
+    let report = project.check()?;
+    let bundle = project.graph();
+    let tally = report_project(bundle.module_graph(), &report, options);
+    if !options.watch {
+        return Ok(tally);
+    }
+    print_summary(&tally);
+    eprintln!("watching for changes (Ctrl-C to stop)");
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if project.entries_changed() {
+            if let Err(message) = project.rebuild() {
+                eprintln!("error: {message}");
+                continue;
+            }
+        }
+        let report = match project.check() {
+            Ok(report) => report,
+            Err(message) => {
+                eprintln!("error: {message}");
+                continue;
+            }
+        };
+        let stats = project.stats();
+        // Report when something a reader can see may differ: the graph was rebuilt (a file
+        // appeared or went, or an import or the config changed), an input's bytes changed, or
+        // the report is not the one printed last. Counting checked units is not that test: a
+        // removed file nothing imports, or a move that changes no unit's inputs, checks zero
+        // units and still changes what the project reports.
+        if !stats.changed {
+            continue;
+        }
+        let bundle = project.graph();
+        println!(
+            "\n--- change detected: {} of {} unit(s) checked, {} reused{} ---",
+            stats.units_checked,
+            stats.units_total,
+            stats.units_reused,
+            if stats.rebuilt { ", graph rebuilt" } else { "" }
+        );
+        let tally = report_project(bundle.module_graph(), &report, options);
+        print_summary(&tally);
+    }
 }
 
 #[cfg(not(feature = "module-resolution"))]
@@ -230,7 +301,7 @@ fn check_with_modules(
     options: &Options,
     config: Option<&tsox::ProjectConfig>,
 ) -> Result<Tally, String> {
-    use tsox::{FileOutcome, ModuleGraph, ModuleResolver, check_project};
+    use tsox::{ModuleGraph, ModuleResolver, check_project};
 
     // The graph wants absolute entry paths so a file reached by an import and the same
     // file named as an entry are one node.
@@ -253,11 +324,38 @@ fn check_with_modules(
         ),
         None => (ModuleResolver::new(), None),
     };
+    // The declaration files `types` and `typeRoots` bring in are entries too: nothing imports
+    // them, yet their global declarations and ambient modules are part of the program.
+    let mut loaded_type_entries = false;
+    if let Some(config) = config {
+        for path in config.type_entry_files(&resolver) {
+            if let Ok(absolute) = fs::canonicalize(&path) {
+                if !entries.contains(&absolute) {
+                    entries.push(absolute);
+                }
+            }
+        }
+        loaded_type_entries = true;
+    }
     let mut graph = ModuleGraph::build(&entries, &resolver).map_err(|error| error.to_string())?;
     if let (Some(config), Some(root)) = (config, root) {
         graph = graph.with_root(root).with_config(config);
+        if loaded_type_entries {
+            graph = graph.with_type_entries_loaded();
+        }
     }
     let report = check_project(&graph);
+    Ok(report_project(&graph, &report, options))
+}
+
+// Prints what a project check found, in the order both ways of checking share, and counts it.
+#[cfg(feature = "module-resolution")]
+fn report_project(
+    graph: &tsox::ModuleGraph,
+    report: &tsox::ProjectReport,
+    options: &Options,
+) -> Tally {
+    use tsox::FileOutcome;
 
     let mut tally = Tally::default();
     for file_report in &report.files {
@@ -275,9 +373,9 @@ fn check_with_modules(
         }
     }
 
-    // A warning and not an error: tsconfig's `paths`, `baseUrl` and `extends` are applied,
-    // but `rootDirs`, `typeRoots` and `types` are not, so an import they would resolve can
-    // still show up here although tsc would find it.
+    // A warning and not an error: tsconfig's `paths`, `baseUrl`, `extends`, `types` and
+    // `typeRoots` are applied, but `rootDirs` is not, so an import it would resolve can still
+    // show up here although tsc would find it.
     let mut unresolved = 0usize;
     for (id, edge) in graph.unresolved() {
         if !graph.is_checkable(id) {
@@ -323,7 +421,7 @@ fn check_with_modules(
                 .collect();
             println!("{}: exports partial: {}", path.display(), why.join("; "));
         }
-        for line in tsox::summarize_partial(&graph, &report).lines() {
+        for line in tsox::summarize_partial(graph, report).lines() {
             println!("{line}");
         }
     }
@@ -346,7 +444,7 @@ fn check_with_modules(
         cycles.len(),
         unresolved
     ));
-    Ok(tally)
+    tally
 }
 
 fn parse_options(args: &[String]) -> Option<Options> {
@@ -356,6 +454,10 @@ fn parse_options(args: &[String]) -> Option<Options> {
         flat: args.iter().any(|arg| arg == "--flat"),
         cycles: args.iter().any(|arg| arg == "--cycles"),
         partial: args.iter().any(|arg| arg == "--partial"),
+        incremental: args
+            .iter()
+            .any(|arg| arg == "--incremental" || arg == "--watch"),
+        watch: args.iter().any(|arg| arg == "--watch"),
     })
 }
 
@@ -408,7 +510,8 @@ fn print_help() {
     println!(
         "tsox: a from-scratch TypeScript type checker (experimental CLI)\n\n\
          USAGE:\n    \
-         tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--tsc-codes]\n\n\
+         tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--tsc-codes]\n    \
+         [--incremental | --watch]\n\n\
          OPTIONS:\n    \
          --project <path>    Read the tsconfig.json at <path> and check the files its\n                         \
          include/exclude/files select, resolving imports with its\n                         \
@@ -423,6 +526,10 @@ fn print_help() {
          (module graph builds only).\n    \
          --tsc-codes         Print each diagnostic under the tsc code it maps to\n                         \
          (TS2322) instead of tsox's own (TSR1003).\n    \
+         --incremental       Check through the query layer. One run costs about twice the\n                         \
+         default; it exists for --watch and for tools that keep it.\n    \
+         --watch             Check, then check again whenever a file changes, running only\n                         \
+         what the change reaches (implies --incremental).\n    \
          -h, --help          Show this message.\n\n\
          EXIT CODES:\n    \
          0    no errors (warnings may still have been printed)\n    \

@@ -206,3 +206,79 @@ fn an_augmentation_that_adds_a_new_interface_is_visible() {
     );
     assert_eq!(codes(&result, "use.ts"), ["Some(2322)"]);
 }
+
+#[test]
+fn an_interface_merged_into_a_class_adds_members_to_its_instances() {
+    let files = [
+        ("cls.ts", "export class Foo { a: number = 1; }\n"),
+        (
+            "aug.ts",
+            "import './cls';\ndeclare module './cls' { interface Foo { extra: string } }\n",
+        ),
+        (
+            "use.ts",
+            "import { Foo } from './cls';\n\
+             const f = new Foo();\n\
+             export const ok: string = f.extra;\n\
+             export const bad: number = f.extra;\n\
+             export const own: number = f.a;\n",
+        ),
+    ];
+    for reversed in [false, true] {
+        let result = run("class-interface", &files, reversed);
+        assert_eq!(codes(&result, "use.ts"), ["Some(2322)"], "{result:?}");
+    }
+}
+
+#[test]
+fn an_enum_augmentation_adds_members_and_keeps_the_originals() {
+    let files = [
+        ("en.ts", "export enum Color { Red, Green }\n"),
+        (
+            "aug.ts",
+            "import './en';\ndeclare module './en' { enum Color { Blue = 2 } }\n",
+        ),
+        (
+            "use.ts",
+            "import { Color } from './en';\n\
+             export const blue = Color.Blue;\n\
+             export const red: Color = Color.Red;\n\
+             export const bad: string = Color.Green;\n",
+        ),
+    ];
+    for reversed in [false, true] {
+        let result = run("enum-augment", &files, reversed);
+        assert_eq!(codes(&result, "use.ts"), ["Some(2322)"], "{result:?}");
+    }
+}
+
+#[test]
+fn a_namespace_augmentation_adds_values_and_types() {
+    let files = [
+        (
+            "nsmod.ts",
+            "export namespace NS { export const a: number = 1; export interface I { x: number } }\n",
+        ),
+        (
+            "nsaug.ts",
+            "import './nsmod';\n\
+             declare module './nsmod' { namespace NS { const k: string; interface J { y: number } } }\n",
+        ),
+        (
+            "use.ts",
+            "import { NS } from './nsmod';\n\
+             export const a: number = NS.a;\n\
+             export const k: number = NS.k;\n\
+             export const s: string = NS.k;\n\
+             export const j: NS.J = { y: 's' };\n",
+        ),
+    ];
+    for reversed in [false, true] {
+        let result = run("namespace-augment", &files, reversed);
+        assert_eq!(
+            codes(&result, "use.ts"),
+            ["Some(2322)", "Some(2322)"],
+            "{result:?}"
+        );
+    }
+}

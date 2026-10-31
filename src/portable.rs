@@ -24,14 +24,24 @@ use crate::arena::{DeclSlot, TypeArena, TypeId};
 use crate::fxhash::FxHashMap;
 use crate::keys::{DeclKey, DeclKind, NodeHash, SigHash, StreamWriter, TypeParamKey};
 use crate::stable_hash::Prim;
+use crate::stable_walk::InferBinder;
 use crate::stable_walk::{KeyResolver, StableHasher};
-use crate::types::{FileId, FunctionType, ObjectType, Param, PropertyEntry, Type, TypeParameterId};
+use crate::types::{
+    ConditionalType, FileId, FunctionType, ObjectType, Param, PropertyEntry, Type, TypeParameterId,
+};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PProp {
     pub name: Box<str>,
     pub optional: bool,
     pub is_method: bool,
+    pub ty: u32,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct PTupleElement {
+    pub optional: bool,
+    pub rest: bool,
     pub ty: u32,
 }
 
@@ -55,6 +65,15 @@ pub struct PFunctionTypeParam {
     pub default: Option<u32>,
 }
 
+/// One `infer` binder of a conditional type: the key that names it everywhere the type is
+/// used, its name, and its constraint (`infer U extends string`) as a node index.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct PInferParam {
+    pub key: TypeParamKey,
+    pub name: Box<str>,
+    pub constraint: Option<u32>,
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum PNode {
     Prim(Prim),
@@ -64,6 +83,19 @@ pub enum PNode {
     Array(u32),
     Union(Box<[u32]>),
     Intersection(Box<[u32]>),
+    Conditional {
+        check: u32,
+        extends: u32,
+        true_type: u32,
+        false_type: u32,
+        distributive: bool,
+        /// The binders the `extends` type declares with `infer`, in order. They are
+        /// scoped to the pattern and the true branch; their references are `TypeParam`
+        /// nodes carrying the same key.
+        infer: Box<[PInferParam]>,
+    },
+    /// Elements in source order: position is the meaning of a tuple, so nothing is sorted.
+    Tuple(Box<[PTupleElement]>),
     Object {
         props: Box<[PProp]>,
         flags: u8,
@@ -202,6 +234,43 @@ impl<'a, R: KeyResolver> Exporter<'a, R> {
                 PNode::Union(self.all(&ids)?)
             }
             Type::Intersection(members) => PNode::Intersection(self.all(members)?),
+            Type::Conditional(conditional) => {
+                let mut infer = Vec::with_capacity(conditional.infer_params.len());
+                for id in &conditional.infer_params {
+                    // A binder with no key or no recorded name is one this export cannot
+                    // describe: unsupported, which makes the unit incomplete and never wrong.
+                    let key = self.resolver.type_param_key(*id)?;
+                    let binder = self.resolver.infer_binder(*id)?;
+                    let constraint = match binder.bound {
+                        Some(bound) => Some(self.emit(bound)?),
+                        None => None,
+                    };
+                    infer.push(PInferParam {
+                        key,
+                        name: binder.name.as_str().into(),
+                        constraint,
+                    });
+                }
+                PNode::Conditional {
+                    check: self.emit(conditional.check_type)?,
+                    extends: self.emit(conditional.extends_type)?,
+                    true_type: self.emit(conditional.true_type)?,
+                    false_type: self.emit(conditional.false_type)?,
+                    distributive: conditional.distributive_param.is_some(),
+                    infer: infer.into(),
+                }
+            }
+            Type::Tuple(elements) => {
+                let mut out = Vec::with_capacity(elements.len());
+                for e in elements {
+                    out.push(PTupleElement {
+                        optional: e.optional,
+                        rest: e.rest,
+                        ty: self.emit(e.type_id)?,
+                    });
+                }
+                PNode::Tuple(out.into())
+            }
             Type::Object(object) => {
                 let mut props: Vec<PProp> = Vec::with_capacity(object.properties.len());
                 for p in object.properties.iter() {
@@ -256,8 +325,15 @@ impl<'a, R: KeyResolver> Exporter<'a, R> {
             }
             Type::GenericParameter(param, name, bound) => {
                 let k = self.resolver.type_param_key(*param)?;
+                // An `infer` binder is held as several nodes that hash alike (the one made
+                // before its constraint was read, and the constrained one), so the first
+                // one exported stands for all of them: it must carry the constraint.
+                let bound = match self.resolver.infer_binder(*param) {
+                    Some(binder) => binder.bound,
+                    None => *bound,
+                };
                 let bound = match bound {
-                    Some(b) => Some(self.emit(*b)?),
+                    Some(b) => Some(self.emit(b)?),
                     None => None,
                 };
                 PNode::TypeParam {
@@ -314,6 +390,151 @@ fn sig_hash(
     SigHash::from_u128(w.finish())
 }
 
+/// Binder keys live under a child of the declaration, apart from the children that generic
+/// function types use (`DeclKey::child(0..)`), so the two cannot meet.
+const INFER_SCOPE_BASE: u32 = 1 << 20;
+
+struct ScannedBinder {
+    key: TypeParamKey,
+    binder: InferBinder,
+}
+
+/// Every `infer` binder reachable from `roots`, keyed by where it is declared: the
+/// declaration, which conditional it belongs to (counted in the order the walk meets them,
+/// which depends on the type's shape and never on the file's spans), and its position in
+/// that conditional's list. Two scopes that both say `infer U` are two keys. The walk stops
+/// at a declaration, like `emit` does.
+fn scan_infer_binders(
+    arena: &TypeArena,
+    roots: &[TypeId],
+    owner: DeclKey,
+) -> FxHashMap<TypeParameterId, ScannedBinder> {
+    // Pre-order, each node once, with a stack so nesting depth costs no recursion.
+    let mut order: Vec<TypeId> = Vec::new();
+    let mut seen: FxHashMap<TypeId, ()> = FxHashMap::default();
+    let mut stack: Vec<TypeId> = roots.iter().rev().copied().collect();
+    while let Some(id) = stack.pop() {
+        if seen.insert(id, ()).is_some() {
+            continue;
+        }
+        order.push(id);
+        let mut children: Vec<TypeId> = Vec::new();
+        match arena.raw(id) {
+            Type::Array(element) => children.push(*element),
+            Type::Union(members) | Type::Intersection(members) => children.extend(members),
+            Type::Conditional(c) => {
+                children.extend([c.check_type, c.extends_type, c.true_type, c.false_type])
+            }
+            Type::Tuple(elements) => children.extend(elements.iter().map(|e| e.type_id)),
+            Type::Object(object) => children.extend(object.properties.iter().map(|p| p.type_id)),
+            Type::Function(f) => {
+                children.extend(f.params.iter().map(|p| p.type_id));
+                children.push(f.return_type);
+                for parameter in &f.type_params {
+                    children.extend(parameter.constraint);
+                    children.extend(parameter.default);
+                }
+            }
+            Type::GenericParameter(_, _, bound) => children.extend(*bound),
+            Type::App(_, args, body) => {
+                children.extend(args);
+                children.push(*body);
+            }
+            Type::Named(_, inner) => children.push(*inner),
+            _ => {}
+        }
+        stack.extend(children.into_iter().rev());
+    }
+
+    let mut found: FxHashMap<TypeParameterId, ScannedBinder> = FxHashMap::default();
+    let mut ordinal = 0u32;
+    for &id in &order {
+        if let Type::Conditional(c) = arena.raw(id) {
+            if c.infer_params.is_empty() {
+                continue;
+            }
+            let scope = owner.child(INFER_SCOPE_BASE + ordinal);
+            ordinal += 1;
+            for (index, binder) in c.infer_params.iter().enumerate() {
+                found.entry(*binder).or_insert_with(|| ScannedBinder {
+                    key: TypeParamKey {
+                        owner: scope,
+                        index: index as u32,
+                    },
+                    binder: InferBinder {
+                        name: String::new(),
+                        bound: None,
+                    },
+                });
+            }
+        }
+    }
+    // The name and the constraint come from the binder's own nodes; prefer one that has a
+    // constraint, since the node made before the constraint was read does not.
+    for &id in &order {
+        if let Type::GenericParameter(binder, name, bound) = arena.raw(id)
+            && let Some(entry) = found.get_mut(binder)
+        {
+            if entry.binder.name.is_empty() {
+                entry.binder.name = name.clone();
+            }
+            if entry.binder.bound.is_none() {
+                entry.binder.bound = *bound;
+            }
+        }
+    }
+    found
+}
+
+/// The resolver the export really uses: the unit's own, plus the keys of `infer` binders,
+/// which the unit has no reason to know until a declaration is exported.
+struct InferScoped<'r, R: KeyResolver> {
+    arena: &'r TypeArena,
+    inner: &'r R,
+    binders: FxHashMap<TypeParameterId, ScannedBinder>,
+}
+
+impl<'r, R: KeyResolver> InferScoped<'r, R> {
+    fn new(
+        arena: &'r TypeArena,
+        inner: &'r R,
+        binders: FxHashMap<TypeParameterId, ScannedBinder>,
+    ) -> Self {
+        Self {
+            arena,
+            inner,
+            binders,
+        }
+    }
+}
+
+impl<R: KeyResolver> KeyResolver for InferScoped<'_, R> {
+    // An application has a slot of its own that no key is registered under; it is the
+    // declaration it applies that has one, so ask for that.
+    fn decl_key(&self, slot: DeclSlot) -> Option<DeclKey> {
+        self.inner.decl_key(slot).or_else(|| {
+            self.arena
+                .app_origin(slot)
+                .and_then(|origin| self.inner.decl_key(origin))
+        })
+    }
+    fn decl_name(&self, slot: DeclSlot) -> Option<String> {
+        self.inner.decl_name(slot).or_else(|| {
+            self.arena
+                .app_origin(slot)
+                .and_then(|origin| self.inner.decl_name(origin))
+        })
+    }
+    fn type_param_key(&self, id: TypeParameterId) -> Option<TypeParamKey> {
+        self.inner
+            .type_param_key(id)
+            .or_else(|| self.binders.get(&id).map(|b| b.key))
+    }
+    fn infer_binder(&self, id: TypeParameterId) -> Option<InferBinder> {
+        self.binders.get(&id).map(|b| b.binder.clone())
+    }
+}
+
 /// None when the body mentions something with no stable key yet. The caller reports the
 /// export as unsupported, which makes the unit incomplete and never makes it wrong.
 pub(crate) fn export_decl<R: KeyResolver>(
@@ -321,6 +542,18 @@ pub(crate) fn export_decl<R: KeyResolver>(
     resolver: &R,
     input: &DeclInput<'_>,
 ) -> Option<PortableDecl> {
+    // Give every `infer` binder in the declaration a key before anything is hashed.
+    let mut roots = vec![input.body];
+    for tp in input.type_params {
+        roots.extend(tp.bound);
+        roots.extend(tp.default);
+    }
+    let scoped = InferScoped::new(
+        arena,
+        resolver,
+        scan_infer_binders(arena, &roots, input.key),
+    );
+    let resolver = &scoped;
     let mut ident = StableHasher::new(arena, resolver);
     let body_hash = ident.hash(input.body)?;
     let mut bound_hashes = Vec::with_capacity(input.type_params.len());
@@ -525,7 +758,11 @@ impl Importer {
                 } else {
                     // A generic alias is left unnamed, as the checker leaves it
                     // (namespace::resolve): its body still holds bare type
-                    // parameters, and each instantiation names itself.
+                    // parameters, and each instantiation names itself. The body is
+                    // registered against the declaration's slot, so an application of
+                    // it can be traced back to this key when it is exported again.
+                    let slot = self.name_slot(arena, key, &decl.name);
+                    arena.set_body_origin(body, slot);
                     body
                 }
             }
@@ -703,6 +940,49 @@ impl Importer {
                         .alloc_intersection(members)
                         .unwrap_or_else(|_| arena.error())
                 }
+                PNode::Conditional {
+                    check,
+                    extends,
+                    true_type,
+                    false_type,
+                    distributive,
+                    infer,
+                } => {
+                    // The same keys the `TypeParam` nodes of the binders were rebuilt with,
+                    // so a reference in the pattern or the true branch is this binder.
+                    let infer_params: Vec<TypeParameterId> = infer
+                        .iter()
+                        .map(|p| self.tparam_id(p.key.owner, p.key.index))
+                        .collect();
+                    let check_type = ids[*check as usize];
+                    let distributive_param = if *distributive {
+                        match arena.get(check_type) {
+                            Type::GenericParameter(id, _, _) => Some(*id),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    arena.alloc(Type::Conditional(ConditionalType {
+                        check_type,
+                        extends_type: ids[*extends as usize],
+                        true_type: ids[*true_type as usize],
+                        false_type: ids[*false_type as usize],
+                        infer_params,
+                        distributive_param,
+                    }))
+                }
+                PNode::Tuple(elements) => {
+                    let elements = elements
+                        .iter()
+                        .map(|e| crate::types::TupleElement {
+                            type_id: ids[e.ty as usize],
+                            optional: e.optional,
+                            rest: e.rest,
+                        })
+                        .collect();
+                    arena.alloc_tuple(elements)
+                }
                 PNode::Object { props, .. } => {
                     let props = props
                         .iter()
@@ -779,6 +1059,14 @@ impl Importer {
                         arena.alloc_name(&**name)
                     };
                     self.slot_keys.insert(slot, (*key, name.to_string()));
+                    // The declaration says whether this is an application of a conditional
+                    // alias, which decides how it prints.
+                    if let Some(origin) = provider.decl(*key)
+                        && let Some(PNode::Conditional { distributive, .. }) =
+                            origin.body.nodes.get(origin.body.root as usize)
+                    {
+                        arena.set_app_conditional(slot, *distributive);
+                    }
                     let args = args.iter().map(|&a| ids[a as usize]).collect();
                     arena.alloc_app(slot, args, ids[*body as usize])
                 }
@@ -1436,4 +1724,339 @@ mod tests {
     }
 
     const GOLDEN_F_SIG: u128 = 0x7f064bd9759f6fef3a369f79740bc0ee;
+
+    // -- infer binders (phase 11C) -------------------------------------------------------
+
+    use crate::types::ConditionalType;
+
+    struct Alias {
+        key: DeclKey,
+        t: TypeParameterId,
+        t_node: TypeId,
+    }
+
+    fn alias_with_param(arena: &mut TypeArena, keys: &mut Keys, name: &str, span: u32) -> Alias {
+        let k = key(name, DeclKind::Alias);
+        let t = TypeParameterId::new(span, 0);
+        keys.tparams.push((t, TypeParamKey { owner: k, index: 0 }));
+        let t_node = arena.alloc(Type::GenericParameter(t, "T".into(), None));
+        Alias { key: k, t, t_node }
+    }
+
+    fn export_alias(
+        arena: &TypeArena,
+        keys: &Keys,
+        alias: &Alias,
+        name: &str,
+        body: TypeId,
+    ) -> PortableDecl {
+        let params = [TypeParamInput {
+            id: alias.t,
+            name: "T".into(),
+            bound: None,
+            default: None,
+        }];
+        export_decl(
+            arena,
+            keys,
+            &DeclInput {
+                key: alias.key,
+                name,
+                kind: DeclKind::Alias,
+                body,
+                type_params: &params,
+            },
+        )
+        .expect("exportable")
+    }
+
+    fn conditional_nodes(decl: &PortableDecl) -> Vec<&PNode> {
+        decl.body
+            .nodes
+            .iter()
+            .filter(|n| matches!(n, PNode::Conditional { .. }))
+            .collect()
+    }
+
+    // type ElementOf<T> = T extends (infer U)[] ? U : never
+    fn element_of(
+        arena: &mut TypeArena,
+        keys: &mut Keys,
+        name: &str,
+        span: u32,
+    ) -> (Alias, PortableDecl) {
+        let alias = alias_with_param(arena, keys, name, span);
+        let u = TypeParameterId::new(span + 20, 0);
+        let u_node = arena.alloc(Type::GenericParameter(u, "U".into(), None));
+        let extends = arena.alloc(Type::Array(u_node));
+        let never = arena.never();
+        let body = arena.alloc(Type::Conditional(ConditionalType {
+            check_type: alias.t_node,
+            extends_type: extends,
+            true_type: u_node,
+            false_type: never,
+            infer_params: vec![u],
+            distributive_param: Some(alias.t),
+        }));
+        let decl = export_alias(arena, keys, &alias, name, body);
+        (alias, decl)
+    }
+
+    #[test]
+    fn infer_binders_survive_export_and_import_and_still_substitute() {
+        let mut a = TypeArena::new();
+        let mut keys = Keys::default();
+        let (alias, decl) = element_of(&mut a, &mut keys, "ElementOf", 1);
+
+        let conditionals = conditional_nodes(&decl);
+        assert_eq!(conditionals.len(), 1);
+        let PNode::Conditional { infer, .. } = conditionals[0] else {
+            unreachable!()
+        };
+        assert_eq!(infer.len(), 1);
+        assert_eq!(&*infer[0].name, "U");
+        assert!(infer[0].constraint.is_none());
+        // The binder is keyed under the declaration, apart from its type parameter T.
+        assert_ne!(infer[0].key.owner, alias.key);
+
+        let provider = provider_of(&[&decl]);
+        let mut b = TypeArena::new();
+        let mut importer = Importer::new();
+        let body = importer.import_decl(&mut b, &provider, alias.key).unwrap();
+        let Type::Conditional(c) = b.get(body).clone() else {
+            panic!("a conditional")
+        };
+        assert_eq!(c.infer_params.len(), 1);
+        // The true branch is that binder, not a copy with another identity.
+        assert!(
+            matches!(b.get(c.true_type), Type::GenericParameter(id, _, _) if *id == c.infer_params[0])
+        );
+
+        // Instantiated in the importing file, it resolves: ElementOf<number[]> is number.
+        let params = importer
+            .generic_params(&mut b, &provider, alias.key)
+            .unwrap();
+        let number = b.number();
+        let number_array = b.alloc(Type::Array(number));
+        let result = crate::semantic::substitute_bound_type_params(
+            &mut b,
+            body,
+            &[(params[0].id, number_array)],
+        );
+        assert!(
+            matches!(b.get(result), Type::Number),
+            "got {:?}",
+            b.get(result)
+        );
+    }
+
+    #[test]
+    fn infer_constraints_survive_on_every_reference_to_the_binder() {
+        // T extends { id: infer U extends string } ? U : never, where the reference in the
+        // pattern is the node made before the constraint was read.
+        let mut a = TypeArena::new();
+        let mut keys = Keys::default();
+        let alias = alias_with_param(&mut a, &mut keys, "HasId", 1);
+        let u = TypeParameterId::new(30, 0);
+        let string = a.string();
+        let placeholder = a.alloc(Type::GenericParameter(u, "U".into(), None));
+        let constrained = a.alloc(Type::GenericParameter(u, "U".into(), Some(string)));
+        let pattern = a.alloc(Type::Object(ObjectType::new(vec![prop("id", placeholder)])));
+        let never = a.never();
+        let body = a.alloc(Type::Conditional(ConditionalType {
+            check_type: alias.t_node,
+            extends_type: pattern,
+            true_type: constrained,
+            false_type: never,
+            infer_params: vec![u],
+            distributive_param: Some(alias.t),
+        }));
+        let decl = export_alias(&a, &keys, &alias, "HasId", body);
+        let PNode::Conditional { infer, .. } = conditional_nodes(&decl)[0] else {
+            unreachable!()
+        };
+        assert!(infer[0].constraint.is_some(), "the constraint is carried");
+
+        let provider = provider_of(&[&decl]);
+        let mut b = TypeArena::new();
+        let mut importer = Importer::new();
+        let imported = importer.import_decl(&mut b, &provider, alias.key).unwrap();
+        let Type::Conditional(c) = b.get(imported).clone() else {
+            panic!("a conditional")
+        };
+        let Type::Object(pattern) = b.get(c.extends_type).clone() else {
+            panic!("an object pattern")
+        };
+        for reference in [pattern.properties[0].type_id, c.true_type] {
+            let Type::GenericParameter(id, _, bound) = b.get(reference) else {
+                panic!("a binder reference")
+            };
+            assert_eq!(*id, c.infer_params[0]);
+            assert!(
+                matches!(bound.map(|x| b.get(x)), Some(Type::String)),
+                "{:?}",
+                bound
+            );
+        }
+    }
+
+    #[test]
+    fn same_named_binders_in_separate_scopes_do_not_collide() {
+        let mut a = TypeArena::new();
+        let mut keys = Keys::default();
+        // Two declarations that both say `infer U`.
+        let (_, first) = element_of(&mut a, &mut keys, "First", 1);
+        let (_, second) = element_of(&mut a, &mut keys, "Second", 100);
+        let key_of = |decl: &PortableDecl| {
+            let PNode::Conditional { infer, .. } = conditional_nodes(decl)[0] else {
+                unreachable!()
+            };
+            infer[0].key
+        };
+        assert_ne!(key_of(&first), key_of(&second));
+
+        // Two conditionals in one declaration, each with its own `infer U`.
+        let alias = alias_with_param(&mut a, &mut keys, "Both", 200);
+        let never = a.never();
+        let mut arms = Vec::new();
+        for (n, pattern_of) in [(0u32, true), (1, false)] {
+            let u = TypeParameterId::new(300 + n, 0);
+            let u_node = a.alloc(Type::GenericParameter(u, "U".into(), None));
+            let extends = if pattern_of {
+                a.alloc(Type::Array(u_node))
+            } else {
+                a.alloc(Type::Object(ObjectType::new(vec![prop("value", u_node)])))
+            };
+            arms.push(a.alloc(Type::Conditional(ConditionalType {
+                check_type: alias.t_node,
+                extends_type: extends,
+                true_type: u_node,
+                false_type: never,
+                infer_params: vec![u],
+                distributive_param: Some(alias.t),
+            })));
+        }
+        let both = a.alloc_union(arms);
+        let decl = export_alias(&a, &keys, &alias, "Both", both);
+        let owners: Vec<DeclKey> = conditional_nodes(&decl)
+            .iter()
+            .map(|n| match n {
+                PNode::Conditional { infer, .. } => infer[0].key.owner,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(owners.len(), 2);
+        assert_ne!(owners[0], owners[1], "each conditional is its own scope");
+
+        let provider = provider_of(&[&decl]);
+        let mut b = TypeArena::new();
+        let mut importer = Importer::new();
+        let imported = importer.import_decl(&mut b, &provider, alias.key).unwrap();
+        let Type::Union(members) = b.get(imported).clone() else {
+            panic!("a union")
+        };
+        let ids: Vec<TypeParameterId> = members
+            .iter()
+            .map(|&m| match b.get(m) {
+                Type::Conditional(c) => c.infer_params[0],
+                other => panic!("a conditional, got {other:?}"),
+            })
+            .collect();
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn a_conditional_with_infer_exports_the_same_after_a_round_trip() {
+        let mut a = TypeArena::new();
+        let mut keys = Keys::default();
+        let (alias, decl) = element_of(&mut a, &mut keys, "ElementOf", 1);
+        let provider = provider_of(&[&decl]);
+
+        let mut b = TypeArena::new();
+        let mut importer = Importer::new();
+        let imported = importer.import_decl(&mut b, &provider, alias.key).unwrap();
+        let params = importer
+            .generic_params(&mut b, &provider, alias.key)
+            .unwrap();
+        let again = export_decl(
+            &b,
+            &importer,
+            &DeclInput {
+                key: alias.key,
+                name: "ElementOf",
+                kind: DeclKind::Alias,
+                body: imported,
+                type_params: &[TypeParamInput {
+                    id: params[0].id,
+                    name: "T".into(),
+                    bound: None,
+                    default: None,
+                }],
+            },
+        )
+        .expect("exports again");
+        assert_eq!(again.sig, decl.sig, "the signature hash is the same");
+        assert_eq!(again, decl, "and so is everything else");
+    }
+
+    // type DeepUnwrap<T> = T extends Promise<infer U> ? (U extends Promise<infer V> ? V : U) : T
+    #[test]
+    fn nested_infer_scopes_stay_independent() {
+        let mut a = TypeArena::new();
+        let mut keys = Keys::default();
+        let alias = alias_with_param(&mut a, &mut keys, "Deep", 1);
+        let u = TypeParameterId::new(10, 0);
+        let v = TypeParameterId::new(20, 0);
+        let u_node = a.alloc(Type::GenericParameter(u, "U".into(), None));
+        let v_node = a.alloc(Type::GenericParameter(v, "V".into(), None));
+        let (u_array, v_array) = (a.alloc(Type::Array(u_node)), a.alloc(Type::Array(v_node)));
+        let never = a.never();
+        let inner = a.alloc(Type::Conditional(ConditionalType {
+            check_type: u_node,
+            extends_type: v_array,
+            true_type: v_node,
+            false_type: u_node,
+            infer_params: vec![v],
+            distributive_param: Some(u),
+        }));
+        let outer = a.alloc(Type::Conditional(ConditionalType {
+            check_type: alias.t_node,
+            extends_type: u_array,
+            true_type: inner,
+            false_type: never,
+            infer_params: vec![u],
+            distributive_param: Some(alias.t),
+        }));
+        let decl = export_alias(&a, &keys, &alias, "Deep", outer);
+        let keys_found: Vec<TypeParamKey> = conditional_nodes(&decl)
+            .iter()
+            .flat_map(|n| match n {
+                PNode::Conditional { infer, .. } => infer.iter().map(|p| p.key).collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(keys_found.len(), 2);
+        assert_ne!(keys_found[0], keys_found[1]);
+
+        let provider = provider_of(&[&decl]);
+        let mut b = TypeArena::new();
+        let mut importer = Importer::new();
+        let imported = importer.import_decl(&mut b, &provider, alias.key).unwrap();
+        let Type::Conditional(outer) = b.get(imported).clone() else {
+            panic!("a conditional")
+        };
+        let Type::Conditional(inner) = b.get(outer.true_type).clone() else {
+            panic!("a nested conditional")
+        };
+        assert_eq!(outer.infer_params.len(), 1);
+        assert_eq!(inner.infer_params.len(), 1);
+        assert_ne!(outer.infer_params[0], inner.infer_params[0]);
+        // Each branch reads its own binder.
+        assert!(
+            matches!(b.get(inner.true_type), Type::GenericParameter(id, _, _) if *id == inner.infer_params[0])
+        );
+        assert!(
+            matches!(b.get(inner.false_type), Type::GenericParameter(id, _, _) if *id == outer.infer_params[0])
+        );
+    }
 }

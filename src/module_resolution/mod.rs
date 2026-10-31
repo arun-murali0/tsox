@@ -5,12 +5,12 @@
 // Path and specifier resolution is oxc_resolver's job. What lives here is what the
 // resolver does not do: the graph over the results, cycle detection, dependency order,
 // change detection and the parallel driver.
-mod check;
+pub(crate) mod check;
 mod config;
 mod discovery;
 mod error;
 mod graph;
-mod metadata;
+pub(crate) mod metadata;
 mod partial;
 mod resolver;
 mod schedule;
@@ -23,6 +23,8 @@ pub use config::{ConfigError, Json, ProjectConfig, parse_jsonc};
 pub use discovery::{ModuleRequest, ModuleRequestKind, ModuleScan, scan_module_requests};
 pub use error::ModuleError;
 pub use graph::{ModuleEdge, ModuleGraph};
+#[allow(unused_imports)]
+pub(crate) use metadata::FileState;
 pub use metadata::{FileFingerprint, content_hash};
 pub use partial::{PartialRow, PartialSummary, ReasonKind, summarize_partial};
 pub use resolver::{ModuleResolver, ResolveMode};
