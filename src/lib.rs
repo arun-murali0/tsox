@@ -64,6 +64,8 @@ pub use unit::{
 };
 
 #[cfg(feature = "incremental")]
+pub use incremental::{CheckStats, IncrementalProject, ModuleHeader, SecondPass};
+#[cfg(feature = "incremental")]
 pub use incremental::{
     Database as IncrementalDatabase, IncrementalDb, SourceFile, SourceKind, source_len,
 };

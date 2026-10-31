@@ -115,9 +115,11 @@ dhat-heap = ["dep:dhat"]
 # in-memory and wasm callers build with --no-default-features.
 module-resolution = ["dep:oxc_resolver", "dep:rayon"]
 
-# Salsa inputs and memoized queries over project files. A shell around the checker for
-# now; see docs/architecture/foundation-dependencies.md.
-incremental = ["dep:salsa"]
+# Salsa inputs and memoized queries over project files. Off by default, so a normal build does not
+# compile Salsa: the default CLI uses the full driver, and `--incremental` / `--watch` need this
+# feature (without it they say so and stop). CI builds with --all-features, which includes it. See
+# docs/architecture/foundation-dependencies.md.
+incremental = ["dep:salsa", "module-resolution"]
 
 # Worker-local bump allocation for scratch data that does not outlive a job.
 scratchpad = ["dep:bumpalo"]
