@@ -71,6 +71,18 @@ pub enum NodeIn<'a> {
         defaults: &'a [Option<NodeHash>],
     },
     Intersection(&'a [NodeHash]),
+    Conditional {
+        check: NodeHash,
+        extends: NodeHash,
+        true_type: NodeHash,
+        false_type: NodeHash,
+        distributive: bool,
+        /// The `infer` binders in declaration order: each one's key, and the hash of its
+        /// constraint. Empty for a conditional without any, which then writes the stream it
+        /// always did, so no existing hash changes.
+        infers: &'a [(TypeParamKey, Option<NodeHash>)],
+    },
+    Tuple(&'a [TupleIn]),
     DeclRef(DeclKey),
     App(DeclKey, &'a [NodeHash]),
     TypeParam(TypeParamKey),
@@ -157,6 +169,41 @@ pub fn hash_node(node: &NodeIn<'_>) -> NodeHash {
             w.u8(0x24).u32(members.len() as u32);
             for h in *members {
                 w.raw128(h.as_u128());
+            }
+        }
+        NodeIn::Conditional {
+            check,
+            extends,
+            true_type,
+            false_type,
+            distributive,
+            infers,
+        } => {
+            w.u8(0x25)
+                .u8(*distributive as u8)
+                .raw128(check.as_u128())
+                .raw128(extends.as_u128())
+                .raw128(true_type.as_u128())
+                .raw128(false_type.as_u128());
+            if !infers.is_empty() {
+                w.u32(infers.len() as u32);
+                for (key, bound) in *infers {
+                    w.raw128(key.owner.as_u128()).u32(key.index);
+                    match bound {
+                        Some(hash) => w.u8(1).raw128(hash.as_u128()),
+                        None => w.u8(0),
+                    };
+                }
+            }
+        }
+        // 0x25 is Conditional and 0x26 Tuple, both new: no existing stream changes, so
+        // ENC_VERSION stays.
+        NodeIn::Tuple(elements) => {
+            w.u8(0x26).u32(elements.len() as u32);
+            for e in *elements {
+                w.u8(e.optional as u8)
+                    .u8(e.rest as u8)
+                    .raw128(e.ty.as_u128());
             }
         }
         NodeIn::DeclRef(k) => {

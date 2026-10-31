@@ -1,7 +1,10 @@
 use crate::arena::{TypeArena, TypeId};
 use crate::fxhash::{FxBuildHasher, FxHashMap};
 use crate::semantic::queries::{RelationCache, SemanticQueries};
-use crate::types::{FunctionType, FunctionTypeParam, ObjectType, PropertyEntry, Type};
+use crate::types::{
+    ConditionalType, FunctionType, FunctionTypeParam, ObjectType, PropertyEntry, Type,
+    TypeParameterId,
+};
 use smallvec::SmallVec;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -40,6 +43,223 @@ pub(crate) fn infer_type_param_bindings(
         &mut SeenPairs::default(),
         false,
     )
+}
+
+// Conditional-type `infer` preserves literal candidates. Unlike ordinary generic
+// call inference, conditional inference also tracks variance: candidates collected
+// from covariant positions combine as a union, while candidates collected only from
+// contravariant positions combine as an intersection. TypeScript gives contra
+// candidates priority when a variable appears in both directions.
+fn infer_conditional_type_params(
+    arena: &mut TypeArena,
+    pattern: TypeId,
+    actual: TypeId,
+    infer_params: &[TypeParameterId],
+    bindings: &mut Vec<(TypeParameterId, TypeId)>,
+    _cache: &mut RelationCache,
+) {
+    let locked: Vec<TypeParameterId> = free_generic_params(arena, pattern)
+        .iter()
+        .map(|(id, _)| *id)
+        .filter(|id| !infer_params.contains(id))
+        .collect();
+    let mut candidates: Vec<(TypeParameterId, Vec<TypeId>, Vec<TypeId>)> = Vec::new();
+    let mut seen = HashSet::default();
+    collect_conditional_infer_candidates(
+        arena,
+        pattern,
+        actual,
+        infer_params,
+        &locked,
+        InferenceVariance::Covariant,
+        &mut candidates,
+        &mut seen,
+    );
+
+    for (id, covariant, contravariant) in candidates {
+        // Covariant evidence wins when both directions contribute candidates.
+        // If there is no covariant evidence, contravariant candidates are
+        // intersected, matching TypeScript's conditional-infer rule.
+        let chosen = if !covariant.is_empty() {
+            if covariant.len() == 1 {
+                covariant[0]
+            } else {
+                arena.alloc_union(covariant)
+            }
+        } else if contravariant.len() == 1 {
+            contravariant[0]
+        } else {
+            arena
+                .alloc_intersection(contravariant)
+                .unwrap_or_else(|_| arena.error())
+        };
+        if let Some((_, existing)) = bindings.iter_mut().find(|(bound, _)| *bound == id) {
+            *existing = chosen;
+        } else {
+            bindings.push((id, chosen));
+        }
+    }
+}
+
+fn collect_conditional_infer_candidates(
+    arena: &mut TypeArena,
+    pattern: TypeId,
+    actual: TypeId,
+    infer_params: &[TypeParameterId],
+    locked: &[TypeParameterId],
+    variance: InferenceVariance,
+    out: &mut Vec<(TypeParameterId, Vec<TypeId>, Vec<TypeId>)>,
+    seen: &mut HashSet<(TypeId, TypeId, InferenceVariance), FxBuildHasher>,
+) {
+    if !seen.insert((pattern, actual, variance)) {
+        return;
+    }
+
+    // Applications retain their declaration arguments even when the instantiated
+    // body is opaque (Promise<T>, Record<K, V>, and user generic aliases).
+    if let (Type::App(pattern_slot, pattern_args, _), Type::App(actual_slot, actual_args, _)) =
+        (arena.raw(pattern).clone(), arena.raw(actual).clone())
+        && pattern_slot == actual_slot
+        && pattern_args.len() == actual_args.len()
+    {
+        for (&p, &a) in pattern_args.iter().zip(&actual_args) {
+            collect_conditional_infer_candidates(
+                arena,
+                p,
+                a,
+                infer_params,
+                locked,
+                variance,
+                out,
+                seen,
+            );
+        }
+        return;
+    }
+
+    match arena.get(pattern).clone() {
+        Type::GenericParameter(id, _, _) if infer_params.contains(&id) && !locked.contains(&id) => {
+            let candidate = out
+                .iter_mut()
+                .find(|(candidate_id, _, _)| *candidate_id == id);
+            if let Some((_, covariant, contravariant)) = candidate {
+                match variance {
+                    InferenceVariance::Covariant => covariant.push(actual),
+                    InferenceVariance::Contravariant => contravariant.push(actual),
+                    InferenceVariance::Invariant => {
+                        covariant.push(actual);
+                        contravariant.push(actual);
+                    }
+                }
+            } else {
+                let (mut covariant, mut contravariant) = (Vec::new(), Vec::new());
+                match variance {
+                    InferenceVariance::Covariant => covariant.push(actual),
+                    InferenceVariance::Contravariant => contravariant.push(actual),
+                    InferenceVariance::Invariant => {
+                        covariant.push(actual);
+                        contravariant.push(actual);
+                    }
+                }
+                out.push((id, covariant, contravariant));
+            }
+        }
+        Type::Array(pattern_element) => {
+            if let Type::Array(actual_element) = arena.get(actual) {
+                let actual_element = *actual_element;
+                collect_conditional_infer_candidates(
+                    arena,
+                    pattern_element,
+                    actual_element,
+                    infer_params,
+                    locked,
+                    variance,
+                    out,
+                    seen,
+                );
+            }
+        }
+        Type::Object(pattern_object) => {
+            if let Type::Object(actual_object) = arena.get(actual).clone() {
+                for property in pattern_object.properties.iter() {
+                    if let Some(actual_property) = actual_object
+                        .properties
+                        .iter()
+                        .find(|candidate| candidate.name == property.name)
+                    {
+                        collect_conditional_infer_candidates(
+                            arena,
+                            property.type_id,
+                            actual_property.type_id,
+                            infer_params,
+                            locked,
+                            variance,
+                            out,
+                            seen,
+                        );
+                    }
+                }
+            }
+        }
+        Type::Function(pattern_function) => {
+            if let Type::Function(actual_function) = arena.get(actual).clone() {
+                let mut nested_locked = locked.to_vec();
+                for parameter in &pattern_function.type_params {
+                    if !nested_locked.contains(&parameter.id) {
+                        nested_locked.push(parameter.id);
+                    }
+                }
+                let count = pattern_function
+                    .params
+                    .len()
+                    .max(actual_function.params.len());
+                for position in 0..count {
+                    if let (Some(pattern_param), Some(actual_param)) = (
+                        crate::subtyping::param_type_at(arena, &pattern_function.params, position),
+                        crate::subtyping::param_type_at(arena, &actual_function.params, position),
+                    ) {
+                        collect_conditional_infer_candidates(
+                            arena,
+                            pattern_param,
+                            actual_param,
+                            infer_params,
+                            &nested_locked,
+                            variance.reversed(),
+                            out,
+                            seen,
+                        );
+                    }
+                }
+                collect_conditional_infer_candidates(
+                    arena,
+                    pattern_function.return_type,
+                    actual_function.return_type,
+                    infer_params,
+                    &nested_locked,
+                    variance,
+                    out,
+                    seen,
+                );
+            }
+        }
+        Type::Intersection(pattern_members) => {
+            for member in pattern_members {
+                if contains_type_param(arena, member) {
+                    collect_conditional_infer_candidates(
+                        arena,
+                        member,
+                        actual,
+                        infer_params,
+                        locked,
+                        variance,
+                        out,
+                        seen,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 // Inference mutates the arena (widening and union building allocate), so it cannot
@@ -101,11 +321,6 @@ fn same_literal_base(arena: &TypeArena, a: TypeId, b: TypeId) -> bool {
     matches!((literal_base(arena, a), literal_base(arena, b)), (Some(x), Some(y)) if x == y)
 }
 
-/// Whether a declared constraint asks inference to retain literal candidates.
-pub(crate) fn preserves_literal_inference(arena: &TypeArena, constraint: TypeId) -> bool {
-    bound_keeps_literals(arena, constraint)
-}
-
 /// Merge one already-collected inference candidate into a type parameter's chosen
 /// binding. Kept in one place so the structural collector and the new candidate
 /// finalizer use identical subtype/literal-widening policy.
@@ -117,17 +332,40 @@ pub(crate) fn merge_inference_candidate(
     bindings: &mut Vec<(crate::types::TypeParameterId, TypeId)>,
     cache: &mut RelationCache,
 ) {
-    match bindings.iter_mut().find(|(bound, _)| *bound == id) {
-        None => bindings.push((id, candidate)),
-        Some((_, existing)) => {
-            if is_subtype_via_cache(arena, cache, candidate, *existing) {
-                // The existing binding already covers this candidate.
-            } else if is_subtype_via_cache(arena, cache, *existing, candidate) {
-                *existing = candidate;
-            } else if keeps_literals && same_literal_base(arena, *existing, candidate) {
-                *existing = arena.alloc_union(vec![*existing, candidate]);
-            }
-        }
+    merge_inference_candidate_with_constraint(
+        arena,
+        id,
+        candidate,
+        keeps_literals,
+        None,
+        bindings,
+        cache,
+    );
+}
+
+/// Merge covariant evidence. The constraint is accepted so callers keep passing it, but it
+/// is not used to widen unrelated candidates: tsc keeps the leftmost one.
+pub(crate) fn merge_inference_candidate_with_constraint(
+    arena: &mut TypeArena,
+    id: crate::types::TypeParameterId,
+    candidate: TypeId,
+    keeps_literals: bool,
+    _constraint: Option<TypeId>,
+    bindings: &mut Vec<(crate::types::TypeParameterId, TypeId)>,
+    cache: &mut RelationCache,
+) {
+    let Some(index) = bindings.iter().position(|(bound, _)| *bound == id) else {
+        bindings.push((id, candidate));
+        return;
+    };
+
+    let existing = bindings[index].1;
+    if is_subtype_via_cache(arena, cache, candidate, existing) {
+        // The existing binding already covers this candidate.
+    } else if is_subtype_via_cache(arena, cache, existing, candidate) {
+        bindings[index].1 = candidate;
+    } else if keeps_literals && same_literal_base(arena, existing, candidate) {
+        bindings[index].1 = arena.alloc_union(vec![existing, candidate]);
     }
     // Otherwise the candidates are unrelated and the first one stays, which is what tsc
     // does (getCommonSupertype takes the leftmost candidate when none is a supertype of
@@ -174,7 +412,16 @@ fn infer_type_param_bindings_inner(
     if !seen.insert((param_type, arg_type)) {
         return;
     }
-    infer_type_param_bindings_uncached(arena, param_type, arg_type, bindings, locked, cache, seen);
+    infer_type_param_bindings_uncached(
+        arena,
+        param_type,
+        arg_type,
+        bindings,
+        locked,
+        cache,
+        seen,
+        preserve_literals,
+    );
 }
 
 fn infer_type_param_bindings_uncached(
@@ -187,6 +434,52 @@ fn infer_type_param_bindings_uncached(
     seen: &mut SeenPairs,
     preserve_literals: bool,
 ) {
+    // TypeArena::get intentionally exposes an application's instantiated body, but
+    // conditional inference needs the type arguments themselves for opaque built-ins
+    // such as Promise<T>, whose body does not mention T. Match same-declaration
+    // applications before falling back to their structural bodies.
+    if let (Type::App(param_slot, param_args, _), Type::App(arg_slot, arg_args, _)) =
+        (arena.raw(param_type).clone(), arena.raw(arg_type).clone())
+        && param_slot == arg_slot
+        && param_args.len() == arg_args.len()
+    {
+        for (&parameter, &argument) in param_args.iter().zip(&arg_args) {
+            infer_type_param_bindings_inner(
+                arena,
+                parameter,
+                argument,
+                bindings,
+                locked,
+                cache,
+                seen,
+                preserve_literals,
+            );
+        }
+        return;
+    }
+
+    // The same, found through any alias wrapped around a built-in application.
+    // `Promise<T>` and `Record<K, V>` read as an empty body through `get`, so their
+    // arguments are matched off the applications themselves.
+    if let Some((param_slot, param_args)) = arena.builtin_app_args(param_type)
+        && let Some((arg_slot, arg_args)) = arena.builtin_app_args(arg_type)
+    {
+        if param_slot == arg_slot && param_args.len() == arg_args.len() {
+            for (param_arg, arg_arg) in param_args.into_iter().zip(arg_args) {
+                infer_type_param_bindings_inner(
+                    arena,
+                    param_arg,
+                    arg_arg,
+                    bindings,
+                    locked,
+                    cache,
+                    seen,
+                    preserve_literals,
+                );
+            }
+        }
+        return;
+    }
     match arena.get(param_type).clone() {
         Type::GenericParameter(id, _, bound) => {
             // A parameter bound by an explicit call-site type argument
@@ -213,11 +506,50 @@ fn infer_type_param_bindings_uncached(
                 crate::types::widen(arena, arg_type)
             };
 
-            // `pair(1, 2)` for `T extends number` keeps both literal candidates as a
-            // union; unconstrained candidates were widened above before they arrive here.
-            merge_inference_candidate(arena, id, candidate, keeps_literals, bindings, cache);
+            // Conditional infer candidates retain their literal shape. When the same
+            // infer variable occurs more than once, combine candidate evidence instead
+            // of dropping a candidate from a different primitive family.
+            if preserve_literals {
+                if let Some((_, existing)) = bindings.iter_mut().find(|(bound, _)| *bound == id) {
+                    *existing = arena.alloc_union(vec![*existing, candidate]);
+                } else {
+                    bindings.push((id, candidate));
+                }
+            } else {
+                // `pair(1, 2)` for `T extends number` keeps both literal candidates as a
+                // union; unconstrained candidates were widened above before they arrive here.
+                merge_inference_candidate(arena, id, candidate, keeps_literals, bindings, cache);
+            }
         }
         Type::Array(param_element) => {
+            // A tuple argument is an array of what its elements are: every element is a
+            // candidate for the array's element type.
+            if let Type::Tuple(arg_elements) = arena.get(arg_type).clone() {
+                // One candidate, the union of the elements: `[string, number]` against
+                // `T[]` gives `string | number`, not two candidates that fight over T.
+                let mut members: Vec<TypeId> = Vec::with_capacity(arg_elements.len());
+                for element in &arg_elements {
+                    if !members.contains(&element.type_id) {
+                        members.push(element.type_id);
+                    }
+                }
+                let element = match members.len() {
+                    0 => arena.never(),
+                    1 => members[0],
+                    _ => arena.alloc_union(members),
+                };
+                infer_type_param_bindings_inner(
+                    arena,
+                    param_element,
+                    element,
+                    bindings,
+                    locked,
+                    cache,
+                    seen,
+                    preserve_literals,
+                );
+                return;
+            }
             let arg_element = match arena.get(arg_type) {
                 Type::Array(element) => *element,
                 _ => return,
@@ -232,6 +564,36 @@ fn infer_type_param_bindings_uncached(
                 seen,
                 preserve_literals,
             );
+        }
+        // `[T, U]` against `[string, number]`: element by element, a rest element taking
+        // every argument element past the fixed ones. Against an array it matches nothing,
+        // since an array promises no particular element at any position.
+        Type::Tuple(param_elements) => {
+            let Type::Tuple(arg_elements) = arena.get(arg_type).clone() else {
+                return;
+            };
+            let rest = param_elements.last().filter(|e| e.rest).copied();
+            let fixed = param_elements.len() - usize::from(rest.is_some());
+            for (position, arg_element) in arg_elements.iter().enumerate() {
+                let wanted = if position < fixed {
+                    param_elements[position].type_id
+                } else if let Some(rest) = rest {
+                    rest.type_id
+                } else {
+                    break;
+                };
+                // An argument rest element (`...number[]`) is the element type itself.
+                infer_type_param_bindings_inner(
+                    arena,
+                    wanted,
+                    arg_element.type_id,
+                    bindings,
+                    locked,
+                    cache,
+                    seen,
+                    preserve_literals,
+                );
+            }
         }
         Type::Object(param_object) => {
             let Type::Object(arg_object) = arena.get(arg_type).clone() else {
@@ -269,16 +631,27 @@ fn infer_type_param_bindings_uncached(
                     nested_locked.push(parameter.id);
                 }
             }
-            for (p, a) in param_fn.params.iter().zip(&arg_fn.params) {
-                infer_type_param_bindings_inner(
-                    arena,
-                    p.type_id,
-                    a.type_id,
-                    bindings,
-                    &nested_locked,
-                    cache,
-                    seen,
-                );
+            // Match parameters by call position rather than zipping declarations.
+            // Optional and rest parameters can make the declared lists differ while
+            // still describing overlapping argument positions. `param_type_at`
+            // also unwraps a rest array to its element type for each consumed slot.
+            let checked_positions = param_fn.params.len().max(arg_fn.params.len());
+            for position in 0..checked_positions {
+                if let (Some(parameter), Some(argument)) = (
+                    crate::subtyping::param_type_at(arena, &param_fn.params, position),
+                    crate::subtyping::param_type_at(arena, &arg_fn.params, position),
+                ) {
+                    infer_type_param_bindings_inner(
+                        arena,
+                        parameter,
+                        argument,
+                        bindings,
+                        &nested_locked,
+                        cache,
+                        seen,
+                        preserve_literals,
+                    );
+                }
             }
             infer_type_param_bindings_inner(
                 arena,
@@ -347,7 +720,329 @@ fn infer_type_param_bindings_uncached(
             for &member in &param_members {
                 if contains_type_param(arena, member) {
                     infer_type_param_bindings_inner(
-                        arena, member, remainder, bindings, locked, cache, seen,
+                        arena,
+                        member,
+                        remainder,
+                        bindings,
+                        locked,
+                        cache,
+                        seen,
+                        preserve_literals,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Direction in which an inference candidate was observed. Function parameters
+/// reverse the direction; return types and ordinary structural members preserve it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum InferenceVariance {
+    Covariant,
+    Contravariant,
+    Invariant,
+}
+
+impl InferenceVariance {
+    fn reversed(self) -> Self {
+        match self {
+            Self::Covariant => Self::Contravariant,
+            Self::Contravariant => Self::Covariant,
+            Self::Invariant => Self::Invariant,
+        }
+    }
+}
+
+/// One raw inference candidate, before candidates from different argument positions
+/// are reconciled. Keeping variance here is important: `T` in a return position and
+/// `T` in a callback parameter do not have the same merge rule.
+pub(crate) type RawInferenceCandidate = (
+    crate::types::TypeParameterId,
+    TypeId,
+    InferenceVariance,
+    bool,
+    Option<TypeId>,
+    // Whether the parameter sits at the top level of the declared parameter type (alone,
+    // or as a union/intersection member), and the argument type before any widening.
+    // tsc widens literals only when every candidate for a parameter is top-level.
+    bool,
+    TypeId,
+);
+
+pub(crate) fn collect_inference_candidates(
+    arena: &mut TypeArena,
+    param_type: TypeId,
+    arg_type: TypeId,
+    locked: &[crate::types::TypeParameterId],
+    out: &mut Vec<RawInferenceCandidate>,
+    cache: &mut RelationCache,
+) {
+    let mut seen = HashSet::default();
+    collect_inference_candidates_inner(
+        arena,
+        param_type,
+        arg_type,
+        locked,
+        InferenceVariance::Covariant,
+        true,
+        out,
+        cache,
+        &mut seen,
+    );
+}
+
+fn collect_inference_candidates_inner(
+    arena: &mut TypeArena,
+    param_type: TypeId,
+    arg_type: TypeId,
+    locked: &[crate::types::TypeParameterId],
+    variance: InferenceVariance,
+    top_level: bool,
+    out: &mut Vec<RawInferenceCandidate>,
+    cache: &mut RelationCache,
+    seen: &mut HashSet<(TypeId, TypeId, InferenceVariance), FxBuildHasher>,
+) {
+    if !seen.insert((param_type, arg_type, variance)) {
+        return;
+    }
+    // `Promise<T>` and `Record<K, V>` read as an empty body through `get`, so their
+    // arguments are matched off the applications themselves.
+    if let Some((param_slot, param_args)) = arena.builtin_app_args(param_type)
+        && let Some((arg_slot, arg_args)) = arena.builtin_app_args(arg_type)
+    {
+        if param_slot == arg_slot && param_args.len() == arg_args.len() {
+            for (param_arg, arg_arg) in param_args.into_iter().zip(arg_args) {
+                if contains_type_param(arena, param_arg) {
+                    collect_inference_candidates_inner(
+                        arena, param_arg, arg_arg, locked, variance, false, out, cache, seen,
+                    );
+                }
+            }
+        }
+        return;
+    }
+    // Two applications of the same generic (`Promise<T>` against `Promise<number>`,
+    // `Box<T>` against `Box<string>`) infer through their type arguments, pairwise.
+    if let (Type::App(param_slot, param_args, _), Type::App(arg_slot, arg_args, _)) =
+        (arena.get(param_type).clone(), arena.get(arg_type).clone())
+        && param_slot == arg_slot
+        && param_args.len() == arg_args.len()
+    {
+        for (param_arg, arg_arg) in param_args.into_iter().zip(arg_args) {
+            if contains_type_param(arena, param_arg) {
+                collect_inference_candidates_inner(
+                    arena, param_arg, arg_arg, locked, variance, false, out, cache, seen,
+                );
+            }
+        }
+        return;
+    }
+    match arena.get(param_type).clone() {
+        Type::GenericParameter(id, _, bound) => {
+            if locked.contains(&id) {
+                return;
+            }
+            let preserves_literals = bound.is_some_and(|b| bound_keeps_literals(arena, b));
+            let candidate = if preserves_literals {
+                arg_type
+            } else {
+                crate::types::widen(arena, arg_type)
+            };
+            // Keep the declaration's constraint with the candidate. When two
+            // covariant candidates are unrelated (e.g. Giraffe and Elephant),
+            // the constraint can provide their common inference root if both
+            // candidates satisfy it. Without the constraint, reconciliation
+            // intentionally keeps the existing mismatch behavior.
+            out.push((
+                id,
+                candidate,
+                variance,
+                preserves_literals,
+                bound,
+                top_level,
+                arg_type,
+            ));
+        }
+        Type::Array(element) => {
+            // A tuple argument is an array of what its elements are: one candidate, the
+            // union of the elements, so `[string, number]` against `T[]` gives
+            // `string | number` and not two candidates that fight over T.
+            if let Type::Tuple(arg_elements) = arena.get(arg_type).clone() {
+                let mut members: Vec<TypeId> = Vec::with_capacity(arg_elements.len());
+                for element in &arg_elements {
+                    if !members.contains(&element.type_id) {
+                        members.push(element.type_id);
+                    }
+                }
+                let joined = match members.len() {
+                    0 => arena.never(),
+                    1 => members[0],
+                    _ => arena.alloc_union(members),
+                };
+                collect_inference_candidates_inner(
+                    arena, element, joined, locked, variance, false, out, cache, seen,
+                );
+                return;
+            }
+            let Type::Array(arg_element) = arena.get(arg_type) else {
+                return;
+            };
+            let arg_element = *arg_element;
+            collect_inference_candidates_inner(
+                arena,
+                element,
+                arg_element,
+                locked,
+                variance,
+                false,
+                out,
+                cache,
+                seen,
+            );
+        }
+        // `[T, U]` against `[string, number]`: element by element, a rest element taking
+        // every argument element past the fixed ones. Against an array it matches nothing,
+        // since an array promises no particular element at any position.
+        Type::Tuple(param_elements) => {
+            let Type::Tuple(arg_elements) = arena.get(arg_type).clone() else {
+                return;
+            };
+            let rest = param_elements.last().filter(|e| e.rest).copied();
+            let fixed = param_elements.len() - usize::from(rest.is_some());
+            for (position, arg_element) in arg_elements.iter().enumerate() {
+                let wanted = if position < fixed {
+                    param_elements[position].type_id
+                } else if let Some(rest) = rest {
+                    rest.type_id
+                } else {
+                    break;
+                };
+                collect_inference_candidates_inner(
+                    arena,
+                    wanted,
+                    arg_element.type_id,
+                    locked,
+                    variance,
+                    false,
+                    out,
+                    cache,
+                    seen,
+                );
+            }
+        }
+        Type::Object(param_object) => {
+            let Type::Object(arg_object) = arena.get(arg_type).clone() else {
+                return;
+            };
+            for param_prop in param_object.properties.iter() {
+                if let Some(arg_prop) = arg_object
+                    .properties
+                    .iter()
+                    .find(|p| p.name == param_prop.name)
+                {
+                    // A method member is still a function type for inference. Its
+                    // parameter positions reverse variance and its return position
+                    // preserves variance below in the `Type::Function` arm. Making
+                    // the entire property invariant here erased that distinction, so
+                    // a method returning `T` could be treated like a consumer of `T`.
+                    // Method bivariance for assignability is handled by relation
+                    // checking; it must not flatten the candidate directions here.
+                    let property_variance = variance;
+                    collect_inference_candidates_inner(
+                        arena,
+                        param_prop.type_id,
+                        arg_prop.type_id,
+                        locked,
+                        property_variance,
+                        false,
+                        out,
+                        cache,
+                        seen,
+                    );
+                }
+            }
+        }
+        Type::Function(param_fn) => {
+            let Type::Function(arg_fn) = arena.get(arg_type).clone() else {
+                return;
+            };
+            let mut nested_locked = locked.to_vec();
+            for parameter in &param_fn.type_params {
+                if !nested_locked.contains(&parameter.id) {
+                    nested_locked.push(parameter.id);
+                }
+            }
+            let positions = param_fn.params.len().max(arg_fn.params.len());
+            for position in 0..positions {
+                if let (Some(parameter), Some(argument)) = (
+                    crate::subtyping::param_type_at(arena, &param_fn.params, position),
+                    crate::subtyping::param_type_at(arena, &arg_fn.params, position),
+                ) {
+                    collect_inference_candidates_inner(
+                        arena,
+                        parameter,
+                        argument,
+                        &nested_locked,
+                        variance.reversed(),
+                        false,
+                        out,
+                        cache,
+                        seen,
+                    );
+                }
+            }
+            collect_inference_candidates_inner(
+                arena,
+                param_fn.return_type,
+                arg_fn.return_type,
+                &nested_locked,
+                variance,
+                false,
+                out,
+                cache,
+                seen,
+            );
+        }
+        Type::Intersection(members) => {
+            for member in members {
+                if contains_type_param(arena, member) {
+                    collect_inference_candidates_inner(
+                        arena, member, arg_type, locked, variance, top_level, out, cache, seen,
+                    );
+                }
+            }
+        }
+        Type::Union(param_members) => {
+            let arg_members = match arena.get(arg_type) {
+                Type::Union(members) => members.clone(),
+                _ => vec![arg_type],
+            };
+            let remaining: Vec<TypeId> = arg_members
+                .into_iter()
+                .filter(|&member| {
+                    if matches!(arena.get(member), Type::Any | Type::Error) {
+                        return true;
+                    }
+                    !param_members.iter().any(|&concrete| {
+                        !contains_type_param(arena, concrete)
+                            && is_subtype_via_cache(arena, cache, member, concrete)
+                    })
+                })
+                .collect();
+            if remaining.is_empty() {
+                return;
+            }
+            let remainder = if remaining.len() == 1 {
+                remaining[0]
+            } else {
+                arena.alloc_union(remaining)
+            };
+            for member in param_members {
+                if contains_type_param(arena, member) {
+                    collect_inference_candidates_inner(
+                        arena, member, remainder, locked, variance, top_level, out, cache, seen,
                     );
                 }
             }
@@ -380,6 +1075,180 @@ pub(crate) fn substitute_bound_type_params(
     bindings: &[(crate::types::TypeParameterId, TypeId)],
 ) -> TypeId {
     substitute_impl(arena, type_id, bindings, true)
+}
+
+/// Reduces a conditional type when its check and extends types are concrete.
+/// Otherwise the symbolic node is retained and revisited by generic substitution.
+/// This covers distributive conditionals and the structural `infer` patterns most
+/// commonly used by utility types without pretending an unresolved T is concrete
+/// merely because its constraint happens to fit.
+pub(crate) fn resolve_conditional_type(
+    arena: &mut TypeArena,
+    conditional: ConditionalType,
+) -> TypeId {
+    let infer_params = &conditional.infer_params;
+    if has_unbound_parameters(arena, conditional.check_type, &[])
+        || has_unbound_parameters(arena, conditional.extends_type, infer_params)
+    {
+        return arena.alloc(Type::Conditional(conditional));
+    }
+
+    // `any` makes a conditional result include both possible branches. For an
+    // infer pattern, TypeScript's any recovery is itself any rather than leaking
+    // a locally scoped infer variable into the result.
+    if matches!(arena.get(conditional.check_type), Type::Any) {
+        if !infer_params.is_empty() {
+            return arena.any();
+        }
+        let yes = substitute_distributive_parameter(
+            arena,
+            conditional.true_type,
+            conditional.distributive_param,
+            conditional.check_type,
+        );
+        let no = substitute_distributive_parameter(
+            arena,
+            conditional.false_type,
+            conditional.distributive_param,
+            conditional.check_type,
+        );
+        return arena.alloc_union(vec![yes, no]);
+    }
+
+    if conditional.distributive_param.is_some() {
+        match arena.get(conditional.check_type).clone() {
+            Type::Never => return arena.never(),
+            Type::Union(members) => {
+                let mut results = Vec::with_capacity(members.len());
+                for member in members {
+                    results.push(evaluate_conditional_branch(arena, member, &conditional));
+                }
+                return arena.alloc_union(results);
+            }
+            _ => {}
+        }
+    }
+
+    evaluate_conditional_branch(arena, conditional.check_type, &conditional)
+}
+
+fn has_unbound_parameters(arena: &TypeArena, type_id: TypeId, bound: &[TypeParameterId]) -> bool {
+    free_generic_params(arena, type_id)
+        .iter()
+        .any(|(id, _)| !bound.contains(id))
+}
+
+fn substitute_distributive_parameter(
+    arena: &mut TypeArena,
+    branch: TypeId,
+    parameter: Option<TypeParameterId>,
+    concrete: TypeId,
+) -> TypeId {
+    let Some(parameter) = parameter else {
+        return branch;
+    };
+    substitute_bound_type_params(arena, branch, &[(parameter, concrete)])
+}
+
+fn evaluate_conditional_branch(
+    arena: &mut TypeArena,
+    check_type: TypeId,
+    conditional: &ConditionalType,
+) -> TypeId {
+    let mut infer_bindings: Vec<(TypeParameterId, TypeId)> = Vec::new();
+    if !conditional.infer_params.is_empty() {
+        let mut relation_cache = RelationCache::default();
+        infer_conditional_type_params(
+            arena,
+            conditional.extends_type,
+            check_type,
+            &conditional.infer_params,
+            &mut infer_bindings,
+            &mut relation_cache,
+        );
+    }
+
+    if !infer_constraints_hold(arena, conditional, &infer_bindings) {
+        return substitute_distributive_parameter(
+            arena,
+            conditional.false_type,
+            conditional.distributive_param,
+            check_type,
+        );
+    }
+
+    let extends_type =
+        substitute_bound_type_params(arena, conditional.extends_type, &infer_bindings);
+    let extends = if arena.is_promise(check_type) && arena.is_promise(extends_type) {
+        match (
+            arena.promise_value_type(check_type),
+            arena.promise_value_type(extends_type),
+        ) {
+            (Some(actual), Some(expected)) => crate::subtyping::is_subtype(arena, actual, expected),
+            _ => false,
+        }
+    } else if let (Some(actual), Some(expected)) = (
+        arena.record_value_type(check_type),
+        arena.record_value_type(extends_type),
+    ) {
+        // Record is currently represented by an opaque object whose value type lives
+        // on the application rather than in the object's members. Preserve that piece
+        // of its shape for conditional compatibility; key restrictions remain unmodeled.
+        crate::subtyping::is_subtype(arena, actual, expected)
+    } else {
+        crate::subtyping::is_subtype(arena, check_type, extends_type)
+    };
+    if !extends {
+        return substitute_distributive_parameter(
+            arena,
+            conditional.false_type,
+            conditional.distributive_param,
+            check_type,
+        );
+    }
+
+    let mut branch_bindings = Vec::with_capacity(infer_bindings.len() + 1);
+    if let Some(parameter) = conditional.distributive_param {
+        branch_bindings.push((parameter, check_type));
+    }
+    for (id, ty) in infer_bindings {
+        if let Some(existing) = branch_bindings.iter_mut().find(|(bound, _)| *bound == id) {
+            existing.1 = ty;
+        } else {
+            branch_bindings.push((id, ty));
+        }
+    }
+    substitute_bound_type_params(arena, conditional.true_type, &branch_bindings)
+}
+
+fn infer_constraints_hold(
+    arena: &mut TypeArena,
+    conditional: &ConditionalType,
+    infer_bindings: &[(TypeParameterId, TypeId)],
+) -> bool {
+    for (id, node) in free_generic_params(arena, conditional.extends_type)
+        .iter()
+        .copied()
+    {
+        if !conditional.infer_params.contains(&id) {
+            continue;
+        }
+        let Type::GenericParameter(_, _, Some(constraint)) = arena.get(node).clone() else {
+            continue;
+        };
+        let Some((_, inferred)) = infer_bindings.iter().find(|(bound, _)| *bound == id) else {
+            continue;
+        };
+        let resolved_constraint = substitute_bound_type_params(arena, constraint, infer_bindings);
+        let inferred_ids: Vec<TypeParameterId> =
+            infer_bindings.iter().map(|(bound, _)| *bound).collect();
+        if !has_unbound_parameters(arena, resolved_constraint, &inferred_ids)
+            && !crate::subtyping::is_subtype(arena, *inferred, resolved_constraint)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn substitute_impl(
@@ -423,11 +1292,22 @@ const MAX_INSTANTIATION_DEPTH: usize = 2_000;
 struct Substitution<'b> {
     bindings: &'b [(crate::types::TypeParameterId, TypeId)],
     keep_unbound: bool,
+    // Parameters temporarily held back while a distributive conditional's branch
+    // types are rewritten. Each union constituent gets its own replacement later.
+    preserve: Vec<crate::types::TypeParameterId>,
 
     // Ids currently being rewritten, outermost first.
     open: Vec<TypeId>,
 
     rewritten: FxHashMap<TypeId, TypeId>,
+
+    // The Ref `rewrite_recursive` has opened for an id and not yet resolved, while its
+    // children are being walked. Kept apart from `rewritten` because a conditional empties
+    // `rewritten` for its branches, and the edge that closes a recursive conditional alias
+    // (`Flatten<T> = T extends (infer U)[] ? Flatten<U> : T`) is in a branch: with the
+    // entry gone it found nothing, started the first and second pass over again, and never
+    // came back.
+    closing: FxHashMap<TypeId, TypeId>,
 
     // Ids the walk has found to reach themselves (see rewrite).
     cyclic: Vec<TypeId>,
@@ -498,10 +1378,21 @@ impl Substitution<'_> {
         let mut result = self.rewrite_uncached(arena, type_id, &mut cut_below);
         self.open.pop();
 
-        if self.cyclic.contains(&type_id) && matches!(arena.get(type_id), Type::Object(_)) {
-            // The first pass left the self-edge on the original id, so its result
-            // is discarded. Cuts to outer nodes are met again on this pass, so the
-            // count restarts rather than carrying the first pass's.
+        if self.cyclic.contains(&type_id)
+            && matches!(
+                arena.get(type_id),
+                Type::Object(_)
+                    | Type::Array(_)
+                    | Type::Function(_)
+                    | Type::Union(_)
+                    | Type::Intersection(_)
+                    | Type::Conditional(_)
+            )
+        {
+            // The first pass left a recursive edge on the original node, so its result
+            // is discarded. Close the cycle around a Ref for every recursive structural
+            // shape, not just objects: recursive conditional aliases and unions need the
+            // same bounded graph rewrite as linked-list objects.
             cut_below = usize::MAX;
             result = self.rewrite_recursive(arena, type_id, &mut cut_below);
         }
@@ -517,33 +1408,50 @@ impl Substitution<'_> {
         result
     }
 
-    // Rebuilds a self-referential object around a Ref of its own. The Ref is
-    // registered as type_id's rewrite *before* the properties are walked, so the walk
-    // finds it where the first pass found the cut, and the edge that closed on
-    // type_id closes on the copy. The Ref is its own id (see TypeArena::alloc_ref),
-    // which is what a recursive shape needs: other types hold that id, so it must
-    // never be merged with another declaration. Its body is an ordinary Object.
+    // Rebuilds a recursive structural node around a Ref of its own. The Ref is
+    // registered as type_id's rewrite before any child is walked, so the edge that closed
+    // the first pass closes on this substituted copy. Object aliases were the first use;
+    // array, union, function and conditional nodes also need this for recursive aliases.
     fn rewrite_recursive(
         &mut self,
         arena: &mut TypeArena,
         type_id: TypeId,
         cut: &mut usize,
     ) -> TypeId {
-        let Type::Object(object) = arena.get(type_id).clone() else {
+        let shape = arena.get(type_id).clone();
+        if !matches!(
+            &shape,
+            Type::Object(_)
+                | Type::Array(_)
+                | Type::Function(_)
+                | Type::Union(_)
+                | Type::Intersection(_)
+                | Type::Conditional(_)
+        ) {
             return type_id;
         }
 
         let copy = arena.alloc_ref();
         self.rewritten.insert(type_id, copy);
-
-        let mut properties = Vec::with_capacity(object.properties.len());
-        for p in object.properties.iter() {
-            properties.push(PropertyEntry {
-                name: p.name.clone(),
-                type_id: self.rewrite(arena, p.type_id, cut),
-                optional: p.optional,
-                is_method: p.is_method,
-            });
+        self.closing.insert(type_id, copy);
+        let body = self.rewrite_shape(arena, type_id, shape, cut);
+        self.closing.remove(&type_id);
+        // A reducible conditional can collapse directly to its own placeholder. A Ref
+        // cannot have itself as its body, so retain the symbolic conditional in that
+        // exceptional self-result case rather than creating a wrapper-unwrapping loop.
+        let body = if body == copy {
+            match arena.get(type_id).clone() {
+                Type::Conditional(conditional) => arena.alloc(Type::Conditional(conditional)),
+                _ => body,
+            }
+        } else {
+            body
+        };
+        if arena.slot_of(body).is_some() {
+            // Never resolve one Ref to another. The placeholder is still usable as the
+            // conservative result when the graph has no concrete body to close on.
+            self.rewritten.insert(type_id, type_id);
+            return type_id;
         }
         arena.resolve_ref(copy, body);
         copy
@@ -555,7 +1463,60 @@ impl Substitution<'_> {
         type_id: TypeId,
         cut: &mut usize,
     ) -> TypeId {
-        match arena.get(type_id).clone() {
+        if let Type::App(slot, arguments, body) = arena.raw(type_id).clone() {
+            let template = arena.app_template(type_id).cloned();
+            let rewritten_arguments: Vec<TypeId> = arguments
+                .iter()
+                .map(|&argument| self.rewrite(arena, argument, cut))
+                .collect();
+
+            if let Some(template) = template {
+                if rewritten_arguments != arguments {
+                    // This App was first encountered while its own declaration was still
+                    // resolving, so its body is a snapshot of the declaration specialized
+                    // with symbolic arguments. Once an infer variable or outer generic
+                    // changes those arguments, rewrite the declaration body again with the
+                    // new bindings; substituting the stale body alone leaves recursive
+                    // conditionals such as Flatten<T> stuck at `Flatten<infer U>`.
+                    let bindings: Vec<(TypeParameterId, TypeId)> = template
+                        .parameters
+                        .iter()
+                        .copied()
+                        .zip(rewritten_arguments.iter().copied())
+                        .collect();
+                    if !arena.begin_app_instantiation(template.base, &bindings) {
+                        crate::stack_guard::note_cut();
+                        return arena.error();
+                    }
+                    let result = substitute_bound_type_params(arena, template.base, &bindings);
+                    arena.end_app_instantiation(template.base, &bindings);
+                    return result;
+                }
+
+                // Unchanged arguments leave the application as it is. Its body is the
+                // declaration specialized with exactly those arguments, so it has no free
+                // parameter of its own to substitute, and walking it only finds the
+                // declaration again through its own recursive step: the cycle that
+                // `Flatten<T> = T extends (infer U)[] ? Flatten<U> : T` is made of.
+                return type_id;
+            }
+
+            let body = self.rewrite(arena, body, cut);
+            return arena.alloc_app(slot, rewritten_arguments, body);
+        }
+
+        let shape = arena.get(type_id).clone();
+        self.rewrite_shape(arena, type_id, shape, cut)
+    }
+
+    fn rewrite_shape(
+        &mut self,
+        arena: &mut TypeArena,
+        original: TypeId,
+        shape: Type,
+        cut: &mut usize,
+    ) -> TypeId {
+        match shape {
             Type::GenericParameter(id, _, _) => {
                 if self.preserve.contains(&id) {
                     return original;
@@ -647,7 +1608,69 @@ impl Substitution<'_> {
                     .alloc_intersection(substituted)
                     .unwrap_or_else(|_| arena.error())
             }
-            _ => type_id,
+            Type::Conditional(conditional) => {
+                // An outer type argument may make this conditional decidable. Keep
+                // unbound parameters inside the symbolic node until its check side
+                // and extends pattern have been substituted, then reduce it once.
+                let previous_keep_unbound = self.keep_unbound;
+                self.keep_unbound = true;
+                let check_type = self.rewrite(arena, conditional.check_type, cut);
+
+                // The `infer` parameters are binders of this conditional: they are in
+                // scope in the `extends` pattern and the true branch, and nowhere else.
+                // A recursive alias (`Flatten<T> = T extends (infer Item)[] ? Flatten<Item>
+                // : T`) rebuilds its body one level at a time with the same parameter ids,
+                // so this conditional's check type can mention an outer `Item` while its own
+                // pattern binds `Item` again. Substituting the outer `Item` into the
+                // pattern as well turned `(infer Item)[]` into `number[][]` and stopped
+                // the recursion one level early. They are held back here for the pattern
+                // and the true branch, and not for the check type above.
+                let binders_held = conditional.infer_params.len();
+                self.preserve
+                    .extend(conditional.infer_params.iter().copied());
+
+                // Everything below uses its own memo: a type rewritten while the binders
+                // are held, or while a distributive parameter is, is not the same rewrite
+                // as one made outside. Otherwise an `extends` pattern that also contains
+                // `T[]` could cache `T[] -> (string | number)[]` before the distributive
+                // branch gets to preserve T, silently turning `T extends unknown ? T[] :
+                // never` into an array of the entire union. Discarded afterward.
+                let outer_rewrites = std::mem::take(&mut self.rewritten);
+                let extends_type = self.rewrite(arena, conditional.extends_type, cut);
+
+                if let Some(parameter) = conditional.distributive_param {
+                    self.preserve.push(parameter);
+                }
+                let true_type = self.rewrite(arena, conditional.true_type, cut);
+                // The false branch is outside the binders' scope.
+                let keep = self.preserve.len()
+                    - binders_held
+                    - usize::from(conditional.distributive_param.is_some());
+                let held: Vec<_> = self.preserve.drain(keep..).collect();
+                if let Some(parameter) = conditional.distributive_param {
+                    self.preserve.push(parameter);
+                }
+                let false_type = self.rewrite(arena, conditional.false_type, cut);
+                if conditional.distributive_param.is_some() {
+                    self.preserve.pop();
+                }
+                drop(held);
+                self.rewritten = outer_rewrites;
+                self.keep_unbound = previous_keep_unbound;
+
+                resolve_conditional_type(
+                    arena,
+                    ConditionalType {
+                        check_type,
+                        extends_type,
+                        true_type,
+                        false_type,
+                        infer_params: conditional.infer_params,
+                        distributive_param: conditional.distributive_param,
+                    },
+                )
+            }
+            _ => original,
         }
     }
 }
@@ -742,6 +1765,14 @@ fn parts_of(arena: &TypeArena, type_id: TypeId) -> SmallVec<[TypeId; 8]> {
         }
         Type::Object(object) => parts.extend(object.properties.iter().map(|p| p.type_id)),
         Type::Union(members) | Type::Intersection(members) => parts.extend(members.iter().copied()),
+        Type::Conditional(conditional) => {
+            parts.extend([
+                conditional.check_type,
+                conditional.extends_type,
+                conditional.true_type,
+                conditional.false_type,
+            ]);
+        }
         _ => {}
     }
     parts
@@ -794,6 +1825,9 @@ fn free_generic_params(arena: &TypeArena, type_id: TypeId) -> Rc<[FreeParam]> {
             // The function's own binders are bound inside it, wherever they were used.
             if let Type::Function(function) = arena.get(nodes[index]) {
                 free.retain(|(id, _)| !function.type_params.iter().any(|own| own.id == *id));
+            }
+            if let Type::Conditional(conditional) = arena.get(nodes[index]) {
+                free.retain(|(id, _)| !conditional.infer_params.contains(id));
             }
             if !same_free_set(arena, &free, &sets[index]) {
                 changed = true;
@@ -965,6 +1999,78 @@ mod tests {
 
         assert_eq!(bindings, vec![(id, number)]);
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn substitution_respects_nested_binder_identity_even_when_names_match() {
+        let mut arena = TypeArena::new();
+        let outer_id = TypeParameterId::new(10, 0);
+        let inner_id = TypeParameterId::new(20, 0);
+        let outer_t = arena.alloc(Type::GenericParameter(outer_id, "T".into(), None));
+        let inner_t = arena.alloc(Type::GenericParameter(inner_id, "T".into(), None));
+        let nested = arena.alloc(Type::Function(FunctionType {
+            params: vec![crate::types::Param::required(inner_t)],
+            return_type: outer_t,
+            type_params: vec![FunctionTypeParam {
+                id: inner_id,
+                name: "T".into(),
+                constraint: None,
+                default: None,
+            }],
+            is_untyped: false,
+        }));
+
+        let number = arena.number();
+        let instantiated = substitute_bound_type_params(&mut arena, nested, &[(outer_id, number)]);
+        let Type::Function(instantiated) = arena.get(instantiated) else {
+            panic!("expected a function after substitution");
+        };
+        assert_eq!(instantiated.params[0].type_id, inner_t);
+        assert_eq!(instantiated.return_type, number);
+        assert_eq!(instantiated.type_params[0].id, inner_id);
+    }
+
+    #[test]
+    fn inference_matches_parameters_against_a_rest_signature_by_call_position() {
+        let mut arena = TypeArena::new();
+        let id = TypeParameterId::new(30, 0);
+        let t = arena.alloc(Type::GenericParameter(id, "T".into(), None));
+        let unknown = arena.unknown();
+        let expected_callback = arena.alloc(Type::Function(FunctionType {
+            params: vec![
+                crate::types::Param::required(unknown),
+                crate::types::Param::required(t),
+            ],
+            return_type: arena.void(),
+            type_params: Vec::new(),
+            is_untyped: false,
+        }));
+        let number = arena.number();
+        let number_array = arena.alloc(Type::Array(number));
+        let actual_callback = arena.alloc(Type::Function(FunctionType {
+            params: vec![crate::types::Param {
+                type_id: number_array,
+                optional: false,
+                rest: true,
+                name: None,
+            }],
+            return_type: arena.void(),
+            type_params: Vec::new(),
+            is_untyped: false,
+        }));
+        let mut bindings = Vec::new();
+        let mut cache = RelationCache::default();
+
+        infer_type_param_bindings(
+            &mut arena,
+            expected_callback,
+            actual_callback,
+            &mut bindings,
+            &[],
+            &mut cache,
+        );
+
+        assert_eq!(bindings, vec![(id, number)]);
     }
 
     #[test]

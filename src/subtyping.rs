@@ -99,6 +99,16 @@ fn is_subtype_uncached(
             is_subtype_inner(arena, *bound, sup, seen, binders)
         }
 
+        // The same primitive reached through a wrapper: `Wrap<number>` and a conditional
+        // that reduced to `number` are not the fixed id of `number`, so the identity check
+        // above misses them, and they read as that primitive once looked through.
+        (Type::Number, Type::Number)
+        | (Type::String, Type::String)
+        | (Type::Boolean, Type::Boolean)
+        | (Type::Null, Type::Null)
+        | (Type::Undefined, Type::Undefined)
+        | (Type::Void, Type::Void) => true,
+
         (Type::StringLiteral(a), Type::StringLiteral(b)) => a == b,
         (Type::NumberLiteral(a), Type::NumberLiteral(b)) => a == b,
         (Type::BooleanLiteral(a), Type::BooleanLiteral(b)) => a == b,

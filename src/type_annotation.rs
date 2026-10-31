@@ -1,6 +1,7 @@
 use oxc_ast::ast::{
-    BindingPattern, FormalParameters, PropertyKey, TSMethodSignature, TSMethodSignatureKind,
-    TSSignature, TSType, TSTypeAnnotation, TSTypeName, TSTypeQueryExprName,
+    BindingPattern, FormalParameters, PropertyKey, TSConditionalType, TSInferType,
+    TSMethodSignature, TSMethodSignatureKind, TSSignature, TSTupleElement, TSTupleType, TSType,
+    TSTypeAnnotation, TSTypeName, TSTypeQueryExprName,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_span::GetSpan;
@@ -8,7 +9,8 @@ use oxc_span::GetSpan;
 use crate::arena::{TypeArena, TypeId};
 use crate::namespace::{Resolution, TypeNamespace};
 use crate::types::{
-    FunctionType, FunctionTypeParam, ObjectType, Param, PropertyEntry, Type, TypeParameterId,
+    ConditionalType, FunctionType, FunctionTypeParam, ObjectType, Param, PropertyEntry,
+    TupleElement, Type, TypeParameterId,
 };
 
 pub fn resolve_type_annotation(
@@ -193,6 +195,67 @@ pub fn resolve_ts_type(
             }
         }
 
+        TSType::TSConditionalType(conditional) => {
+            // Infer parameters are declared by the extends pattern and are visible
+            // while resolving both that pattern and the true branch. They are binders
+            // of this conditional, never parameters of the enclosing alias.
+            let check_type = resolve_ts_type(&conditional.check_type, namespace, arena)?;
+            let mut collector = InferTypeCollector { params: Vec::new() };
+            collector.visit_ts_type(&conditional.extends_type);
+            let infer_params = collector.params;
+            let infer_ids: Vec<TypeParameterId> = infer_params
+                .iter()
+                .enumerate()
+                .map(|(index, (_, start))| {
+                    TypeParameterId::with_file(namespace.file_id(), *start, index as u32)
+                })
+                .collect();
+            let scope = namespace.declare_infer_type_params(arena, &infer_params);
+            // Constraints are read only after every name is in scope, so one may name another.
+            let mut constrainer = InferConstraintResolver {
+                namespace: &mut *namespace,
+                arena: &mut *arena,
+                declared: &infer_params,
+                done: Vec::new(),
+            };
+            constrainer.visit_ts_type(&conditional.extends_type);
+            let resolved = (|| {
+                let extends_type = resolve_ts_type(&conditional.extends_type, namespace, arena)?;
+                let true_type = resolve_ts_type(&conditional.true_type, namespace, arena)?;
+                Some((extends_type, true_type))
+            })();
+            namespace.pop_type_params(scope);
+            let (extends_type, true_type) = resolved?;
+            // `infer` bindings are visible in the true branch only, not in the false
+            // branch. Resolve it after restoring any outer declaration with the same name.
+            let false_type = resolve_ts_type(&conditional.false_type, namespace, arena)?;
+
+            // Distribution applies only when the original check side was a naked
+            // type parameter. `Box<T> extends U` and `[T] extends U` are not
+            // distributive, even if their resolved shape happens to contain T.
+            let is_naked_parameter = is_naked_conditional_parameter(&conditional.check_type);
+            let distributive_param = if is_naked_parameter {
+                match arena.get(check_type) {
+                    Type::GenericParameter(id, _, _) => Some(*id),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            Some(crate::semantic::resolve_conditional_type(
+                arena,
+                ConditionalType {
+                    check_type,
+                    extends_type,
+                    true_type,
+                    false_type,
+                    infer_params: infer_ids,
+                    distributive_param,
+                },
+            ))
+        }
+
         TSType::TSTypeLiteral(literal) => {
             // resolve_object_members takes references to signatures rather than
             // owned ones so the interface-merging call site in namespace.rs can
@@ -298,37 +361,98 @@ pub fn resolve_ts_type(
                 }
             }
 
-            let base = match namespace.resolve(id.name, arena) {
-                Resolution::Resolved(type_id) => type_id,
-                Resolution::Circular | Resolution::NotFound => return None,
-            };
+            resolve_named_reference(
+                id.name,
+                reference.type_arguments.as_deref(),
+                reference.span,
+                namespace,
+                arena,
+            )
+        }
+        TSType::TSInferType(infer) => {
+            match namespace.resolve(&infer.type_parameter.name.name, arena) {
+                Resolution::Resolved(type_id) => Some(type_id),
+                Resolution::Circular | Resolution::NotFound => None,
+            }
+        }
 
-            // A reference whose type argument count disagrees with its
-            // declaration is recorded, not rejected here: resolution carries on
-            // leniently below, and the mismatch is reported afterward (see
-            // bridge::check_program). Parameters with a default may be omitted,
-            // so the valid range is required..=total, as in tsc.
-            let given = reference
-                .type_arguments
+        _ => None,
+    }
+}
+
+fn is_naked_conditional_parameter(ty: &TSType) -> bool {
+    match ty {
+        // Parentheses do not change the identity of a naked checked parameter.
+        TSType::TSParenthesizedType(parenthesized) => {
+            is_naked_conditional_parameter(&parenthesized.type_annotation)
+        }
+        TSType::TSTypeReference(reference) => {
+            reference.type_arguments.is_none()
+                && matches!(&reference.type_name, TSTypeName::IdentifierReference(_))
+        }
+        _ => false,
+    }
+}
+
+// The `infer` names of one extends pattern as `(name, span start)`, owned: the visitor gets
+// each node only for the length of its call, so it cannot hand the node back.
+struct InferTypeCollector {
+    params: Vec<(String, u32)>,
+}
+
+impl<'ast> Visit<'ast> for InferTypeCollector {
+    fn visit_ts_infer_type(&mut self, infer: &TSInferType<'ast>) {
+        // Repeated `infer U` names in one pattern refer to the same binding.
+        // Keep its first declaration so the namespace doesn't shadow itself.
+        let name = infer.type_parameter.name.name.as_str();
+        if !self.params.iter().any(|(existing, _)| existing == name) {
+            self.params
+                .push((name.to_string(), infer.type_parameter.span().start));
+        }
+        walk::walk_ts_infer_type(self, infer);
+    }
+
+    fn visit_ts_conditional_type(&mut self, _conditional: &TSConditionalType<'ast>) {
+        // A nested conditional type owns its own infer variables. They must not
+        // become binders of the surrounding conditional's extends pattern.
+    }
+}
+
+// Second pass over the same pattern: resolve the constraint of each first-declared `infer`
+// name now that all of them are in scope.
+struct InferConstraintResolver<'n, 'a> {
+    namespace: &'n mut TypeNamespace<'a>,
+    arena: &'n mut TypeArena,
+    declared: &'n [(String, u32)],
+    done: Vec<u32>,
+}
+
+impl<'ast> Visit<'ast> for InferConstraintResolver<'_, '_> {
+    fn visit_ts_infer_type(&mut self, infer: &TSInferType<'ast>) {
+        let start = infer.type_parameter.span().start;
+        if let Some(index) = self.declared.iter().position(|(_, s)| *s == start)
+            && !self.done.contains(&start)
+        {
+            self.done.push(start);
+            if let Some(constraint) = infer
+                .type_parameter
+                .constraint
                 .as_ref()
-                .map_or(0, |arguments| arguments.params.len());
-            let arity = namespace.declared_type_param_arity(id.name);
-            if let Some((required, total)) = arity {
-                if given < required || given > total {
-                    namespace.note_type_argument_issue(id.name, required, total, reference.span);
-                }
+                .and_then(|ty| resolve_ts_type(ty, self.namespace, self.arena))
+            {
+                let id = TypeParameterId::with_file(self.namespace.file_id(), start, index as u32);
+                let name = self.declared[index].0.clone();
+                self.namespace
+                    .constrain_infer_type_param(self.arena, id, &name, constraint);
             }
+        }
+        walk::walk_ts_infer_type(self, infer);
+    }
 
-            // Not generic, or a declaration this checker does not model (a
-            // class): nothing to substitute.
-            // A generic imported from another file has no AST: its parameters come
-            // from the import record instead (see TypeNamespace::insert_imported), and
-            // everything after the bindings is shared with a local declaration.
-            let imported = namespace.imported_generic(id.name);
-            let decl = namespace.declared_type_param_decl(id.name);
-            if imported.is_none() && decl.is_none() {
-                return Some(base);
-            }
+    fn visit_ts_conditional_type(&mut self, _conditional: &TSConditionalType<'ast>) {
+        // A nested conditional type owns its own infer variables.
+    }
+}
 
 // The type an interface extends: `extends Base`, `extends Base<T>`, `extends ns.Base`. The
 // base is read like a type reference to its (dotted) name. None when the expression is not a plain
@@ -476,38 +600,43 @@ fn resolve_named_reference(
         return Some(namespace.defer_recursive_instantiation(arena, name, base, bindings));
     }
 
-            // Only the declaration's own parameters are bound here, so a parameter
-            // a member declares for itself (`map<U>(...)`) is kept for inference
-            // at the call site instead of becoming unknown.
-            let result = crate::semantic::substitute_bound_type_params(arena, base, &bindings);
+    // Everything above is per reference and stays per reference: the arity
+    // and constraint checks report at this site's own span. Only the work
+    // below, which depends on nothing but the declaration and its resolved
+    // arguments, is reused.
+    //
+    // A hit is the stored application itself. It carries no name that a caller
+    // could change (`type Alias = Box<number>` wraps it, it does not rename it),
+    // and it prints from its arguments when it is displayed, so there is
+    // nothing a later reference could find out of date.
+    if let Some(application) = namespace.cached_instantiation(base, &bindings) {
+        return Some(application);
+    }
 
-            // Prints as `Box<number>`, not Box's full member list, in a message.
-            // Skipped when substitution left `result` identical to `base`: that
-            // happens when none of Box's declared parameters actually appear in
-            // its body, in which case every instantiation of Box shares this one
-            // TypeId, and there is no application of it worth telling apart.
-            if result != base {
-                // The application is its own node: the declaration's name, the
-                // arguments, and `result` as what it is. Substitution allocates through
-                // alloc(), so `result` may be the id every identical anonymous shape
-                // shares (a Box<number> and a Pair<number> with the same members, or a
-                // plain `{ value: number }`); that id is not renamed, it is wrapped.
-                // Each argument prints in its own current spelling when the
-                // application is displayed, so `Box<Dog>` says `Box<Dog>` whether Dog
-                // had its name yet when this was built or not.
-                let slot = arena.alloc_name(id.name);
-                let arguments = bindings.iter().map(|&(_, bound)| bound).collect();
-                let application = arena.alloc_app(slot, arguments, result);
+    // Only the declaration's own parameters are bound here, so a parameter
+    // a member declares for itself (`map<U>(...)`) is kept for inference
+    // at the call site instead of becoming unknown.
+    let result = crate::semantic::substitute_bound_type_params(arena, base, &bindings);
 
-                // Stored only here, inside `result != base`: an unchanged result
-                // means `base` was still an unresolved Ref (a reference from inside
-                // its own declaration), and remembering that would return the empty
-                // shape for every later reference, after it is resolved.
-                namespace.cache_instantiation(base, bindings, application);
-                return Some(application);
-            }
-
-            Some(result)
+    // Prints as `Box<number>`, not Box's full member list, in a message.
+    // Skipped when substitution left `result` identical to `base`: that
+    // happens when none of Box's declared parameters actually appear in
+    // its body, in which case every instantiation of Box shares this one
+    // TypeId, and there is no application of it worth telling apart.
+    if result != base {
+        // The application is its own node: the declaration's name, the
+        // arguments, and `result` as what it is. Substitution allocates through
+        // alloc(), so `result` may be the id every identical anonymous shape
+        // shares (a Box<number> and a Pair<number> with the same members, or a
+        // plain `{ value: number }`); that id is not renamed, it is wrapped.
+        // Each argument prints in its own current spelling when the
+        // application is displayed, so `Box<Dog>` says `Box<Dog>` whether Dog
+        // had its name yet when this was built or not.
+        let slot = arena.alloc_name(name);
+        arena.set_app_base(slot, base);
+        if let Type::Conditional(conditional) = arena.get(base) {
+            let distributive = conditional.distributive_param.is_some();
+            arena.set_app_conditional(slot, distributive);
         }
         let arguments = bindings.iter().map(|&(_, bound)| bound).collect();
         let application = arena.alloc_app(slot, arguments, result);

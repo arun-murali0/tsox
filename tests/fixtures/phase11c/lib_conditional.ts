@@ -1,0 +1,10 @@
+export type IsString<T> = T extends string ? true : false;
+export type Unwrap<T> = T extends Promise<infer U> ? U : T;
+export type ElementOf<T> = T extends (infer U)[] ? U : never;
+export type HasId<T> = T extends { id: infer U extends string } ? U : never;
+export type ExtractValue<T> = T extends { value: infer U } ? U : never;
+export type ExtractArrayValue<T> = T extends (infer U)[] ? U : never;
+export type DeepUnwrap<T> = T extends Promise<infer U> ? (U extends Promise<infer V> ? V : U) : T;
+export type ToArray<T> = T extends unknown ? T[] : never;
+export type Pair<T> = T extends [infer A, infer B] ? { first: A; second: B } : never;
+export type Data<T> = T extends { data: infer U } ? U : never;
