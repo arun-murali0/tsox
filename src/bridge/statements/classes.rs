@@ -65,6 +65,19 @@ pub(super) fn check_class_declaration(
             if is_private_member(method) && (class.declare || ctx.ambient_depth > 0) {
                 continue;
             }
+            // A setter alone gets TS7032 on its name as well as TS7006 on the parameter,
+            // in that order, the way tsc reports it.
+            if matches!(method.kind, oxc_ast::ast::MethodDefinitionKind::Set)
+                && let Some(name) = method.key.static_name()
+                && let Some(first) = method.value.params.items.first()
+                && first.type_annotation.is_none()
+                && first.initializer.is_none()
+            {
+                ctx.error(
+                    crate::diagnostic_messages::messages::setter_property_implicitly_any(&name),
+                    method.key.span(),
+                );
+            }
             report_implicit_any_params(&method.value.params, ctx);
         }
     }
