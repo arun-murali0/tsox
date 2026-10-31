@@ -38,6 +38,7 @@ pub(crate) fn infer_type_param_bindings(
         locked,
         cache,
         &mut SeenPairs::default(),
+        false,
     )
 }
 
@@ -47,7 +48,7 @@ pub(crate) fn infer_type_param_bindings(
 // The reason to go through it at all is that candidates are compared against the same
 // existing binding over and over (`allSame(1, 2, ..., 8)`), and those repeats were the
 // one place the cache never saw.
-fn is_subtype_via_cache(
+pub(crate) fn is_subtype_via_cache(
     arena: &TypeArena,
     cache: &mut RelationCache,
     sub: TypeId,
@@ -128,6 +129,10 @@ pub(crate) fn merge_inference_candidate(
             }
         }
     }
+    // Otherwise the candidates are unrelated and the first one stays, which is what tsc
+    // does (getCommonSupertype takes the leftmost candidate when none is a supertype of
+    // the rest). The later argument is then reported by the assignability pass, so
+    // `choose(giraffe, elephant)` is TS2345 and is not widened to the shared constraint.
 }
 
 // The (param_type, arg_type) pairs one inference call has already matched, or is
@@ -164,6 +169,7 @@ fn infer_type_param_bindings_inner(
     locked: &[crate::types::TypeParameterId],
     cache: &mut RelationCache,
     seen: &mut SeenPairs,
+    preserve_literals: bool,
 ) {
     if !seen.insert((param_type, arg_type)) {
         return;
@@ -179,6 +185,7 @@ fn infer_type_param_bindings_uncached(
     locked: &[crate::types::TypeParameterId],
     cache: &mut RelationCache,
     seen: &mut SeenPairs,
+    preserve_literals: bool,
 ) {
     match arena.get(param_type).clone() {
         Type::GenericParameter(id, _, bound) => {
@@ -198,7 +205,8 @@ fn infer_type_param_bindings_uncached(
             // for the narrow type, widening would break it (`pick("a")` would bind T
             // to string, which does not satisfy `"a" | "b"`), and TypeScript keeps the
             // literal in exactly this case.
-            let keeps_literals = bound.is_some_and(|bound| bound_keeps_literals(arena, bound));
+            let keeps_literals =
+                preserve_literals || bound.is_some_and(|bound| bound_keeps_literals(arena, bound));
             let candidate = if keeps_literals {
                 arg_type
             } else {
@@ -222,6 +230,7 @@ fn infer_type_param_bindings_uncached(
                 locked,
                 cache,
                 seen,
+                preserve_literals,
             );
         }
         Type::Object(param_object) => {
@@ -242,6 +251,7 @@ fn infer_type_param_bindings_uncached(
                         locked,
                         cache,
                         seen,
+                        preserve_literals,
                     );
                 }
             }
@@ -278,6 +288,7 @@ fn infer_type_param_bindings_uncached(
                 &nested_locked,
                 cache,
                 seen,
+                preserve_literals,
             );
         }
         // A parameter typed `T & { id: number }`. tsc infers into each member from the
@@ -287,7 +298,14 @@ fn infer_type_param_bindings_uncached(
             for member in param_members {
                 if contains_type_param(arena, member) {
                     infer_type_param_bindings_inner(
-                        arena, member, arg_type, bindings, locked, cache, seen,
+                        arena,
+                        member,
+                        arg_type,
+                        bindings,
+                        locked,
+                        cache,
+                        seen,
+                        preserve_literals,
                     );
                 }
             }
@@ -379,8 +397,10 @@ fn substitute_impl(
     Substitution {
         bindings,
         keep_unbound,
+        preserve: Vec::new(),
         open: Vec::new(),
         rewritten: FxHashMap::default(),
+        closing: FxHashMap::default(),
         cyclic: Vec::new(),
     }
     .rewrite(arena, type_id, &mut outermost_cut)
@@ -396,6 +416,10 @@ fn substitute_impl(
 // `rewritten` does not outlive the call. A declaration's Ref can be resolved by
 // TypeArena::resolve_ref between two calls, which would make a longer-lived rewrite
 // stale.
+// How deep one substitution may go before it is cut (see `Substitution::rewrite`). Real types are a
+// few dozen levels deep; tsc stops an instantiation at 100.
+const MAX_INSTANTIATION_DEPTH: usize = 2_000;
+
 struct Substitution<'b> {
     bindings: &'b [(crate::types::TypeParameterId, TypeId)],
     keep_unbound: bool,
@@ -436,8 +460,16 @@ impl Substitution<'_> {
         type_id: TypeId,
         lowest_cut: &mut usize,
     ) -> TypeId {
+        if let Type::GenericParameter(id, _, _) = arena.get(type_id)
+            && self.preserve.contains(id)
+        {
+            return type_id;
+        }
         if let Some(&done) = self.rewritten.get(&type_id) {
             return done;
+        }
+        if let Some(&copy) = self.closing.get(&type_id) {
+            return copy;
         }
         if !contains_type_param(arena, type_id) {
             return type_id;
@@ -450,6 +482,16 @@ impl Substitution<'_> {
             return type_id;
         }
 
+        // Problem: a type that a generic declaration builds one level at a time can be deeper
+        // than anything its text shows, and substituting into it recurses once per level.
+        // Picked: stop past a fixed depth, or when the stack budget is gone, and hand back the
+        // error type, which does not cascade into a mismatch. The unit says so once (TSR9102).
+        // A count, not only the stack, so the cut point is the same in a debug and a release
+        // build and on any thread.
+        if self.open.len() >= MAX_INSTANTIATION_DEPTH || crate::stack_guard::exhausted() {
+            crate::stack_guard::note_cut();
+            return arena.error();
+        }
         let depth = self.open.len();
         self.open.push(type_id);
         let mut cut_below = usize::MAX;
@@ -489,7 +531,8 @@ impl Substitution<'_> {
     ) -> TypeId {
         let Type::Object(object) = arena.get(type_id).clone() else {
             return type_id;
-        };
+        }
+
         let copy = arena.alloc_ref();
         self.rewritten.insert(type_id, copy);
 
@@ -502,7 +545,6 @@ impl Substitution<'_> {
                 is_method: p.is_method,
             });
         }
-        let body = arena.alloc(Type::Object(ObjectType::new(properties)));
         arena.resolve_ref(copy, body);
         copy
     }
@@ -515,6 +557,9 @@ impl Substitution<'_> {
     ) -> TypeId {
         match arena.get(type_id).clone() {
             Type::GenericParameter(id, _, _) => {
+                if self.preserve.contains(&id) {
+                    return original;
+                }
                 let bound = self
                     .bindings
                     .iter()
@@ -522,7 +567,7 @@ impl Substitution<'_> {
                     .map(|(_, resolved)| *resolved);
                 match bound {
                     Some(resolved) => resolved,
-                    None if self.keep_unbound => type_id,
+                    None if self.keep_unbound => original,
                     None => arena.unknown(),
                 }
             }
@@ -669,6 +714,18 @@ fn merge_free(arena: &TypeArena, into: &mut Vec<FreeParam>, from: &[FreeParam]) 
 // own bounds and defaults, then its parameters, then its return type.
 fn parts_of(arena: &TypeArena, type_id: TypeId) -> SmallVec<[TypeId; 8]> {
     let mut parts = SmallVec::new();
+    match arena.raw(type_id) {
+        Type::App(_, arguments, body) => {
+            parts.extend(arguments.iter().copied());
+            parts.push(*body);
+            return parts;
+        }
+        Type::Named(_, inner) => {
+            parts.push(*inner);
+            return parts;
+        }
+        _ => {}
+    }
     match arena.get(type_id) {
         Type::Array(element) => parts.push(*element),
         Type::Tuple(elements) => parts.extend(elements.iter().map(|e| e.type_id)),

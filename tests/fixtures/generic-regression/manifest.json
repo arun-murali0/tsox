@@ -1,0 +1,254 @@
+[
+  {
+    "file": "fail/f01_wrong_identity_assignment.ts",
+    "expected_tsc": "fail",
+    "phase": "f01",
+    "notes": "inferred identity result is number, not string"
+  },
+  {
+    "file": "fail/f02_bad_nested_substitution.ts",
+    "expected_tsc": "fail",
+    "phase": "f02",
+    "notes": "Box<number> cannot satisfy Box<string>"
+  },
+  {
+    "file": "fail/f03_callback_parameter_mismatch.ts",
+    "expected_tsc": "fail",
+    "phase": "f03",
+    "notes": "callback parameter is incompatible with string"
+  },
+  {
+    "file": "fail/f04_constraint_violation.ts",
+    "expected_tsc": "fail",
+    "phase": "f04",
+    "notes": "required id property missing"
+  },
+  {
+    "file": "fail/f05_dependent_constraint_violation.ts",
+    "expected_tsc": "fail",
+    "phase": "f05",
+    "notes": "string does not satisfy U = number"
+  },
+  {
+    "file": "fail/f06_wrong_method_return.ts",
+    "expected_tsc": "fail",
+    "phase": "f06",
+    "notes": "inferred return is string, not number"
+  },
+  {
+    "file": "fail/f07_callback_result_mismatch.ts",
+    "expected_tsc": "fail",
+    "phase": "f07",
+    "notes": "callback returns string, caller requires number"
+  },
+  {
+    "file": "fail/f08_async_result_mismatch.ts",
+    "expected_tsc": "fail",
+    "phase": "f08",
+    "notes": "Promise<string> is not Promise<number>"
+  },
+  {
+    "file": "fail/f09_overload_no_match.ts",
+    "expected_tsc": "fail",
+    "phase": "f09",
+    "notes": "no overload accepts boolean"
+  },
+  {
+    "file": "fail/f10_bad_conditional_infer.ts",
+    "expected_tsc": "fail",
+    "phase": "f10",
+    "notes": "ElementOf is string but a number is assigned"
+  },
+  {
+    "file": "fail/f11_bad_mapped_property.ts",
+    "expected_tsc": "fail",
+    "phase": "f11",
+    "notes": "getAge must return number"
+  },
+  {
+    "file": "fail/f12_variadic_tuple_order.ts",
+    "expected_tsc": "fail",
+    "phase": "f12",
+    "notes": "tuple positions are wrong"
+  },
+  {
+    "file": "fail/f13_explicit_generic_arity.ts",
+    "expected_tsc": "fail",
+    "phase": "f13",
+    "notes": "too many type arguments"
+  },
+  {
+    "file": "fail/f14_return_union_not_narrowed.ts",
+    "expected_tsc": "fail",
+    "phase": "f14",
+    "notes": "return type is string | number"
+  },
+  {
+    "file": "fail/f15_invariant_property_conflict.ts",
+    "expected_tsc": "fail",
+    "phase": "f15",
+    "notes": "incompatible mutable property types"
+  },
+  {
+    "file": "fail/f16_async_function_expression.ts",
+    "expected_tsc": "fail",
+    "phase": "f16",
+    "notes": "inferred Promise<boolean> is not Promise<string>"
+  },
+  {
+    "file": "fail/f17_default_type_argument_mismatch.ts",
+    "expected_tsc": "fail",
+    "phase": "f17",
+    "notes": "number is not assignable to string"
+  },
+  {
+    "file": "fail/f18_callback_uses_wrong_inferred_type.ts",
+    "expected_tsc": "fail",
+    "phase": "f18",
+    "notes": "inferred T is string from seed"
+  },
+  {
+    "file": "pass/p01_identity_inference.ts",
+    "expected_tsc": "pass",
+    "phase": "p01",
+    "notes": "Phase 1: identity inference"
+  },
+  {
+    "file": "pass/p02_nested_generic_substitution.ts",
+    "expected_tsc": "pass",
+    "phase": "p02",
+    "notes": "Phase 1: nested substitution"
+  },
+  {
+    "file": "pass/p03_covariant_candidate_priority.ts",
+    "expected_tsc": "pass",
+    "phase": "p03",
+    "notes": "Phase 2: covariant evidence"
+  },
+  {
+    "file": "pass/p04_contravariant_callback.ts",
+    "expected_tsc": "pass",
+    "phase": "p04",
+    "notes": "Phase 2: contravariant positions"
+  },
+  {
+    "file": "pass/p05_constraint_guided_inference.ts",
+    "expected_tsc": "pass",
+    "phase": "p05",
+    "notes": "Phase 3: candidates guided by a shared constraint"
+  },
+  {
+    "file": "pass/p06_contextual_callback_from_other_arg.ts",
+    "expected_tsc": "pass",
+    "phase": "p06",
+    "notes": "Phase 4: contextual callback typing"
+  },
+  {
+    "file": "pass/p07_deferred_object_literal.ts",
+    "expected_tsc": "pass",
+    "phase": "p07",
+    "notes": "Phase 5: deferred object literal evidence"
+  },
+  {
+    "file": "pass/p08_defaulted_type_parameters.ts",
+    "expected_tsc": "pass",
+    "phase": "p08",
+    "notes": "Phase 6: omitted trailing defaults"
+  },
+  {
+    "file": "pass/p09_dependent_constraints.ts",
+    "expected_tsc": "pass",
+    "phase": "p09",
+    "notes": "Phase 7: dependent generic constraints"
+  },
+  {
+    "file": "pass/p10_method_return_covariance.ts",
+    "expected_tsc": "pass",
+    "phase": "p10",
+    "notes": "Phase 8: method return inference"
+  },
+  {
+    "file": "pass/p11_priority_ordinary_over_callback.ts",
+    "expected_tsc": "pass",
+    "phase": "p11",
+    "notes": "Phase 9: ordinary argument provides inference evidence"
+  },
+  {
+    "file": "pass/p12_block_callback_return.ts",
+    "expected_tsc": "pass",
+    "phase": "p12",
+    "notes": "Phase 10: block-bodied callback return inference"
+  },
+  {
+    "file": "pass/p13_function_expression_return.ts",
+    "expected_tsc": "pass",
+    "phase": "p13",
+    "notes": "Phase 10: function-expression return inference"
+  },
+  {
+    "file": "pass/p14_async_block_callback.ts",
+    "expected_tsc": "pass",
+    "phase": "p14",
+    "notes": "Phase 10: async block-bodied arrow"
+  },
+  {
+    "file": "pass/p15_async_expression_callback.ts",
+    "expected_tsc": "pass",
+    "phase": "p15",
+    "notes": "Phase 10: async expression-bodied arrow"
+  },
+  {
+    "file": "pass/p16_union_return_paths.ts",
+    "expected_tsc": "pass",
+    "phase": "p16",
+    "notes": "Return union from multiple branches"
+  },
+  {
+    "file": "pass/p17_generic_overload.ts",
+    "expected_tsc": "pass",
+    "phase": "p17",
+    "notes": "Generic overload resolution"
+  },
+  {
+    "file": "pass/p18_conditional_infer.ts",
+    "expected_tsc": "pass",
+    "phase": "p18",
+    "notes": "Conditional type inference"
+  },
+  {
+    "file": "pass/p19_mapped_key_remap.ts",
+    "expected_tsc": "pass",
+    "phase": "p19",
+    "notes": "Mapped types and key remapping"
+  },
+  {
+    "file": "pass/p20_variadic_tuple.ts",
+    "expected_tsc": "pass",
+    "phase": "p20",
+    "notes": "Variadic tuple inference"
+  },
+  {
+    "file": "pass/p21_generic_rest.ts",
+    "expected_tsc": "pass",
+    "phase": "p21",
+    "notes": "Generic rest parameter"
+  },
+  {
+    "file": "pass/p22_explicit_type_arguments.ts",
+    "expected_tsc": "pass",
+    "phase": "p22",
+    "notes": "Explicit generic arguments"
+  },
+  {
+    "file": "pass/p23_void_callback_assignability.ts",
+    "expected_tsc": "pass",
+    "phase": "p23",
+    "notes": "Callback returning a value can be used where void is expected"
+  },
+  {
+    "file": "pass/p24_optional_generic_property.ts",
+    "expected_tsc": "pass",
+    "phase": "p24",
+    "notes": "Optional property and default type"
+  }
+]

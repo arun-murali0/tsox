@@ -148,10 +148,12 @@ pub fn infer_expression_type(
         }
 
         Expression::ArrowFunctionExpression(arrow) => {
-            infer_arrow_function_type(arrow, scoping, ctx)
+            infer_arrow_function_type(arrow, scoping, expected, ctx)
         }
 
-        Expression::FunctionExpression(func) => infer_function_expression_type(func, scoping, ctx),
+        Expression::FunctionExpression(func) => {
+            infer_function_expression_type(func, scoping, expected, ctx)
+        }
 
         Expression::LogicalExpression(logical) => {
             infer_logical_expression_type(logical, scoping, ctx)

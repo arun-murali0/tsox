@@ -35,6 +35,17 @@ fn generic_function_is_accepted_when_assigned_to_a_concrete_annotation() {
 }
 
 #[test]
+fn value_returning_function_is_accepted_for_void_callback() {
+    let found = errors(
+        "declare function returnsNumber(): number;\n\
+         declare function consume(callback: () => void): void;\n\
+         consume(returnsNumber);\n\
+         const callback: () => void = () => 123;\n",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
 fn instantiation_still_rejects_a_mismatched_return_type() {
     let found = errors(
         "declare function id<T>(x: T): T;\n\
@@ -95,4 +106,152 @@ fn bare_parameter_and_lone_setter_are_still_implicit_any() {
         2,
         "{found:?}"
     );
+}
+
+#[test]
+fn unrelated_sibling_candidates_keep_the_first_and_report_the_second_argument() {
+    let found = errors(
+        "interface Animal { x: number }\n\
+         interface Giraffe extends Animal { neck: number }\n\
+         interface Elephant extends Animal { trunk: number }\n\
+         function choose<T extends Animal>(left: T, right: T): T { return left; }\n\
+         declare const giraffe: Giraffe;\n\
+         declare const elephant: Elephant;\n\
+         const animal: Animal = choose(giraffe, elephant);\n",
+    );
+    // tsc infers T = Giraffe (the leftmost candidate) and reports TS2345 on `elephant`.
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, Some(2345), "{found:?}");
+}
+
+#[test]
+fn generic_call_contextually_types_callback_from_earlier_argument_inference() {
+    let found = errors(
+        "declare function use<T, U>(value: T, callback: (item: T) => U): U;\n\
+         const result: number = use(1, item => item.toFixed().length);\n",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn explicit_callback_parameter_annotation_overrides_contextual_type() {
+    let found = errors(
+        "declare function use<T, U>(value: T, callback: (item: T) => U): U;\n\
+         use(1, (item: string) => item.length);\n",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+}
+
+#[test]
+fn generic_object_argument_contextually_types_nested_callback_after_anchor_inference() {
+    let found = errors(
+        "declare function use<T, U>(value: T, options: { callback: (item: T) => U }): U;\n\
+         const result: number = use(1, { callback: item => item.toFixed().length });\n",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn explicit_nested_callback_annotation_remains_authoritative() {
+    let found = errors(
+        "declare function use<T, U>(value: T, options: { callback: (item: T) => U }): U;\n\
+         use(1, { callback: (item: string) => item.length });\n",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+}
+
+#[test]
+fn object_only_generic_argument_still_contributes_inference_candidates() {
+    let found = errors(
+        "declare function wrap<T>(options: { value: T }): T;\n\
+         const value: number = wrap({ value: 1 });\n",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn explicit_type_argument_lists_must_supply_all_required_parameters() {
+    let found = errors(
+        "declare function pair<T, U>(left: T, right: U): U;\n\
+         pair<string>('x', 1);\n",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, Some(2558), "{found:?}");
+    assert_eq!(found[0].1, "Expected 2 type arguments, but got 1.");
+}
+
+#[test]
+fn explicit_type_argument_lists_reject_extra_arguments() {
+    let found = errors(
+        "declare function once<T>(value: T): T;\n\
+         once<string, number>('x');\n",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, Some(2558), "{found:?}");
+    assert_eq!(found[0].1, "Expected 1 type arguments, but got 2.");
+}
+
+#[test]
+fn trailing_defaulted_type_parameters_may_be_omitted_explicitly() {
+    let found = errors(
+        "declare function withDefault<T, U = string>(value: T, other?: U): U;\n\
+         const value: string = withDefault(1);\n\
+         const defaulted: string = withDefault<number>(1);\n\
+         const other: number = withDefault<number, number>(1, 2);\n",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn block_arrow_return_type_contributes_to_generic_inference() {
+    let found = errors(
+        "declare function use<T, U>(value: T, callback: (item: T) => U): U;\n\
+         const wrong: string = use(1, item => { return item.toFixed().length; });\n",
+    );
+    assert_eq!(
+        found.len(),
+        1,
+        "a block callback returns number, not any: {found:?}"
+    );
+    assert_eq!(found[0].0, Some(2322), "{found:?}");
+}
+
+#[test]
+fn block_function_expression_infers_return_type() {
+    let found = errors(
+        "const callback = function (value: number) { return value.toFixed(); };\n\
+         const wrong: number = callback(1);\n",
+    );
+    assert_eq!(
+        found.len(),
+        1,
+        "the function expression returns string: {found:?}"
+    );
+    assert_eq!(found[0].0, Some(2322), "{found:?}");
+}
+
+#[test]
+fn async_block_arrow_infers_promise_of_return_type_for_generic_calls() {
+    let found = errors(
+        "declare function use<T, U>(value: T, callback: (item: T) => U): U;\n\
+         const wrong: Promise<string> = use(1, async item => { return item.toFixed().length; });\n",
+    );
+    assert_eq!(
+        found.len(),
+        1,
+        "the callback returns Promise<number>: {found:?}"
+    );
+    assert_eq!(found[0].0, Some(2322), "{found:?}");
+}
+
+#[test]
+fn async_expression_arrow_infers_promise_return_type() {
+    let found =
+        errors("const wrong: Promise<string> = async (value: number) => value.toFixed().length;\n");
+    assert_eq!(
+        found.len(),
+        1,
+        "an async arrow returns Promise<number>: {found:?}"
+    );
+    assert_eq!(found[0].0, Some(2322), "{found:?}");
 }

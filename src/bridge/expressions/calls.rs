@@ -3,7 +3,7 @@ use oxc_semantic::Scoping;
 use oxc_span::{GetSpan, Span};
 
 use crate::arena::TypeId;
-use crate::semantic::{GenericInferenceSession, GenericSolver};
+use crate::semantic::{GenericInferenceSession, GenericSolver, InferencePriority};
 use crate::types::{FunctionType, Type};
 
 use super::super::context::CheckContext;
@@ -76,6 +76,10 @@ pub(super) fn infer_call_expression_type(
             callee_is_declaration = callee_symbol.is_some();
             if let Some(symbol_id) = callee_symbol {
                 ctx.return_reads.note_call(symbol_id);
+            } else if let Some(symbol_id) = resolve_symbol_id(ident, scoping)
+                && let Some(keys) = ctx.imported_function_symbols.get(&symbol_id).cloned()
+            {
+                ctx.return_reads.note_imported_call(&keys);
             }
             (
                 resolve_identifier_type(ident, scoping, ctx),
@@ -518,9 +522,9 @@ fn check_callable(
         // though the call itself is not.
         if !matches!(ctx.arena.get(callee_type), Type::Any | Type::Error) {
             let message = if is_new {
-                crate::diagnostic_messages::messages::not_a_constructor(callee_name)
+                crate::diagnostic_messages::messages::not_a_constructor(&ctx.arena, callee_type)
             } else {
-                crate::diagnostic_messages::messages::not_callable(callee_name)
+                crate::diagnostic_messages::messages::not_callable(&ctx.arena, callee_type)
             };
             ctx.error(message, span);
             return ctx.arena.error();
@@ -738,22 +742,17 @@ fn check_callable(
                     arg_types[index] = Some(inferred);
                 }
             }
-        })
-        .collect();
+        }
+    }
 
     // A first pass over every argument collects generic parameter bindings before
     // any argument is checked against its expected type, so a generic function's
     // return type can be substituted correctly even when the argument that fixes
     // a type parameter comes after other checked arguments.
-    // An explicit call-site type argument list (identity<string>(x)) is
-    // positional, with no declaration span of its own, so it is zipped against
-    // the function's own type parameters in the order they were declared;
-    // see ordered_generic_param_ids for how that order is recovered. Extra
-    // type arguments beyond the function's own parameter count are ignored,
-    // and a partial list (some but not all of the function's type parameters
-    // given explicitly) leaves the rest to ordinary argument-driven inference,
-    // matching this checker's general "leave the rest to be inferred/left
-    // unresolved" stance rather than treating it as an arity error.
+    // An explicit call-site type argument list (identity<string>(x)) is positional,
+    // with no declaration span of its own, so it is zipped against the function's own
+    // type parameters in declaration order. Its required-to-total count is checked below;
+    // defaulted trailing parameters may be omitted, but required parameters may not.
     let mut declared_param_ids = Vec::new();
     // Signature metadata preserves declaration order and parameters that do not occur
     // structurally (for example `<T = string>() => T` or `<T>() => void`).
@@ -823,6 +822,84 @@ fn check_callable(
                 &mut ctx.relation_cache,
             );
         }
+    }
+
+    // Preview bindings from non-callback arguments. This is not the final answer: the
+    // original session remains intact and receives callback candidates below. Defaults
+    // are applied in declaration order only to the preview used for contextual typing.
+    let mut contextual_bindings = inference
+        .clone()
+        .finish(&mut ctx.arena, &mut ctx.relation_cache);
+    // Object literals must not replace unresolved type parameters with the contextual
+    // fallback `unknown`: doing so loses inference that could still be supplied by the
+    // literal's non-callback properties. They use only bindings established by ordinary
+    // arguments, while direct callbacks retain the default/constraint fallback below.
+    let object_contextual_bindings = contextual_bindings.clone();
+    for parameter in &function_type.type_params {
+        if ambient_ids.contains(&parameter.id)
+            || contextual_bindings
+                .iter()
+                .any(|(id, _)| *id == parameter.id)
+        {
+            continue;
+        }
+        let fallback = parameter
+            .default
+            .or(parameter.constraint)
+            .unwrap_or_else(|| ctx.arena.unknown());
+        let fallback = GenericSolver::substitute_bound_type_params(
+            &mut ctx.arena,
+            fallback,
+            &contextual_bindings,
+        );
+        if !GenericSolver::contains_type_param(&ctx.arena, fallback) {
+            contextual_bindings.push((parameter.id, fallback));
+        }
+    }
+
+    for index in deferred_contextual_args {
+        let Some(expr) = arguments[index].as_expression() else {
+            continue;
+        };
+        let Some(param_type) =
+            GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index)
+        else {
+            let inferred = infer_expression_type(expr, scoping, ctx);
+            arg_types[index] = Some(inferred);
+            continue;
+        };
+        let is_object = matches!(expr, Expression::ObjectExpression(_));
+        let bindings_for_context = if is_object {
+            &object_contextual_bindings
+        } else {
+            &contextual_bindings
+        };
+        ctx.contextual = Some(GenericSolver::substitute_bound_type_params(
+            &mut ctx.arena,
+            param_type,
+            bindings_for_context,
+        ));
+        let inferred = infer_expression_type(expr, scoping, ctx);
+        arg_types[index] = Some(inferred);
+        // Candidates from context-sensitive callbacks and object literals have
+        // different strength. A callback is contextually typed from the current
+        // best bindings, so its return type is useful high-priority evidence.
+        // An object literal deferred only to obtain contextual property types is
+        // fallback evidence: it must not displace a concrete candidate supplied by
+        // an ordinary argument, but it can still infer a parameter when no stronger
+        // source exists. This wires the session's priority model into real calls.
+        let priority = if is_object {
+            InferencePriority::Low
+        } else {
+            InferencePriority::Contextual
+        };
+        inference.infer_argument_with_priority(
+            &mut ctx.arena,
+            param_type,
+            inferred,
+            priority,
+            &mut ctx.relation_cache,
+        );
     }
     let mut bindings = inference.finish(&mut ctx.arena, &mut ctx.relation_cache);
 
@@ -926,9 +1003,13 @@ fn check_callable(
             // itself, as a plain assignability error; only an argument it cannot take
             // apart gets the `Argument of type ...` message.
             if !super::elaborate::elaborate_mismatch(arg_expr, arg_type, expected, ctx) {
+                let instantiated = ctx.instantiate_for_message(arg_type, expected);
                 ctx.error(
-                    crate::diagnostic_messages::messages::argument_not_assignable(
-                        &ctx.arena, arg_type, expected,
+                    crate::diagnostic_messages::messages::argument_not_assignable_via(
+                        &ctx.arena,
+                        arg_type,
+                        instantiated,
+                        expected,
                     ),
                     arg_expr.span(),
                 );
