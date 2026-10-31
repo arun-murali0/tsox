@@ -306,7 +306,7 @@ These are regression-tested in `tests/module_resolution.rs`. They are about find
 - [x] Each layer's exports reach the files that import it, and the members of a cycle are checked again until their exports settle (at most four rounds)
 - [x] Changed-file detection (fingerprint, then content hash)
 - [x] `FileId` follows path order, whatever order the entries are given in
-- [x] petgraph topology agrees with the graph's own cycle search and orders components dependencies first
+- [x] ModuleTopology (petgraph view) removed in E2: no production consumer; the graph's own `sccs` is tested for dependencies-first order
 - [ ] tsconfig `paths` / `baseUrl`
 - [ ] Re-check only changed files and their dependents
 

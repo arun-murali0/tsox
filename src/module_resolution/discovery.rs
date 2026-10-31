@@ -41,6 +41,32 @@ pub struct ModuleRequest {
 pub struct ModuleScan {
     pub requests: Vec<ModuleRequest>,
     pub parse_failed: bool,
+    /// The file is a script (it has no `import` or `export`) that declares ambient modules
+    /// with `declare module "x" { ... }`. Read off the parse the scan already made, so the
+    /// checker does not parse the file again to find out.
+    pub declares_ambient_modules: bool,
+}
+
+// Problem: a triple-slash reference directive names a file or a type package the program must
+// contain, but nothing imports it, so the file it names was never read and every global it
+// declares was reported as a missing name. `@types/node` is mostly such references.
+// Picked: each directive in the comment block at the top of the file (blank lines and other
+// comments may precede or sit between them; the first statement ends the block, as in
+// TypeScript) becomes a type-only side-effect edge. A `path` is a file relative to this one; a
+// `types` names a package, resolved like any bare specifier, which falls back to `@types`.
+// Cost: a directive that names nothing is an unresolved edge; the checker reports it (TS2688 for
+// `types`, TS6053 for `path`, see bridge::imports).
+fn reference_directives(source: &str) -> Vec<ModuleRequest> {
+    crate::reference_directives::scan(source)
+        .into_iter()
+        .map(|directive| ModuleRequest {
+            specifier: directive.specifier,
+            is_type: true,
+            is_import: true,
+            kind: ModuleRequestKind::SideEffectImport,
+            start: u32::try_from(directive.start).unwrap_or(u32::MAX),
+        })
+        .collect()
 }
 
 pub fn scan_module_requests(source: &str, file_name: &str) -> ModuleScan {
@@ -49,6 +75,7 @@ pub fn scan_module_requests(source: &str, file_name: &str) -> ModuleScan {
         return ModuleScan {
             requests: Vec::new(),
             parse_failed: true,
+            declares_ambient_modules: false,
         };
     }
     let allocator = Allocator::default();
@@ -61,6 +88,7 @@ pub fn scan_module_requests(source: &str, file_name: &str) -> ModuleScan {
         return ModuleScan {
             requests: Vec::new(),
             parse_failed,
+            declares_ambient_modules: false,
         };
     }
 
@@ -200,19 +228,99 @@ pub fn scan_module_requests(source: &str, file_name: &str) -> ModuleScan {
     };
     dynamic_imports.visit_program(&parsed.program);
     requests.extend(dynamic_imports.requests);
+    // An import type, `typeof import("x")` or `import("x").Name`, needs the exports of `x` and
+    // binds nothing locally. It is a type-only edge, so unlike a dynamic `import("x")` it
+    // orders the file after `x`, which is what lets the file read what `x` exports.
+    struct ImportTypeWalker {
+        requests: Vec<ModuleRequest>,
+    }
+    impl<'a> Visit<'a> for ImportTypeWalker {
+        fn visit_ts_import_type(&mut self, import: &oxc_ast::ast::TSImportType<'a>) {
+            self.requests.push(ModuleRequest {
+                specifier: import.source.value.as_str().to_owned(),
+                is_type: true,
+                is_import: false,
+                kind: ModuleRequestKind::TypeImport,
+                start: import.span.start,
+            });
+            walk::walk_ts_import_type(self, import);
+        }
+    }
+    let mut import_types = ImportTypeWalker {
+        requests: Vec::new(),
+    };
+    import_types.visit_program(&parsed.program);
+    requests.extend(import_types.requests);
+    // `/// <reference path="..." />` and `/// <reference types="..." />` bring another file into
+    // the program without importing it, so its global declarations count. They are not syntax
+    // the parser keeps, so they are read off the comment block at the top of the file.
+    requests.extend(reference_directives(source));
     // The parser keeps requests in a hash map keyed by specifier, whose iteration order
     // changes from run to run. Source order makes the graph reproducible.
     requests.sort_by_key(|request| request.start);
 
+    let declares_ambient_modules = !is_external_module
+        && parsed.program.body.iter().any(|statement| {
+            matches!(
+                statement,
+                oxc_ast::ast::Statement::TSExternalModuleDeclaration(_)
+            )
+        });
+
     ModuleScan {
         requests,
         parse_failed,
+        declares_ambient_modules,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::scan_module_requests;
+
+    fn directive_specifiers(source: &str) -> Vec<String> {
+        scan_module_requests(source, "a.d.ts")
+            .requests
+            .into_iter()
+            .filter(|request| {
+                request.kind == super::ModuleRequestKind::SideEffectImport && request.is_type
+            })
+            .map(|request| request.specifier)
+            .collect()
+    }
+
+    #[test]
+    fn reference_directives_at_the_top_become_type_edges() {
+        let source = "/// <reference path=\"extra.d.ts\" />\n\
+                      /// <reference types='pkg' />\n\
+                      /// <reference path=\"./dot.d.ts\" />\n\
+                      /// <reference path=\"../up.d.ts\" />\n\
+                      export const x = 1;\n";
+        assert_eq!(
+            directive_specifiers(source),
+            ["./extra.d.ts", "pkg", "./dot.d.ts", "../up.d.ts"]
+        );
+    }
+
+    #[test]
+    fn comments_and_blank_lines_may_surround_the_directives() {
+        let source = "// header\n\n/* a block\n   comment */\n/// <reference types=\"one\" />\n\n\
+                      // between\n/// <reference types=\"two\" />\ninterface A {}\n";
+        assert_eq!(directive_specifiers(source), ["one", "two"]);
+    }
+
+    #[test]
+    fn a_directive_after_the_first_statement_is_ordinary_comment() {
+        let source = "interface A {}\n/// <reference path=\"late.d.ts\" />\n";
+        assert_eq!(directive_specifiers(source), Vec::<String>::new());
+    }
+
+    #[test]
+    fn lib_and_no_default_lib_directives_name_nothing_to_read() {
+        let source = "/// <reference lib=\"es2020\" />\n/// <reference no-default-lib=\"true\" />\n\
+                      /// <amd-module name=\"x\" />\nexport {};\n";
+        assert_eq!(directive_specifiers(source), Vec::<String>::new());
+    }
 
     #[test]
     fn requests_come_back_in_source_order() {

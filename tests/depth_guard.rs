@@ -186,3 +186,47 @@ fn ten_thousand_nested_brackets_run_to_an_end() {
     );
     assert_ran_to_an_end("generics", &run("generics", &generics));
 }
+
+// E8: shapes with no brackets for the parser to count. `source_depth` counts a conditional
+// link, an arrow and an open generic argument as depth, so these are refused before the parse
+// instead of aborting it, which they did at 100,000 levels.
+#[test]
+fn a_ternary_chain_an_arrow_chain_and_nested_generics_do_not_abort_the_run() {
+    let ternary = format!(
+        "declare const c: boolean;\nlet x = {}0;\n",
+        "c ? 1 : ".repeat(100_000)
+    );
+    assert_ran_to_an_end("ternary", &run("ternary", &ternary));
+
+    let arrows = format!("let f = {}0;\n", "(y: number) => ".repeat(100_000));
+    assert_ran_to_an_end("arrow", &run("arrow", &arrows));
+
+    let generics = format!(
+        "type T = {}number{};\n",
+        "Array<".repeat(100_000),
+        ">".repeat(100_000)
+    );
+    assert_ran_to_an_end("generics", &run("generics", &generics));
+}
+
+// A long `else if` chain recurses in `check_statement`, which now asks the stack guard first.
+#[test]
+fn a_long_else_if_chain_is_cut_off_or_checked_without_aborting() {
+    let mut source = String::from("declare const a: boolean;\nlet n = 0;\nif (a) { n = 1; }");
+    for _ in 0..FLAT_CHAIN {
+        source.push_str(" else if (a) { n = 1; }");
+    }
+    source.push('\n');
+    assert_ran_to_an_end("else-if", &run("else-if", &source));
+}
+
+// E8: a generic alias that builds a type 3,000 levels deep around its parameter is cut when it
+// is instantiated, with one TSR9102, and nothing aborts.
+#[test]
+fn an_instantiation_that_goes_too_deep_is_cut_off_and_reported_once() {
+    let source = format!(
+        "type D<T> = T{};\ndeclare const x: D<number>;\nlet y: number = 1;\n",
+        "[]".repeat(3_000)
+    );
+    assert_cut_once("instantiation", &run("instantiation", &source));
+}

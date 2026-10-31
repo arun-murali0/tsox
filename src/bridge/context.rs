@@ -28,6 +28,8 @@ pub struct CheckContext<'ast, 'src> {
     pub symbols: SymbolTypeMap,
     pub diagnostics: Vec<Diagnostic>,
     pub file_name: &'src str,
+    // The compiler options this unit is checked under (see check_options.rs).
+    pub options: crate::check_options::CheckOptions,
 
     pub narrow: NarrowState,
 
@@ -153,6 +155,12 @@ pub struct CheckContext<'ast, 'src> {
     // of an import can be answered with the key the declaration already has. Only ever
     // looked up by name, never walked.
     pub imported_names: FxHashMap<String, Vec<DeclKey>>,
+    // The instance types of imported classes, as the importer made them: what a class's
+    // constructor returns until a merged interface changes the type bound to its name.
+    pub class_instances: std::collections::HashSet<TypeId>,
+    // The imported bindings that are functions, by symbol, with the declarations they were
+    // bound to. A call to one inside a return expression is noted in `return_reads`.
+    pub imported_function_symbols: FxHashMap<SymbolId, Vec<DeclKey>>,
 
     // How many ambient blocks (`declare namespace`, `declare module "x" { }`) the walker
     // is inside. Zero outside any. tsc treats every declaration in such a block as ambient
@@ -187,6 +195,8 @@ pub struct ReturnReads {
     // True while the expression of a `return` statement is being checked.
     pub in_return_expression: bool,
     edges: Vec<(SymbolId, SymbolId)>,
+    // The same record for calls to imported functions: the declarations a call reaches.
+    imported_edges: Vec<(SymbolId, DeclKey)>,
     names: FxHashMap<SymbolId, (String, Span)>,
     reported: Vec<SymbolId>,
 }
@@ -203,6 +213,59 @@ impl ReturnReads {
         {
             self.edges.push((owner, callee));
         }
+    }
+
+    // A call by name to an imported function, seen where it can affect the return type of the
+    // function being inferred. The project joins these across files (see `cross_file`).
+    pub fn note_imported_call(&mut self, callees: &[DeclKey]) {
+        if !self.in_return_expression {
+            return;
+        }
+        if let Some(owner) = self.owner {
+            for key in callees {
+                if !self.imported_edges.contains(&(owner, *key)) {
+                    self.imported_edges.push((owner, *key));
+                }
+            }
+        }
+    }
+
+    // Every inferred function that reaches an imported function, with the name and place to
+    // report it at, the imported declarations it reaches (through functions of its own file
+    // too), and whether the file already reported it as part of a circle of its own.
+    pub fn cross_file(&self) -> Vec<(SymbolId, String, Span, Vec<DeclKey>, bool)> {
+        let mut out = Vec::new();
+        for (symbol, (name, span)) in &self.names {
+            let mut seen = vec![*symbol];
+            let mut pending = vec![*symbol];
+            let mut callees: Vec<DeclKey> = Vec::new();
+            while let Some(node) = pending.pop() {
+                for (owner, key) in &self.imported_edges {
+                    if *owner == node && !callees.contains(key) {
+                        callees.push(*key);
+                    }
+                }
+                for (from, to) in &self.edges {
+                    if *from == node && !seen.contains(to) {
+                        seen.push(*to);
+                        pending.push(*to);
+                    }
+                }
+            }
+            if callees.is_empty() {
+                continue;
+            }
+            callees.sort();
+            out.push((
+                *symbol,
+                name.clone(),
+                *span,
+                callees,
+                self.reported.contains(symbol),
+            ));
+        }
+        out.sort_by_key(|entry| entry.2.start);
+        out
     }
 
     pub fn note_owner(&mut self, symbol: SymbolId, name: &str, span: Span) {
@@ -309,6 +372,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             symbols: SymbolTypeMap::new(),
             diagnostics: Vec::new(),
             file_name,
+            options: crate::check_options::CheckOptions::default(),
             narrow: NarrowState::new(),
             relation_cache: RelationCache::default(),
             current_return_type: None,
@@ -331,6 +395,8 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             imports: None,
             importer: Importer::new(),
             imported_names: FxHashMap::default(),
+            class_instances: std::collections::HashSet::new(),
+            imported_function_symbols: FxHashMap::default(),
             ambient_depth: 0,
             global_values: FxHashMap::default(),
         }
@@ -442,6 +508,12 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
     pub fn is_assignable_instantiating(&mut self, source: TypeId, target: TypeId) -> bool {
         let source = self.instantiate_generic_source(source, target);
         self.semantic().is_assignable(source, target)
+    }
+
+    // The type a message explains: the generic source as the check saw it. Same as
+    // `source` when nothing was instantiated.
+    pub fn instantiate_for_message(&mut self, source: TypeId, target: TypeId) -> TypeId {
+        self.instantiate_generic_source(source, target)
     }
 
     fn instantiate_generic_source(&mut self, source: TypeId, target: TypeId) -> TypeId {

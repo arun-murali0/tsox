@@ -118,6 +118,14 @@ pub(super) fn check_function_declaration(
         } else {
             ctx.arena.alloc_union(returned)
         };
+        // An async function returns a Promise of what the body returns, and a returned
+        // Promise is awaited.
+        let inferred = if func.r#async {
+            let awaited = ctx.awaited_type(inferred);
+            ctx.arena.alloc_promise(awaited)
+        } else {
+            inferred
+        };
         let updated = ctx
             .arena
             .alloc(crate::types::Type::Function(crate::types::FunctionType {

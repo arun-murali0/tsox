@@ -1,4 +1,6 @@
-use oxc_ast::ast::{BindingPattern, FormalParameters, Statement, TSSignature, TSType, TSTypeName};
+use oxc_ast::ast::{
+    BindingPattern, FormalParameters, Statement, TSSignature, TSTupleElement, TSType, TSTypeName,
+};
 use oxc_semantic::Scoping;
 use oxc_span::{GetSpan, Span};
 
@@ -142,6 +144,18 @@ pub(super) fn report_implicit_any_params(
     }
 }
 
+// The type written inside a tuple element: `A`, `A?`, `...A[]` and `name: A` all hold one.
+fn tuple_element_type<'b, 'a>(element: &'b TSTupleElement<'a>) -> Option<&'b TSType<'a>> {
+    match element {
+        TSTupleElement::TSOptionalType(optional) => Some(&optional.type_annotation),
+        TSTupleElement::TSRestType(rest) => Some(&rest.type_annotation),
+        other => match other.as_ts_type()? {
+            TSType::TSNamedTupleMember(member) => tuple_element_type(&member.element_type),
+            ty => Some(ty),
+        },
+    }
+}
+
 // Finds the first type name in an annotation that genuinely does not exist, as
 // opposed to one that exists but this checker cannot represent. A name counts as
 // missing only if oxc's own scope analysis resolved it to no declaration at all
@@ -165,6 +179,10 @@ pub(super) fn find_unresolved_type_name(
         TSType::TSArrayType(array) => {
             find_unresolved_type_name(&array.element_type, scoping, namespace)
         }
+        TSType::TSTupleType(tuple) => tuple.element_types.iter().find_map(|element| {
+            let ty = tuple_element_type(element)?;
+            find_unresolved_type_name(ty, scoping, namespace)
+        }),
         TSType::TSUnionType(union) => union
             .types
             .iter()

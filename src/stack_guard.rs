@@ -30,6 +30,8 @@ pub(crate) const BIG_STACK_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_BRACKET_DEPTH: usize = 4_000;
 
 thread_local! {
+    // Set when a walk that has nowhere to report stopped at a limit (see `note_cut`).
+    static CUT: Cell<bool> = const { Cell::new(false) };
     // The lowest address this thread may reach before `exhausted()` says so. Zero means
     // the thread has not set a budget and is not checked.
     static FLOOR: Cell<usize> = const { Cell::new(0) };
@@ -55,6 +57,17 @@ fn margin(total_bytes: usize) -> usize {
 pub(crate) fn set_thread_stack(total_bytes: usize) {
     let usable = total_bytes - margin(total_bytes);
     FLOOR.with(|floor| floor.set(stack_position().saturating_sub(usable)));
+}
+
+/// Records that a walk without a context to report to (type substitution) stopped at a limit and
+/// returned the error type. The unit reads it once with `take_cut` and says so with TSR9102.
+pub(crate) fn note_cut() {
+    CUT.with(|cut| cut.set(true));
+}
+
+/// Whether a walk was cut since the last call, and clears the record.
+pub(crate) fn take_cut() -> bool {
+    CUT.with(|cut| cut.replace(false))
 }
 
 /// True when the calling thread has used its budget and must not recurse further.

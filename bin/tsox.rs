@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -23,6 +23,10 @@ struct Options {
     flat: bool,
     cycles: bool,
     partial: bool,
+    // Check through the query layer (`IncrementalProject`): slower on a first run, much faster
+    // on every later one. `--watch` implies it.
+    incremental: bool,
+    watch: bool,
 }
 
 // Set once from `--tsc-codes`: print each diagnostic under the tsc code it maps to.
@@ -85,32 +89,47 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    // tsconfig.json's contents are never parsed; the path is only used to locate
-    // the project root, and every .ts/.tsx file under that root is then checked
-    // directly. There is no include/exclude/paths handling and no support for
-    // multiple projects yet. Those files are the entries of the module graph when
-    // it is used; files they import are added to the graph from there.
-    let Some(project_root) = tsconfig_path.parent() else {
-        eprintln!(
-            "error: could not determine a project root from {}",
-            tsconfig_path.display()
-        );
-        return ExitCode::from(2);
+    // The config file's directory is the project root. A bare file name such as
+    // `tsconfig.json` has an empty parent, which means the current directory.
+    let project_root = tsconfig_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+
+    // With the module graph, the config is read: `include`, `exclude` and `files` (after
+    // `extends`) select the entries, and `paths` and `baseUrl` resolve imports. A config
+    // that cannot be read stops the run with exit code 2, as tsc does: checking every file
+    // under the root instead would answer a question nobody asked and let a broken config
+    // pass a CI gate. There is no support for multiple projects yet. The entries are the
+    // roots of the module graph; files they import are added from there.
+    #[cfg(feature = "module-resolution")]
+    let config = match load_config(&tsconfig_path) {
+        Ok(config) => config,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::from(2);
+        }
     };
+    #[cfg(feature = "module-resolution")]
+    let source_files = config.entry_files();
+    #[cfg(not(feature = "module-resolution"))]
+    let source_files = files_under(project_root);
 
-    let mut source_files = Vec::new();
-    collect_ts_files(project_root, &mut source_files);
-    source_files.sort();
-
+    // tsc reports no inputs as an error (TS18003), not as a clean run: a config whose
+    // include matches nothing is a mistake, and exiting 0 would hide it.
     if source_files.is_empty() {
         eprintln!(
-            "warning: no .ts/.tsx files found under {}",
+            "error: no .ts/.tsx files selected under {}",
             project_root.display()
         );
-        return ExitCode::SUCCESS;
+        return ExitCode::from(2);
     }
 
-    let tally = match run(&source_files, &options) {
+    #[cfg(feature = "module-resolution")]
+    let outcome = run(&source_files, &options, Some(&config));
+    #[cfg(not(feature = "module-resolution"))]
+    let outcome = run(&source_files, &options);
+    let tally = match outcome {
         Ok(tally) => tally,
         Err(message) => {
             eprintln!("error: {message}");
@@ -118,14 +137,7 @@ fn main() -> ExitCode {
         }
     };
 
-    println!();
-    println!(
-        "Checked {} file(s): {} error(s), {} warning(s).",
-        tally.files, tally.errors, tally.warnings
-    );
-    if let Some(note) = &tally.note {
-        println!("{note}");
-    }
+    print_summary(&tally);
 
     if tally.fatal {
         // A file that failed to read or parse at all is distinguished from a file
@@ -140,12 +152,108 @@ fn main() -> ExitCode {
     }
 }
 
+fn print_summary(tally: &Tally) {
+    println!();
+    println!(
+        "Checked {} file(s): {} error(s), {} warning(s).",
+        tally.files, tally.errors, tally.warnings
+    );
+    if let Some(note) = &tally.note {
+        println!("{note}");
+    }
+}
+
+// Every .ts/.tsx file under `root`, sorted, skipping the usual build and dependency
+// directories. What is checked in a build without the module graph, which has no
+// configuration to select files.
+#[cfg(not(feature = "module-resolution"))]
+fn files_under(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_ts_files(root, &mut files);
+    files.sort();
+    files
+}
+
 #[cfg(feature = "module-resolution")]
-fn run(files: &[PathBuf], options: &Options) -> Result<Tally, String> {
+fn load_config(tsconfig_path: &std::path::Path) -> Result<tsox::ProjectConfig, String> {
+    let absolute = fs::canonicalize(tsconfig_path)
+        .map_err(|error| format!("could not resolve {}: {error}", tsconfig_path.display()))?;
+    tsox::ProjectConfig::load(&absolute).map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "module-resolution")]
+fn run(
+    files: &[PathBuf],
+    options: &Options,
+    config: Option<&tsox::ProjectConfig>,
+) -> Result<Tally, String> {
     if options.flat {
         return Ok(tsox::with_deep_stack(|| check_flat(files)));
     }
-    check_with_modules(files, options)
+    if options.incremental {
+        return check_incremental(options, config);
+    }
+    check_with_modules(files, options, config)
+}
+
+#[cfg(all(feature = "module-resolution", not(feature = "incremental")))]
+fn check_incremental(_: &Options, _: Option<&tsox::ProjectConfig>) -> Result<Tally, String> {
+    Err("this build has no `incremental` feature; rebuild with --features incremental".to_owned())
+}
+
+// The query layer: the same checker, with every unit's result kept, so a later check runs only
+// what an edit reaches. By itself (`--incremental`) one run is the first run and costs more than
+// the default; `--watch` is where it pays, checking again whenever a file changes.
+#[cfg(all(feature = "module-resolution", feature = "incremental"))]
+fn check_incremental(
+    options: &Options,
+    config: Option<&tsox::ProjectConfig>,
+) -> Result<Tally, String> {
+    let config = config.ok_or("--incremental needs a tsconfig.json")?;
+    let mut project = tsox::IncrementalProject::open(config.config_file())?;
+    let report = project.check()?;
+    let bundle = project.graph();
+    let tally = report_project(bundle.module_graph(), &report, options);
+    if !options.watch {
+        return Ok(tally);
+    }
+    print_summary(&tally);
+    eprintln!("watching for changes (Ctrl-C to stop)");
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if project.entries_changed() {
+            if let Err(message) = project.rebuild() {
+                eprintln!("error: {message}");
+                continue;
+            }
+        }
+        let report = match project.check() {
+            Ok(report) => report,
+            Err(message) => {
+                eprintln!("error: {message}");
+                continue;
+            }
+        };
+        let stats = project.stats();
+        // Report when something a reader can see may differ: the graph was rebuilt (a file
+        // appeared or went, or an import or the config changed), an input's bytes changed, or
+        // the report is not the one printed last. Counting checked units is not that test: a
+        // removed file nothing imports, or a move that changes no unit's inputs, checks zero
+        // units and still changes what the project reports.
+        if !stats.changed {
+            continue;
+        }
+        let bundle = project.graph();
+        println!(
+            "\n--- change detected: {} of {} unit(s) checked, {} reused{} ---",
+            stats.units_checked,
+            stats.units_total,
+            stats.units_reused,
+            if stats.rebuilt { ", graph rebuilt" } else { "" }
+        );
+        let tally = report_project(bundle.module_graph(), &report, options);
+        print_summary(&tally);
+    }
 }
 
 #[cfg(not(feature = "module-resolution"))]
@@ -188,8 +296,12 @@ fn check_flat(files: &[PathBuf]) -> Tally {
 // imports that resolve to nothing; a file sees what it imports through the exports the
 // files below it published.
 #[cfg(feature = "module-resolution")]
-fn check_with_modules(files: &[PathBuf], options: &Options) -> Result<Tally, String> {
-    use tsox::{FileOutcome, ModuleGraph, ModuleResolver, check_project};
+fn check_with_modules(
+    files: &[PathBuf],
+    options: &Options,
+    config: Option<&tsox::ProjectConfig>,
+) -> Result<Tally, String> {
+    use tsox::{ModuleGraph, ModuleResolver, check_project};
 
     // The graph wants absolute entry paths so a file reached by an import and the same
     // file named as an entry are one node.
@@ -200,9 +312,50 @@ fn check_with_modules(files: &[PathBuf], options: &Options) -> Result<Tally, Str
         entries.push(absolute);
     }
 
-    let resolver = ModuleResolver::new();
-    let graph = ModuleGraph::build(&entries, &resolver).map_err(|error| error.to_string())?;
+    // The project's tsconfig.json decides `paths`, `baseUrl` and `extends` for resolution,
+    // and is attached to the graph with the project root, so a missing package is reported
+    // when nothing in the configuration could answer it. Without a readable config the
+    // resolver reads none and there is no root, so a missing package is never reported.
+    let (resolver, root) = match config {
+        Some(config) => (
+            ModuleResolver::with_tsconfig(config.config_file())
+                .with_node_next(config.uses_node_next()),
+            Some(config.root().to_path_buf()),
+        ),
+        None => (ModuleResolver::new(), None),
+    };
+    // The declaration files `types` and `typeRoots` bring in are entries too: nothing imports
+    // them, yet their global declarations and ambient modules are part of the program.
+    let mut loaded_type_entries = false;
+    if let Some(config) = config {
+        for path in config.type_entry_files(&resolver) {
+            if let Ok(absolute) = fs::canonicalize(&path) {
+                if !entries.contains(&absolute) {
+                    entries.push(absolute);
+                }
+            }
+        }
+        loaded_type_entries = true;
+    }
+    let mut graph = ModuleGraph::build(&entries, &resolver).map_err(|error| error.to_string())?;
+    if let (Some(config), Some(root)) = (config, root) {
+        graph = graph.with_root(root).with_config(config);
+        if loaded_type_entries {
+            graph = graph.with_type_entries_loaded();
+        }
+    }
     let report = check_project(&graph);
+    Ok(report_project(&graph, &report, options))
+}
+
+// Prints what a project check found, in the order both ways of checking share, and counts it.
+#[cfg(feature = "module-resolution")]
+fn report_project(
+    graph: &tsox::ModuleGraph,
+    report: &tsox::ProjectReport,
+    options: &Options,
+) -> Tally {
+    use tsox::FileOutcome;
 
     let mut tally = Tally::default();
     for file_report in &report.files {
@@ -220,8 +373,9 @@ fn check_with_modules(files: &[PathBuf], options: &Options) -> Result<Tally, Str
         }
     }
 
-    // A warning and not an error: tsconfig's `paths` and `baseUrl` are not read, so an
-    // import they would resolve shows up here although tsc would find it.
+    // A warning and not an error: tsconfig's `paths`, `baseUrl`, `extends`, `types` and
+    // `typeRoots` are applied, but `rootDirs` is not, so an import it would resolve can still
+    // show up here although tsc would find it.
     let mut unresolved = 0usize;
     for (id, edge) in graph.unresolved() {
         if !graph.is_checkable(id) {
@@ -267,7 +421,7 @@ fn check_with_modules(files: &[PathBuf], options: &Options) -> Result<Tally, Str
                 .collect();
             println!("{}: exports partial: {}", path.display(), why.join("; "));
         }
-        for line in tsox::summarize_partial(&graph, &report).lines() {
+        for line in tsox::summarize_partial(graph, report).lines() {
             println!("{line}");
         }
     }
@@ -290,7 +444,7 @@ fn check_with_modules(files: &[PathBuf], options: &Options) -> Result<Tally, Str
         cycles.len(),
         unresolved
     ));
-    Ok(tally)
+    tally
 }
 
 fn parse_options(args: &[String]) -> Option<Options> {
@@ -300,6 +454,10 @@ fn parse_options(args: &[String]) -> Option<Options> {
         flat: args.iter().any(|arg| arg == "--flat"),
         cycles: args.iter().any(|arg| arg == "--cycles"),
         partial: args.iter().any(|arg| arg == "--partial"),
+        incremental: args
+            .iter()
+            .any(|arg| arg == "--incremental" || arg == "--watch"),
+        watch: args.iter().any(|arg| arg == "--watch"),
     })
 }
 
@@ -315,7 +473,8 @@ fn parse_project_arg(args: &[String]) -> Option<String> {
     None
 }
 
-fn collect_ts_files(dir: &Path, out: &mut Vec<PathBuf>) {
+#[cfg(not(feature = "module-resolution"))]
+fn collect_ts_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
     // A deterministic, hardcoded skip list rather than reading tsconfig's own
     // exclude patterns, consistent with this CLI not parsing tsconfig.json at
     // all. These are the directories real-world TypeScript projects almost
@@ -351,12 +510,13 @@ fn print_help() {
     println!(
         "tsox: a from-scratch TypeScript type checker (experimental CLI)\n\n\
          USAGE:\n    \
-         tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--tsc-codes]\n\n\
+         tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--tsc-codes]\n    \
+         [--incremental | --watch]\n\n\
          OPTIONS:\n    \
-         --project <path>    Locate the project root from a tsconfig.json path.\n                         \
-         Its contents are not parsed; every .ts/.tsx file under\n                         \
-         that directory is checked directly. See bin/tsox.rs\n                         \
-         for the exact scoping.\n    \
+         --project <path>    Read the tsconfig.json at <path> and check the files its\n                         \
+         include/exclude/files select, resolving imports with its\n                         \
+         paths, baseUrl, extends and references. If the config cannot\n                         \
+         be read, warn and check every .ts/.tsx file under its directory.\n    \
          --flat              Check each file on its own, without the module graph.\n                         \
          The only mode in a build without the `module-resolution`\n                         \
          feature.\n    \
@@ -366,6 +526,10 @@ fn print_help() {
          (module graph builds only).\n    \
          --tsc-codes         Print each diagnostic under the tsc code it maps to\n                         \
          (TS2322) instead of tsox's own (TSR1003).\n    \
+         --incremental       Check through the query layer. One run costs about twice the\n                         \
+         default; it exists for --watch and for tools that keep it.\n    \
+         --watch             Check, then check again whenever a file changes, running only\n                         \
+         what the change reaches (implies --incremental).\n    \
          -h, --help          Show this message.\n\n\
          EXIT CODES:\n    \
          0    no errors (warnings may still have been printed)\n    \

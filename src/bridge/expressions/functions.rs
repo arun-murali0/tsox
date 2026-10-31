@@ -13,6 +13,39 @@ use super::super::narrow::NarrowState;
 use super::super::statements::{bind_params, check_statement};
 use super::infer_expression_type;
 
+// Contextual signatures supply types for unannotated callback parameters. Explicit
+// annotations always win. Rest parameters use the contextual rest-array type when
+// available; ordinary parameters use their positional type, including a rest element.
+fn apply_contextual_parameter_types(
+    params: &oxc_ast::ast::FormalParameters,
+    resolved: &mut [crate::types::Param],
+    contextual: Option<TypeId>,
+    arena: &mut crate::arena::TypeArena,
+) {
+    let Some(contextual) = contextual else { return };
+    let crate::types::Type::Function(signature) = arena.get(contextual).clone() else {
+        return;
+    };
+
+    for (index, (syntax, resolved)) in params.items.iter().zip(resolved.iter_mut()).enumerate() {
+        if syntax.type_annotation.is_some() {
+            continue;
+        }
+        if let Some(type_id) = crate::subtyping::param_type_at(arena, &signature.params, index) {
+            resolved.type_id = type_id;
+        }
+    }
+
+    if let (Some(rest), Some(resolved_rest)) = (&params.rest, resolved.last_mut()) {
+        if rest.type_annotation.is_none() {
+            if let Some(contextual_rest) = signature.params.iter().find(|parameter| parameter.rest)
+            {
+                resolved_rest.type_id = contextual_rest.type_id;
+            }
+        }
+    }
+}
+
 // What a closure body is allowed to keep of the narrowing where it was written.
 //
 // Problem: a closure used to see every narrowing in force at the point it was written, so
@@ -42,6 +75,7 @@ fn closure_view(
 pub(super) fn infer_arrow_function_type(
     arrow: &oxc_ast::ast::ArrowFunctionExpression,
     scoping: &Scoping,
+    contextual: Option<TypeId>,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
     // Narrowing a guard clause establishes inside the body must not survive past
@@ -55,7 +89,7 @@ pub(super) fn infer_arrow_function_type(
     // of the function it sits in, since the arrow's return type is only needed when the
     // arrow is called. An expression body has no return scope of its own to say so.
     let outer_owner = ctx.return_reads.owner.take();
-    let result = infer_arrow_function_type_inner(arrow, scoping, ctx);
+    let result = infer_arrow_function_type_inner(arrow, scoping, contextual, ctx);
     ctx.return_reads.owner = outer_owner;
     ctx.narrow = outer_narrow;
     result
@@ -64,13 +98,15 @@ pub(super) fn infer_arrow_function_type(
 fn infer_arrow_function_type_inner(
     arrow: &oxc_ast::ast::ArrowFunctionExpression,
     scoping: &Scoping,
+    contextual: Option<TypeId>,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
     let type_param_scope = ctx
         .namespace
         .push_decl_type_params(&mut ctx.arena, arrow.type_parameters.as_deref());
-    let param_types =
+    let mut param_types =
         resolve_params_with_any_fallback(&arrow.params, &mut ctx.namespace, &mut ctx.arena);
+    apply_contextual_parameter_types(&arrow.params, &mut param_types, contextual, &mut ctx.arena);
     bind_params(&arrow.params, &param_types, scoping, ctx);
 
     let declared_return = arrow
@@ -98,6 +134,10 @@ fn infer_arrow_function_type_inner(
                 }
                 declared
             }
+            None if arrow.r#async => {
+                let awaited = ctx.awaited_type(inferred);
+                ctx.arena.alloc_promise(awaited)
+            }
             None => inferred,
         }
     } else {
@@ -105,15 +145,33 @@ fn infer_arrow_function_type_inner(
             ctx.namespace.pop_type_params(type_param_scope);
             return ctx.arena.error();
         };
-        // A block body has no return inference yet. Without an annotation its returns are
-        // checked against any, so nothing false can be said about them.
-        let return_type = declared_return.unwrap_or_else(|| ctx.arena.any());
-        let return_scope = ctx.enter_function_return_scope(Some(return_type), false, arrow.r#async);
+        // Block-bodied arrows infer from their return statements just like function
+        // declarations. Leaving this as `any` erases the callback's evidence from a
+        // generic call, so `use(1, x => { return x.length })` could appear to return
+        // anything and invalid assignments would be accepted.
+        let infers_return = declared_return.is_none();
+        let placeholder = declared_return.unwrap_or_else(|| ctx.arena.any());
+        let return_scope =
+            ctx.enter_function_return_scope(Some(placeholder), infers_return, arrow.r#async);
         for body_stmt in &body.statements {
             check_statement(body_stmt, scoping, ctx);
         }
-        ctx.leave_return_scope(return_scope);
-        return_type
+        let returned = ctx.leave_return_scope(return_scope);
+        if infers_return {
+            let inferred = if returned.is_empty() {
+                ctx.arena.void()
+            } else {
+                ctx.arena.alloc_union(returned)
+            };
+            if arrow.r#async {
+                let awaited = ctx.awaited_type(inferred);
+                ctx.arena.alloc_promise(awaited)
+            } else {
+                inferred
+            }
+        } else {
+            placeholder
+        }
     };
 
     let type_params = resolve_function_type_params(
@@ -133,6 +191,7 @@ fn infer_arrow_function_type_inner(
 pub(super) fn infer_function_expression_type(
     func: &Function,
     scoping: &Scoping,
+    contextual: Option<TypeId>,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
     // Narrowing from the body must not outlive the function; it is saved and
@@ -140,7 +199,7 @@ pub(super) fn infer_function_expression_type(
     let outer_narrow = ctx.narrow.clone();
     let visible = closure_view(&outer_narrow, func.span().start, scoping, ctx);
     ctx.narrow = visible;
-    let result = infer_function_expression_type_inner(func, scoping, ctx);
+    let result = infer_function_expression_type_inner(func, scoping, contextual, ctx);
     ctx.narrow = outer_narrow;
     result
 }
@@ -148,6 +207,7 @@ pub(super) fn infer_function_expression_type(
 fn infer_function_expression_type_inner(
     func: &Function,
     scoping: &Scoping,
+    contextual: Option<TypeId>,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
     let type_param_scope = ctx.namespace.push_type_params(&mut ctx.arena, func);
@@ -157,18 +217,25 @@ fn infer_function_expression_type_inner(
     // implicit.
     let has_no_this =
         std::mem::take(&mut ctx.next_function_has_no_this) && func.this_param.is_none();
-    let param_types =
+    let mut param_types =
         resolve_params_with_any_fallback(&func.params, &mut ctx.namespace, &mut ctx.arena);
+    apply_contextual_parameter_types(&func.params, &mut param_types, contextual, &mut ctx.arena);
     bind_params(&func.params, &param_types, scoping, ctx);
 
     let declared_return = func
         .return_type
         .as_ref()
         .and_then(|rt| resolve_type_annotation(rt, &mut ctx.namespace, &mut ctx.arena));
-    let return_type = declared_return.unwrap_or_else(|| ctx.arena.any());
+    // Generator return semantics are iterator-based and are not modeled by this
+    // expression path yet. Keep their previous `any` recovery rather than treating
+    // yielded values as ordinary function returns.
+    let infers_return = declared_return.is_none() && !func.generator;
+    let placeholder = declared_return.unwrap_or_else(|| ctx.arena.any());
+    let mut return_type = placeholder;
 
     if let Some(body) = &func.body {
-        let return_scope = ctx.enter_function_return_scope(Some(return_type), false, func.r#async);
+        let return_scope =
+            ctx.enter_function_return_scope(Some(placeholder), infers_return, func.r#async);
 
         // Unlike an arrow function, a plain function expression gets its own
         // `this` binding at call time rather than inheriting the enclosing one,
@@ -181,7 +248,18 @@ fn infer_function_expression_type_inner(
         }
         ctx.implicit_this = outer_implicit_this;
         ctx.current_class_instance = outer_class_instance;
-        ctx.leave_return_scope(return_scope);
+        let returned = ctx.leave_return_scope(return_scope);
+        if infers_return {
+            return_type = if returned.is_empty() {
+                ctx.arena.void()
+            } else {
+                ctx.arena.alloc_union(returned)
+            };
+            if func.r#async {
+                let awaited = ctx.awaited_type(return_type);
+                return_type = ctx.arena.alloc_promise(awaited);
+            }
+        }
     }
 
     let type_params = resolve_function_type_params(

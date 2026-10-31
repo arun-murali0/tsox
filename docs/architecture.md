@@ -121,7 +121,6 @@ This separation makes semantic algorithms reusable by future tooling and typed-I
 | `fxhash.rs` | In-tree FxHash reimplementation, used where a non-DoS-resistant hasher is acceptable |
 | `line_index.rs` | Source-position conversion |
 | `project.rs` | Path to `FileId` identity for the files of a project |
-| `topology.rs` | Opt-in petgraph view of the module graph: component order and cycles, with `NodeIndex` kept private |
 | `incremental.rs` | Opt-in Salsa input (`SourceFile`) and first query; unchanged saves start no revision |
 | `scratchpad.rs` | Opt-in bump scratch for one worker; accepts only `Copy` values |
 | `module_resolution/` | Opt-in project layer: resolver wrapper, import discovery, module graph with cycles and layers, parallel project check that passes each layer's exports to the next, change detection |

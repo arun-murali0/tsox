@@ -13,6 +13,15 @@
 // or a backtick can confuse it for the rest of the line, or until the next backtick, which
 // can hide some nesting from the count or add some to it. The limit is far above what
 // real code reaches, so that matters only for a file built to be deep.
+// Extended (E8): three shapes with no brackets to count (a conditional chain `c ? 1 : c ? 2 : ...`,
+// an arrow chain `y => y => ...` and nested generic arguments `Array<Array<...>>`) recurse in the
+// parser as deeply as a bracket nest does and aborted at 100,000 levels. A `?` that starts a
+// conditional and a `=>` each add one to a chain counter, and a `<` that follows a name adds one
+// to an angle counter until a `>` takes it off; both are counted on top of the brackets at the
+// same level, so the answer is how far the parser would recurse. The chain counter starts again
+// after a `,` or `;` and at a line that starts a new statement; the angle counter after a `;`.
+// Cost: a `<` that is less-than counts like an opening generic until the next `;`, so a run of
+// thousands of comparisons in one statement would be refused, which real code does not hold.
 // Now: used before every parse, in the checker and in the walk that finds a file's imports,
 // with the limit in `stack_guard::MAX_BRACKET_DEPTH`. Bracketed nesting is refused at any
 // depth, measured at 20,000, 100,000 and 200,000. Three shapes with no brackets to count can
@@ -28,6 +37,11 @@ pub(crate) fn max_bracket_depth(source: &str) -> usize {
     let bytes = source.as_bytes();
     let mut depth = 0usize;
     let mut deepest = 0usize;
+    // Conditional and arrow links, and open generic arguments, at the current bracket level,
+    // and the same pair for each enclosing level.
+    let mut chain = 0usize;
+    let mut angle = 0usize;
+    let mut enclosing: Vec<(usize, usize)> = Vec::new();
     // The depth at which each `${` inside a template literal was opened, so the `}` that
     // closes it returns to the template instead of to code.
     let mut interpolations: Vec<usize> = Vec::new();
@@ -43,6 +57,9 @@ pub(crate) fn max_bracket_depth(source: &str) -> usize {
                 b'`' => in_template = false,
                 b'$' if bytes.get(index + 1) == Some(&b'{') => {
                     depth += 1;
+                    enclosing.push((chain, angle));
+                    chain = 0;
+                    angle = 0;
                     deepest = deepest.max(depth);
                     interpolations.push(depth);
                     in_template = false;
@@ -84,21 +101,90 @@ pub(crate) fn max_bracket_depth(source: &str) -> usize {
             b'`' => in_template = true,
             b'(' | b'[' | b'{' => {
                 depth += 1;
+                enclosing.push((chain, angle));
+                chain = 0;
+                angle = 0;
                 deepest = deepest.max(depth);
             }
-            b')' | b']' => depth = depth.saturating_sub(1),
+            b')' | b']' => {
+                depth = depth.saturating_sub(1);
+                (chain, angle) = enclosing.pop().unwrap_or((0, 0));
+            }
             b'}' => {
                 if interpolations.last() == Some(&depth) {
                     interpolations.pop();
                     in_template = true;
                 }
                 depth = depth.saturating_sub(1);
+                (chain, angle) = enclosing.pop().unwrap_or((0, 0));
+            }
+            // A conditional's `?`. Not `?.`, not `??`, and not the `?:` of an optional member.
+            b'?' => match bytes.get(index + 1) {
+                Some(b'?') => index += 1,
+                Some(b'.' | b':' | b')' | b',') => {}
+                _ => {
+                    chain += 1;
+                    deepest = deepest.max(depth + chain + angle);
+                }
+            },
+            b'=' if bytes.get(index + 1) == Some(&b'>') => {
+                chain += 1;
+                deepest = deepest.max(depth + chain + angle);
+                index += 1;
+            }
+            b'<' => {
+                let after_name = index > 0
+                    && (bytes[index - 1].is_ascii_alphanumeric()
+                        || bytes[index - 1] == b'_'
+                        || bytes[index - 1] == b'$');
+                if after_name && !matches!(bytes.get(index + 1), Some(b'=' | b'<')) {
+                    angle += 1;
+                    deepest = deepest.max(depth + chain + angle);
+                }
+            }
+            b'>' if index > 0 && bytes[index - 1] != b'=' => angle = angle.saturating_sub(1),
+            b';' => {
+                chain = 0;
+                angle = 0;
+            }
+            b',' => chain = 0,
+            b'\n' if starts_a_statement(&bytes[index + 1..]) => {
+                chain = 0;
+                angle = 0;
             }
             _ => {}
         }
         index += 1;
     }
     deepest
+}
+
+// Whether the text after a line break begins a new statement, by its first word, so a file
+// that leaves out its semicolons does not add its arrows up across statements.
+fn starts_a_statement(rest: &[u8]) -> bool {
+    const WORDS: [&[u8]; 15] = [
+        b"const ",
+        b"let ",
+        b"var ",
+        b"function ",
+        b"class ",
+        b"export ",
+        b"import ",
+        b"interface ",
+        b"type ",
+        b"enum ",
+        b"declare ",
+        b"return ",
+        b"if ",
+        b"for ",
+        b"while ",
+    ];
+    let start = rest
+        .iter()
+        .position(|byte| !matches!(byte, b' ' | b'\t'))
+        .unwrap_or(rest.len());
+    let rest = &rest[start..];
+    WORDS.iter().any(|word| rest.starts_with(word))
 }
 
 #[cfg(test)]
@@ -138,6 +224,35 @@ mod tests {
         // The interpolation returns to the template, so the brackets after it are text.
         assert_eq!(max_bracket_depth("`${x}(((` + f()"), 1);
         assert_eq!(max_bracket_depth("`${ `${ (1) }` }`"), 3);
+    }
+
+    #[test]
+    fn a_conditional_chain_an_arrow_chain_and_nested_generics_count_as_depth() {
+        let ternary = "c ? 1 : ".repeat(10_000) + "2";
+        assert!(max_bracket_depth(&ternary) >= 10_000);
+        let arrows = "y => ".repeat(10_000) + "y";
+        assert!(max_bracket_depth(&arrows) >= 10_000);
+        let generics = format!(
+            "type T = {}number{};",
+            "Array<".repeat(10_000),
+            ">".repeat(10_000)
+        );
+        assert!(max_bracket_depth(&generics) >= 10_000);
+    }
+
+    #[test]
+    fn ordinary_code_with_many_arrows_comparisons_and_optionals_stays_shallow() {
+        // Separate statements, calls, comma-separated items and optional members do not add up.
+        let statements = "const f = (x) => x ? 1 : 2;\n".repeat(20_000);
+        assert!(max_bracket_depth(&statements) < 10);
+        let no_semicolons = "const f = x => x\n".repeat(20_000);
+        assert!(max_bracket_depth(&no_semicolons) < 10);
+        let calls = "a.map(x => x), ".repeat(20_000);
+        assert!(max_bracket_depth(&calls) < 10);
+        let optionals = format!("interface I {{ {} }}", "a?: string;\n".repeat(20_000));
+        assert!(max_bracket_depth(&optionals) < 10);
+        assert!(max_bracket_depth("for (let i = 0; i < n; i++) { a?.b ?? c; }") < 10);
+        assert!(max_bracket_depth("const m: Map<string, Array<number>> = f<T>(x);") < 10);
     }
 
     #[test]

@@ -1,10 +1,8 @@
-// Deliberate divergence from tsc, the same category as
-// array_indexing_dynamic_key_includes_undefined.ts elsewhere: this checker's
-// Promise<T> is an opaque, empty object (see resolve_builtin_generic's own
-// doc comment) since there is no await/.then() modeling at all. tsc's real
-// Promise does have .then, so tsc reports nothing here; tsox honestly
-// reports the property as missing rather than silently pretending .then
-// exists. Expected to show up as a FALSE POSITIVE in compare-local.sh.
+// A Promise<T> has then, catch and finally, loosely typed (their callbacks and results are
+// `any`, since chaining needs generic inference), so `p.then()` is accepted as in tsc. It used
+// to be reported as missing, a known false positive this fixture recorded. A member that a
+// Promise does not have is still reported, once.
 function run(p: Promise<number>): void {
     p.then();
+    p.nope();
 }

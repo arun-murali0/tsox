@@ -41,6 +41,86 @@ pub(super) fn module_scope(specifier: &str) -> String {
     format!("\"{specifier}\"")
 }
 
+// The names declared at the top of `statements`, as `declare global { }` members or the
+// top level of a script declare them. A `declare module "x"` block has no name here.
+pub(super) fn declared_names<'ast>(statements: &'ast [Statement<'ast>]) -> Vec<String> {
+    let mut names = Vec::new();
+    for (item, _) in items_in(statements) {
+        match item {
+            TopLevelItem::Alias(d) => names.push(d.id.name.to_string()),
+            TopLevelItem::Interface(d) => names.push(d.id.name.to_string()),
+            TopLevelItem::Class(d) => {
+                if let Some(id) = &d.id {
+                    names.push(id.name.to_string());
+                }
+            }
+            TopLevelItem::Enum(d) => names.push(d.id.name.to_string()),
+            TopLevelItem::Function(d) => {
+                if let Some(id) = &d.id {
+                    names.push(id.name.to_string());
+                }
+            }
+            TopLevelItem::Namespace(d) => names.push(d.id.name.to_string()),
+            TopLevelItem::Variable(d) => {
+                for declarator in &d.declarations {
+                    let mut bindings = Vec::new();
+                    super::exports::collect_binding_identifiers(&declarator.id, &mut bindings);
+                    names.extend(bindings.into_iter().map(|(name, _)| name));
+                }
+            }
+            TopLevelItem::ExternalModule(_) => {}
+        }
+    }
+    names
+}
+
+// The names this file declares itself inside `declare global { ... }` blocks. Those are
+// global to the project but are declared in this file, so the project's copy of one must not
+// be bound here as well: it would collide with the local declaration.
+pub(super) fn own_global_block_names(program: &Program<'_>) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for stmt in &program.body {
+        if let Statement::TSGlobalDeclaration(block) = stmt {
+            names.extend(declared_names(&block.body.body));
+        }
+    }
+    names
+}
+
+// The interfaces this file declares globally: those at the top of a script file and those
+// inside its `declare global { }` blocks. Other files may declare the same name, and the
+// declarations are one interface, so the project's copies are bound before this file's own.
+pub(super) fn own_global_interface_names(program: &Program<'_>) -> Vec<String> {
+    let mut names = Vec::new();
+    let is_module = program.body.iter().any(|statement| {
+        matches!(
+            statement,
+            Statement::ImportDeclaration(_)
+                | Statement::ExportNamedDeclaration(_)
+                | Statement::ExportDefaultDeclaration(_)
+                | Statement::ExportAllDeclaration(_)
+                | Statement::TSExportAssignment(_)
+                | Statement::TSImportEqualsDeclaration(_)
+        )
+    });
+    for stmt in &program.body {
+        match stmt {
+            Statement::TSInterfaceDeclaration(d) if !is_module => {
+                names.push(d.id.name.to_string());
+            }
+            Statement::TSGlobalDeclaration(block) => {
+                for (item, _) in items_in(&block.body.body) {
+                    if let TopLevelItem::Interface(d) = item {
+                        names.push(d.id.name.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
 // What a `namespace N { ... }` holds, as the same flat list any statement list gives.
 //
 // Problem: `namespace A.B { ... }` has no block of its own. Its body is another namespace
@@ -78,6 +158,10 @@ pub(super) fn items_in<'a>(statements: &'a [Statement<'a>]) -> Vec<(TopLevelItem
             Statement::TSExternalModuleDeclaration(d) => {
                 items.push((TopLevelItem::ExternalModule(d), false))
             }
+            // `declare global { ... }`: its members are declared at the top level of the file,
+            // where the rest of the file finds them. They are also the project's globals,
+            // which the export collector reads separately.
+            Statement::TSGlobalDeclaration(d) => items.extend(items_in(&d.body.body)),
             Statement::ExportDeclaration(export) => match &export.declaration {
                 Declaration::TSTypeAliasDeclaration(d) => {
                     items.push((TopLevelItem::Alias(d), true))
@@ -124,6 +208,7 @@ pub(super) fn items_in<'a>(statements: &'a [Statement<'a>]) -> Vec<(TopLevelItem
 pub fn declare_top_level<'ast>(program: &'ast Program<'ast>, ctx: &mut CheckContext<'ast, '_>) {
     let items = items_in(&program.body);
     declare_types(&items, ctx);
+    super::imports::merge_own_global_interfaces(program, ctx);
     for (name, span, involves_enum) in ctx.namespace.take_declaration_collisions() {
         let message = if involves_enum {
             crate::diagnostic_messages::messages::enum_declaration_merge()
@@ -428,7 +513,13 @@ pub(super) fn declare_function(func: &Function<'_>, ctx: &mut CheckContext<'_, '
     let Some(symbol_id) = name.symbol_id.get() else {
         return;
     };
-    if let Some(function_type) = resolve_function_type(func, ctx) {
+    // Problem: an `async function` with no return annotation had no signature, so it was never
+    // declared and its body was never checked: every error inside it went unreported, and a call
+    // to it was unknown.
+    // Picked: a named one is declared with the same `any` placeholder as a sync function; the
+    // body pass replaces it with a Promise of what the body returns.
+    // Cost: until that replacement, a call to it is unchecked, as for a sync function.
+    if let Some(function_type) = resolve_function_signature(func, ctx, true) {
         ctx.symbols.declare(symbol_id, function_type);
     }
 }
@@ -440,6 +531,16 @@ pub(super) fn resolve_function_type(
     func: &Function<'_>,
     ctx: &mut CheckContext<'_, '_>,
 ) -> Option<crate::arena::TypeId> {
+    resolve_function_signature(func, ctx, false)
+}
+
+// `async_placeholder` gives an unannotated `async function` the `any` placeholder a sync one
+// gets. Only a named declaration with a body pass to replace it asks for that.
+fn resolve_function_signature(
+    func: &Function<'_>,
+    ctx: &mut CheckContext<'_, '_>,
+    async_placeholder: bool,
+) -> Option<crate::arena::TypeId> {
     let scope = ctx.namespace.push_type_params(&mut ctx.arena, func);
     let params = resolve_function_params(&func.params, &mut ctx.namespace, &mut ctx.arena);
     let return_type = match &func.return_type {
@@ -447,7 +548,8 @@ pub(super) fn resolve_function_type(
         // Without a return annotation this is only a placeholder. The body pass replaces
         // it for named functions, but export-only anonymous/overload signatures have no
         // symbol-backed body inference and must not claim that placeholder is a real API.
-        None if func.r#async || func.generator => None,
+        None if func.generator => None,
+        None if func.r#async && !async_placeholder => None,
         None => Some(ctx.arena.any()),
     };
     let type_params = resolve_function_type_params(

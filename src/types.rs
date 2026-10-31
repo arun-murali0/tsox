@@ -3,6 +3,22 @@ use std::rc::Rc;
 
 use crate::arena::{DeclSlot, TypeArena, TypeId};
 
+/// A TypeScript conditional type kept symbolic while its checked type (or the
+/// target of its `extends` test) still depends on an enclosing type parameter.
+/// Infer parameters are binders local to the conditional's true branch and the
+/// `extends` pattern, not generic parameters of the containing alias.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ConditionalType {
+    pub check_type: TypeId,
+    pub extends_type: TypeId,
+    pub true_type: TypeId,
+    pub false_type: TypeId,
+    pub infer_params: Vec<TypeParameterId>,
+    /// True only when the source's check side was a naked type parameter, e.g.
+    /// `T extends U ? X : Y`. TypeScript distributes that form over unions.
+    pub distributive_param: Option<TypeParameterId>,
+}
+
 // PartialEq, Eq and Hash on Type are written by hand (below the enum) rather than
 // derived, for one reason: NumberLiteral(f64). f64 has no total Eq or Hash (NaN is
 // not equal to itself), but TypeArena::alloc uses a Type as a hash-map key to
@@ -49,8 +65,8 @@ pub enum Type {
     // back to undefined or anything else concrete; see subtyping's own note on
     // this. Real TypeScript also lets a *function type* whose return is void
     // accept an implementation that returns something else, e.g. assigning
-    // `() => number` where `() => void` is expected; that call-site leniency
-    // isn't implemented, only the plain assignability rule above.
+    // `() => number` where `() => void` is expected. That exception lives in
+    // function signature compatibility, not in the primitive subtype relation.
     Void,
 
     // The Option is the parameter's own `extends` bound (`T extends { length:
@@ -96,6 +112,31 @@ pub enum Type {
     // there are at least two members and none of them is a union, an intersection,
     // `never`, `unknown` or `any`. LLD 1.13 has the rules and the reasons.
     Intersection(Vec<TypeId>),
+
+    // `T extends U ? X : Y`. This is normally reduced as soon as T (and U) are
+    // concrete. Generic aliases retain it until substitution supplies enough
+    // evidence; the conditional's infer parameters are binders, not free params.
+    Conditional(ConditionalType),
+    // `[A, B?, ...C[]]`: a fixed-length sequence whose elements have their own types.
+    // The elements are in source order and are never sorted or deduplicated, because
+    // position is the meaning (`[string, number]` is not `[number, string]`). An element
+    // is required, optional (`B?`) or the rest element (`...C[]`, whose `type_id` is
+    // the element type `C`, not the array). At most one element is a rest element and it is last (a leading or
+    // middle rest, `[...A[], B]`, is not modelled yet), and required elements never follow
+    // an optional one. Built only by
+    // TypeArena::alloc_tuple, which keeps those two rules, so nothing else needs to
+    // re-check them. A tuple is assignable to an array of the union of its elements, and
+    // never the other way round.
+    Tuple(Vec<TupleElement>),
+}
+
+/// One element of a tuple type (see `Type::Tuple`). The label of a labeled element
+/// (`[x: number]`) is not stored: it only changes how a tuple prints, never what it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TupleElement {
+    pub type_id: TypeId,
+    pub optional: bool,
+    pub rest: bool,
 }
 
 impl PartialEq for Type {
@@ -117,6 +158,8 @@ impl PartialEq for Type {
             (Type::Array(a), Type::Array(b)) => a == b,
             (Type::Union(a), Type::Union(b)) => a == b,
             (Type::Intersection(a), Type::Intersection(b)) => a == b,
+            (Type::Conditional(a), Type::Conditional(b)) => a == b,
+            (Type::Tuple(a), Type::Tuple(b)) => a == b,
             (Type::StringLiteral(a), Type::StringLiteral(b)) => a == b,
             // Bit pattern, not IEEE ==: keeps this consistent with Hash below, and
             // makes 0.0 and -0.0 distinct while a NaN literal equals itself.
@@ -153,6 +196,8 @@ impl PartialEq for Type {
                 | Type::Array(_)
                 | Type::Union(_)
                 | Type::Intersection(_)
+                | Type::Conditional(_)
+                | Type::Tuple(_)
                 | Type::StringLiteral(_)
                 | Type::NumberLiteral(_)
                 | Type::BooleanLiteral(_)
@@ -192,6 +237,8 @@ impl Hash for Type {
             // keep Hash total.
             Type::Union(members) => members.hash(state),
             Type::Intersection(members) => members.hash(state),
+            Type::Conditional(conditional) => conditional.hash(state),
+            Type::Tuple(elements) => elements.hash(state),
             Type::StringLiteral(text) => text.hash(state),
             Type::NumberLiteral(value) => value.to_bits().hash(state),
             Type::BooleanLiteral(value) => value.hash(state),

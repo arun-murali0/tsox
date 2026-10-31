@@ -271,10 +271,6 @@ fn run_corpus_and_report(
 // Labels of the foundation workloads below, so a filter that names only one of them is
 // not mistaken for "no workload matches". Empty without the features that build them.
 const FOUNDATION_LABELS: &[&str] = &[
-    #[cfg(feature = "module-resolution")]
-    "topology_layered_201_files",
-    #[cfg(feature = "module-resolution")]
-    "topology_ring_50_files",
     #[cfg(feature = "scratchpad")]
     "scratchpad_1000_values",
     #[cfg(feature = "scratchpad")]
@@ -307,37 +303,10 @@ fn measure<R>(label: &str, work: impl FnOnce() -> R) -> R {
     out
 }
 
-// The petgraph topology and the worker scratchpad, next to the plain-`Vec` and
-// hand-written-search code they are meant to compare with. Fixtures are built before the
+// The worker scratchpad, next to the plain-`Vec` code it is meant to compare with. Fixtures are built before the
 // measured step, so only the step itself is counted.
 fn run_foundation(wanted: &dyn Fn(&str) -> bool) {
     let _ = wanted;
-
-    #[cfg(feature = "module-resolution")]
-    {
-        use tsox::{ModuleGraph, ModuleResolver};
-
-        if wanted("topology_layered_201_files") {
-            let project = project_fixtures::Project::new("heap-topology").layered(20, 10, 3);
-            let graph = ModuleGraph::build(&project.entries, &ModuleResolver::new())
-                .expect("heap workload graph should build");
-            let topology = measure("topology_layered_201_files/from_graph", || graph.topology());
-            measure("topology_layered_201_files/components", || {
-                topology.components()
-            });
-        }
-
-        if wanted("topology_ring_50_files") {
-            let project = project_fixtures::Project::new("heap-topology-ring").ring(50);
-            let graph = ModuleGraph::build(&project.entries, &ModuleResolver::new())
-                .expect("heap workload graph should build");
-            let topology = graph.topology();
-            measure("topology_ring_50_files/cycles_graph", || graph.cycles());
-            measure("topology_ring_50_files/cycles_petgraph", || {
-                topology.cycles()
-            });
-        }
-    }
 
     #[cfg(feature = "scratchpad")]
     {

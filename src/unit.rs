@@ -50,6 +50,8 @@ pub struct UnitContext<'a> {
     // Where the file's imports resolve. A unit without one leaves its import
     // declarations unbound, as a single-file check does.
     pub imports: Option<&'a dyn ImportSource>,
+    // The compiler options the checker reads. The default is the checker's fixed behavior.
+    pub options: crate::check_options::CheckOptions,
 }
 
 impl<'a> UnitContext<'a> {
@@ -61,6 +63,7 @@ impl<'a> UnitContext<'a> {
             cancel: None,
             module: None,
             imports: None,
+            options: crate::check_options::CheckOptions::default(),
         }
     }
 
@@ -71,6 +74,11 @@ impl<'a> UnitContext<'a> {
 
     pub fn with_imports(mut self, imports: &'a dyn ImportSource) -> Self {
         self.imports = Some(imports);
+        self
+    }
+
+    pub fn with_options(mut self, options: crate::check_options::CheckOptions) -> Self {
+        self.options = options;
         self
     }
 
@@ -113,9 +121,33 @@ pub struct UnitOutput {
     /// `export as namespace Name` aliases that expose this module's value exports as a
     /// global namespace in script consumers.
     pub umd_namespaces: Vec<String>,
+    /// The names the file uses that nothing in it declares.
+    pub unresolved_names: Vec<String>,
     /// Module declarations inside an external module augment an existing module instead
     /// of introducing a standalone ambient module.
     pub augmentations: Vec<AmbientExports>,
+    /// What this file declares globally: the top-level declarations of a script file and the
+    /// members of each `declare global { }` block. At most one entry, with an empty
+    /// specifier; the names are not exports of the file.
+    pub globals: Vec<AmbientExports>,
+    /// Exported functions with no return annotation whose return expressions reach an imported
+    /// function without one. The project joins these across files to find a circle through
+    /// imports (TS7023), which no single file can see.
+    pub return_reads: Vec<ReturnRead>,
+}
+
+/// One exported function whose inferred return type is read from imported functions, directly
+/// or through functions of its own file (see `UnitOutput::return_reads`).
+#[derive(Clone, Debug)]
+pub struct ReturnRead {
+    pub owner: DeclKey,
+    pub name: String,
+    pub start: u32,
+    pub end: u32,
+    /// The imported functions its return expressions reach, sorted and without duplicates.
+    pub callees: Vec<DeclKey>,
+    /// True when the file already reported this function as part of a circle of its own.
+    pub reported_locally: bool,
 }
 
 /// The exports of one `declare module "x"` block (see `UnitOutput`).
@@ -125,6 +157,12 @@ pub struct AmbientExports {
     pub exports: Vec<PortableDecl>,
     pub export_names: Vec<(String, DeclKey)>,
     pub complete: bool,
+    /// Global names (see `UnitOutput::globals`) whose declaration could not be carried over.
+    pub unmodelled: Vec<String>,
+    /// `true` for a script's globals when only the names were listed (`unmodelled`), not the
+    /// declarations. The project builds the declarations in a later run if another file uses
+    /// one of the names.
+    pub names_only: bool,
     /// `true` for `declare module "x"` inside an external module.
     pub augmentation: bool,
 }
@@ -179,9 +217,12 @@ impl Worker {
                 ctx.file_name,
                 ctx.file_id,
                 arena,
-                ctx.cancel.as_ref(),
-                ctx.module,
-                ctx.imports,
+                bridge::FileEnv {
+                    cancel: ctx.cancel.as_ref(),
+                    module: ctx.module,
+                    imports: ctx.imports,
+                    options: ctx.options,
+                },
             )
         })
     }
@@ -216,10 +257,28 @@ impl Worker {
                             complete: ambient.collected && !ambient.is_incomplete(),
                             exports: ambient.decls,
                             export_names: ambient.names,
+                            unmodelled: Vec::new(),
+                            names_only: false,
                             augmentation: false,
                         })
                         .collect(),
                     umd_namespaces: table.umd_namespaces,
+                    unresolved_names: table.unresolved_names,
+                    return_reads: table.return_reads,
+                    globals: if table.global_names.is_empty() && table.global_unmodelled.is_empty()
+                    {
+                        Vec::new()
+                    } else {
+                        vec![AmbientExports {
+                            specifier: String::new(),
+                            complete: true,
+                            unmodelled: table.global_unmodelled,
+                            names_only: table.global_names_only,
+                            exports: table.global_decls,
+                            export_names: table.global_names,
+                            augmentation: false,
+                        }]
+                    },
                     augmentations: table
                         .augmentations
                         .into_iter()
@@ -228,6 +287,8 @@ impl Worker {
                             complete: augmentation.collected && !augmentation.is_incomplete(),
                             exports: augmentation.decls,
                             export_names: augmentation.names,
+                            unmodelled: Vec::new(),
+                            names_only: false,
                             augmentation: true,
                         })
                         .collect(),
@@ -278,7 +339,10 @@ fn crashed(ctx: &UnitContext<'_>) -> UnitOutput {
         exports_complete: false,
         ambient: Vec::new(),
         umd_namespaces: Vec::new(),
+        unresolved_names: Vec::new(),
+        return_reads: Vec::new(),
         augmentations: Vec::new(),
+        globals: Vec::new(),
     }
 }
 

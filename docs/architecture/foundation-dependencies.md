@@ -4,7 +4,7 @@
 
 ## 1. Why this is a separate milestone
 
-`HLD.md` settles three things this milestone makes real: bump memory for transient data with strict rules (ADR-2), petgraph for module order and cycles (ADR-4), and Salsa to decide what must be recomputed (ADR-4). The stages that use them come later, in the HLD's order: the project driver at stage 3, the Salsa layer at stage 4, the scheduler at stage 5.
+`HLD.md` settles three things this milestone makes real: bump memory for transient data with strict rules (ADR-2), Salsa to decide what must be recomputed (ADR-4). The stages that use them come later, in the HLD's order: the project driver at stage 3, the Salsa layer at stage 4, the scheduler at stage 5.
 
 Nothing in the checker uses any of them yet. What exists is a small, tested piece for each, so the stage that needs one starts from something already pinned down instead of from a dependency that was never exercised. There are 13 unit tests next to the code and 3 integration tests in `tests/module_resolution.rs`.
 
@@ -14,22 +14,15 @@ It does not move a single type, query or diagnostic onto Salsa, and it does not 
 
 | Feature | Pulls in | Adds |
 | --- | --- | --- |
-| `module-resolution` (existing) | `petgraph` | `ModuleTopology`, `ModuleGraph::topology` |
 | `incremental` | `salsa` | `IncrementalDatabase`, `SourceFile`, `source_len` |
 | `scratchpad` | `bumpalo` | `WorkerScratch` |
 | `mimalloc` | `mimalloc` (not on wasm32) | the global allocator of the `tsox` binary |
 
 Every one is off by default. A default build, the WASM build and the binary that CI builds and compares against tsc have the same dependencies as before.
 
-## 3. Petgraph: a view of the graph, not a second graph
+## 3. Petgraph: removed (E2)
 
-LLD 4.1 and 6.6 give petgraph two jobs: the order files run in, with the cycles between them, and reverse edges for display. `ModuleTopology` does those, and it is built from a `ModuleGraph` with `ModuleGraph::topology()`. Edges are recorded in one place, the `ModuleGraph`, and the topology is a snapshot of them.
-
-- **No search for "what does a change reach".** Deciding what must be recomputed belongs to the query layer. A reverse-edge walk that marks files dirty would be a second mechanism that can disagree with Salsa, so it is not there.
-- **`NodeIndex` stays private.** Nodes carry `FileId`, so nothing outside `topology.rs` depends on how the graph is stored.
-- **Neighbors come back in `FileId` order.** Petgraph lists the newest edge first, which would make the answer depend on the order edges were added in.
-
-`ModuleGraph` already has its own iterative Tarjan, written before petgraph was a dependency, and it stays. Two tests hold the two to the same result: `petgraph_and_the_graphs_own_search_find_the_same_cycles` and `petgraph_orders_the_components_dependencies_first`. The second one exists because LLD 4.1 asks for the component order to be asserted and not assumed. For the pinned petgraph version a component comes after every component its files import.
+`ModuleTopology` and `ModuleGraph::topology()` were a petgraph snapshot of the module graph. Nothing in `check_project` or the CLI ever read it, and the scheduler orders by `ModuleGraph::sccs` and `unit_dependencies`, so E2 removed the view and the `petgraph` dependency rather than keep a second representation with no production job. The graph's own iterative Tarjan (`src/scc.rs`) is the single implementation; `the_components_come_dependencies_first` in `tests/module_resolution.rs` asserts the component order LLD 4.1 asks for.
 
 ## 4. Salsa: the shape from the LLD, and nothing more
 
@@ -71,7 +64,7 @@ The feature is off by default so the binary CI builds does not change. A release
 
 - **The Salsa queries.** Module header, resolved imports and per-unit checking (LLD 6.2) are not written; `source_len` only gives the layer something to memoize and test against.
 - **`Project` and `resolution_epoch`.** The input that invalidates resolver results when a file is added, removed or renamed (LLD 6.4) does not exist.
-- **The invalidation matrix.** Only the unchanged-save row of LLD 6.5 has a test.
+- **The invalidation matrix.** Every row of LLD 6.5 has a test (`tests/incremental_project.rs`); see `query-layer.md`.
 - **Edge kinds.** The topology's edges carry no weight yet (LLD 4.2).
 - **Any consumer.** Nothing in `check_project` or the CLI reads the topology, the scratchpad or the database.
 - **mimalloc in CI.** The CI build and the tsc comparison still run on the platform allocator.

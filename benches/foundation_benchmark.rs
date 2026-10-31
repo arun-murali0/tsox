@@ -3,53 +3,10 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tsox::{
-    FileId, IncrementalDatabase, ModuleGraph, ModuleResolver, SourceKind, WorkerScratch, source_len,
-};
+use tsox::{FileId, IncrementalDatabase, SourceKind, WorkerScratch, source_len};
 
-#[path = "support/project_fixtures.rs"]
-mod project_fixtures;
-
-use project_fixtures::Project;
-
-const LAYERS: usize = 20;
-const WIDTH: usize = 10;
-const FAN_OUT: usize = 3;
-const RING_SIZE: usize = 50;
 const SCRATCH_VALUES: u32 = 1_000;
 const INCREMENTAL_FILES: u32 = 200;
-
-fn build(project: &Project) -> ModuleGraph {
-    ModuleGraph::build(&project.entries, &ModuleResolver::new())
-        .expect("benchmark graph should build")
-}
-
-// The graph's own cycle search and petgraph's find the same cycles, and a test holds
-// them to it. Both are timed on the same ring so the cost of the petgraph version is
-// visible next to the one it shadows.
-fn bench_topology(c: &mut Criterion) {
-    let ring = Project::new("foundation-ring").ring(RING_SIZE);
-    let ring_graph = build(&ring);
-    let ring_topology = ring_graph.topology();
-
-    c.bench_function("topology/cycles_graph_ring_50", |b| {
-        b.iter(|| black_box(ring_graph.cycles()))
-    });
-    c.bench_function("topology/cycles_petgraph_ring_50", |b| {
-        b.iter(|| black_box(ring_topology.cycles()))
-    });
-
-    let layered = Project::new("foundation-layered").layered(LAYERS, WIDTH, FAN_OUT);
-    let layered_graph = build(&layered);
-    let layered_topology = layered_graph.topology();
-
-    c.bench_function("topology/from_graph_layered_201_files", |b| {
-        b.iter(|| black_box(layered_graph.topology()))
-    });
-    c.bench_function("topology/components_layered_201_files", |b| {
-        b.iter(|| black_box(layered_topology.components()))
-    });
-}
 
 // A job's worth of small values, from the scratchpad and from a Vec that is dropped.
 // Same work and same count, so the difference is the allocator and the free.
@@ -126,8 +83,7 @@ criterion_group! {
         .warm_up_time(Duration::from_secs(3))
         .measurement_time(Duration::from_secs(10))
         .noise_threshold(0.02);
-    targets = bench_topology,
-        bench_scratchpad,
+    targets = bench_scratchpad,
         bench_incremental
 }
 

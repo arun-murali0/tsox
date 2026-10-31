@@ -6,12 +6,13 @@ mod imports;
 mod narrow;
 mod parse;
 mod statements;
+mod tuple_grammar;
 mod unreachable_code;
 mod unresolved_names;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::Program;
-use oxc_semantic::Semantic;
+use oxc_semantic::{Scoping, Semantic};
 
 use crate::arena::{TypeArena, TypeArenaStats};
 use crate::diagnostics::Diagnostic;
@@ -59,10 +60,20 @@ pub fn check_program_with_state(
     file_id: FileId,
     arena: &mut TypeArena,
 ) -> Result<(Vec<Diagnostic>, CheckMetrics), CheckerError> {
-    match check_file(source, file_name, file_id, arena, None, None, None)? {
+    match check_file(source, file_name, file_id, arena, FileEnv::default())? {
         Some((diagnostics, metrics, _exports)) => Ok((diagnostics, metrics)),
         None => unreachable!("a check without a cancel token is never cancelled"),
     }
+}
+
+// What a check reads besides the source: all optional, and `Default` is a one-file check with no
+// project around it, no cancel token and the checker's default options.
+#[derive(Default)]
+pub(crate) struct FileEnv<'a> {
+    pub cancel: Option<&'a CancelToken>,
+    pub module: Option<ModuleKey>,
+    pub imports: Option<&'a dyn ImportSource>,
+    pub options: crate::check_options::CheckOptions,
 }
 
 pub(crate) type Checked = (Vec<Diagnostic>, CheckMetrics, ExportTable);
@@ -76,11 +87,17 @@ pub(crate) fn check_file(
     file_name: &str,
     file_id: FileId,
     arena: &mut TypeArena,
-    cancel: Option<&CancelToken>,
-    module: Option<ModuleKey>,
-    imports: Option<&dyn ImportSource>,
+    env: FileEnv<'_>,
 ) -> Result<Option<Checked>, CheckerError> {
+    let FileEnv {
+        cancel,
+        module,
+        imports,
+        options,
+    } = env;
     arena.clear();
+    // A cut recorded by an earlier unit on this thread is not this unit's.
+    crate::stack_guard::take_cut();
     if cancel.is_some_and(CancelToken::is_cancelled) {
         return Ok(None);
     }
@@ -96,12 +113,13 @@ pub(crate) fn check_file(
     let mut ctx = CheckContext::with_arena_and_file_id(file_name, file_id, reusable_arena);
     ctx.cancel = cancel.cloned();
     ctx.imports = imports;
+    ctx.options = options;
 
-    declare_phase(&program, &mut ctx);
+    declare_phase(&program, semantic.scoping(), &mut ctx);
     bodies_phase(&program, &semantic, &mut ctx);
     // The guard in the namespace has no diagnostics of its own to write to, so it left a
     // flag. The position is the start of the file, since a cut chain has no one place.
-    if ctx.namespace.take_depth_cut() {
+    if ctx.namespace.take_depth_cut() | crate::stack_guard::take_cut() {
         ctx.nesting_too_deep(oxc_span::Span::new(0, 0));
     }
     if ctx.cancelled {
@@ -111,20 +129,47 @@ pub(crate) fn check_file(
     // Read the exports out before publish and before the arena goes back: they are
     // copied out of it, and it is cleared as soon as the unit ends. A check with no
     // module key has no identity to give a declaration, so it exports nothing.
-    let exports = match module {
+    let mut exports = match module {
         Some(module) => exports::collect_exports(&program, semantic.scoping(), &mut ctx, module),
         None => ExportTable::default(),
     };
+    // Exported functions whose return type is inferred from imported functions: the project
+    // looks for a circle among them, which no one file can see. A function that is not
+    // exported cannot be the way back into this file, so it is not a node of such a circle.
+    exports.return_reads = ctx
+        .return_reads
+        .cross_file()
+        .into_iter()
+        .filter_map(|(_, name, span, callees, reported_locally)| {
+            let owner = exports
+                .decls
+                .iter()
+                .find(|decl| decl.kind == crate::keys::DeclKind::Function && *decl.name == *name)?
+                .key;
+            Some(crate::unit::ReturnRead {
+                owner,
+                name,
+                start: span.start,
+                end: span.end,
+                callees,
+                reported_locally,
+            })
+        })
+        .collect();
     let (diagnostics, metrics) = publish(&mut ctx);
 
     *arena = ctx.arena;
     Ok(Some((diagnostics, metrics, exports)))
 }
 
-fn declare_phase<'ast>(program: &'ast Program<'ast>, ctx: &mut CheckContext<'ast, '_>) {
+fn declare_phase<'ast>(
+    program: &'ast Program<'ast>,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'ast, '_>,
+) {
     // Imports first: a local declaration, a signature or an annotation may name any of
     // them, and the declare pass resolves in source order only within itself.
-    imports::bind_imports(program, ctx);
+    imports::bind_imports(program, scoping, ctx);
     declare::declare_top_level(program, ctx);
 }
 
@@ -139,6 +184,7 @@ fn bodies_phase<'ast>(
         return;
     }
     unresolved_names::report_unresolved_type_names(program, scoping, ctx);
+    tuple_grammar::report_tuple_grammar_errors(program, ctx);
     unreachable_code::check_unreachable_code(program, semantic, ctx);
 }
 

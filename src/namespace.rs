@@ -1,7 +1,8 @@
 use oxc_ast::ast::{
     Class, ClassElement, Expression, MethodDefinitionKind, PropertyKey, TSInterfaceDeclaration,
-    TSSignature, TSType,
+    TSSignature, TSType, TSTypeName, TSTypeReference,
 };
+use oxc_ast_visit::{Visit, walk};
 use oxc_span::{GetSpan, Span};
 
 use crate::arena::{TypeArena, TypeId};
@@ -22,6 +23,17 @@ type Bindings = Vec<(TypeParameterId, TypeId)>;
 // One memoized instantiation: the bindings it was built from, and the application that
 // is the result.
 type Instantiation = (Bindings, TypeId);
+
+// An application encountered while its generic declaration is still being resolved.
+// Its Ref is filled once the generic body exists, allowing recursive aliases such as
+// `Flatten<T> = T extends (infer U)[] ? Flatten<U> : T` and changed-argument recursive
+// objects such as `Node<T> { fixed: Node<string> }` to close their cycles correctly.
+struct DeferredInstantiation {
+    base: TypeId,
+    bindings: Bindings,
+    application: TypeId,
+    reference: TypeId,
+}
 
 // A type namespace is a single flat map from name to declaration, not a scope tree.
 // There is no block or module scoping for types in this checker; every top-level
@@ -108,6 +120,10 @@ pub struct TypeNamespace<'a> {
 
     // Set when the stack guard cut a resolution short, so the check can report it once.
     depth_cut: bool,
+
+    // Project globals this file uses whose declaration could not be carried over. They
+    // exist, so they are not reported as missing, but they have no type here.
+    unmodelled_globals: std::collections::HashSet<String>,
 
     // The namespaces the checker is currently inside, as full prefixes, outermost first.
     // A declaration registered now is stored under its qualified name (`N.I`), and an
@@ -248,6 +264,7 @@ pub struct TypeNamespace<'a> {
     // bucket is still a list because of exactly that case, and in practice holds one
     // entry.
     instantiations: FxHashMap<(TypeId, u64), Vec<Instantiation>>,
+    deferred_instantiations: Vec<DeferredInstantiation>,
     instantiation_hits: u64,
     instantiation_misses: u64,
 }
@@ -267,6 +284,77 @@ pub enum Resolution {
     NotFound,
 }
 
+// A recursive alias needs a declaration placeholder only when its own name occurs
+// behind a TypeScript-recognized recursive boundary (object, array, tuple, function, or
+// conditional branch). This leaves direct cycles such as `type A = A` and
+// `type A = A | string` on the existing circular-alias error path.
+struct RecursiveAliasReferenceFinder<'n> {
+    name: &'n str,
+    depth: usize,
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for RecursiveAliasReferenceFinder<'_> {
+    fn visit_ts_type_reference(&mut self, reference: &TSTypeReference<'ast>) {
+        if let TSTypeName::IdentifierReference(identifier) = &reference.type_name {
+            let short_name = self.name.rsplit('.').next().unwrap_or(self.name);
+            if self.depth > 0
+                && (identifier.name.as_str() == self.name || identifier.name.as_str() == short_name)
+            {
+                self.found = true;
+            }
+        }
+        walk::walk_ts_type_reference(self, reference);
+    }
+
+    fn visit_ts_type_literal(&mut self, node: &oxc_ast::ast::TSTypeLiteral<'ast>) {
+        self.depth += 1;
+        walk::walk_ts_type_literal(self, node);
+        self.depth -= 1;
+    }
+
+    fn visit_ts_array_type(&mut self, node: &oxc_ast::ast::TSArrayType<'ast>) {
+        self.depth += 1;
+        walk::walk_ts_array_type(self, node);
+        self.depth -= 1;
+    }
+
+    fn visit_ts_tuple_type(&mut self, node: &oxc_ast::ast::TSTupleType<'ast>) {
+        self.depth += 1;
+        walk::walk_ts_tuple_type(self, node);
+        self.depth -= 1;
+    }
+
+    fn visit_ts_function_type(&mut self, node: &oxc_ast::ast::TSFunctionType<'ast>) {
+        self.depth += 1;
+        walk::walk_ts_function_type(self, node);
+        self.depth -= 1;
+    }
+
+    fn visit_ts_conditional_type(&mut self, node: &oxc_ast::ast::TSConditionalType<'ast>) {
+        // A conditional is a recursive boundary only in its branches. A self-reference
+        // in the check or extends side (`type A<T> = A<T> extends X ? Y : Z`) is still
+        // an unguarded circular alias and must not get a placeholder merely because a
+        // conditional node surrounds it.
+        self.visit_ts_type(&node.check_type);
+        self.visit_ts_type(&node.extends_type);
+        self.depth += 1;
+        self.visit_ts_type(&node.true_type);
+        self.visit_ts_type(&node.false_type);
+        self.depth -= 1;
+    }
+}
+
+fn has_guarded_self_reference(body: &TSType<'_>, name: &str) -> bool {
+    let mut finder = RecursiveAliasReferenceFinder {
+        name,
+        depth: 0,
+        found: false,
+    };
+    finder.visit_ts_type(body);
+    finder.found
+}
+
 fn binding_fingerprint(bindings: &[(TypeParameterId, TypeId)]) -> u64 {
     let mut hasher = FxHasher::default();
     bindings.hash(&mut hasher);
@@ -283,6 +371,7 @@ impl<'a> TypeNamespace<'a> {
             file_id,
             entries: FxHashMap::default(),
             depth_cut: false,
+            unmodelled_globals: std::collections::HashSet::new(),
             scope: Vec::new(),
             active_type_params: Vec::new(),
             merged_interface_parts: FxHashMap::default(),
@@ -304,6 +393,7 @@ impl<'a> TypeNamespace<'a> {
             type_argument_issues: Vec::new(),
             constraint_violations: Vec::new(),
             instantiations: FxHashMap::default(),
+            deferred_instantiations: Vec::new(),
             instantiation_hits: 0,
             instantiation_misses: 0,
         }
@@ -351,6 +441,119 @@ impl<'a> TypeNamespace<'a> {
         hit
     }
 
+    /// Creates or reuses a placeholder for a changed-argument reference to a generic
+    /// declaration whose body is still resolving. The placeholder is a Ref inside an App,
+    /// not the generic declaration's own Ref: `Node<string>` must not collapse to
+    /// `Node<T>` merely because both are currently being resolved.
+    pub(crate) fn defer_recursive_instantiation(
+        &mut self,
+        arena: &mut TypeArena,
+        name: &str,
+        base: TypeId,
+        bindings: Bindings,
+    ) -> TypeId {
+        if let Some(existing) = self
+            .deferred_instantiations
+            .iter()
+            .find(|pending| pending.base == base && pending.bindings == bindings)
+        {
+            return existing.application;
+        }
+
+        let reference = arena.alloc_ref();
+        let slot = arena.alloc_name(name.to_owned());
+        let arguments = bindings.iter().map(|&(_, argument)| argument).collect();
+        let application = arena.alloc_app(slot, arguments, reference);
+        arena.register_app_template(
+            application,
+            base,
+            bindings.iter().map(|(parameter, _)| *parameter).collect(),
+        );
+        self.deferred_instantiations.push(DeferredInstantiation {
+            base,
+            bindings,
+            application,
+            reference,
+        });
+        application
+    }
+
+    // Finishes deferred recursive applications only after `base` has a real body. Each
+    // specialization is rebuilt from that body with its own bindings, then the placeholder
+    // Ref is resolved to the specialized shape. The Ref in a recursive member consequently
+    // points to the matching instantiation, not to the generic declaration's unspecialized
+    // body. Pending applications for other declarations remain queued.
+    fn finish_deferred_instantiations(&mut self, base: TypeId, arena: &mut TypeArena) {
+        let mut ready = Vec::new();
+        let mut waiting = Vec::new();
+        for pending in std::mem::take(&mut self.deferred_instantiations) {
+            if pending.base == base {
+                ready.push(pending);
+            } else {
+                waiting.push(pending);
+            }
+        }
+        self.deferred_instantiations = waiting;
+
+        for pending in ready {
+            let specialized = crate::semantic::substitute_bound_type_params(
+                arena,
+                pending.base,
+                &pending.bindings,
+            );
+            let shape = arena.get(specialized).clone();
+            let mut body = match shape {
+                Type::Number => arena.number(),
+                Type::String => arena.string(),
+                Type::Boolean => arena.boolean(),
+                Type::Null => arena.null(),
+                Type::Undefined => arena.undefined(),
+                Type::Any => arena.any(),
+                Type::Unknown => arena.unknown(),
+                Type::Error => arena.error(),
+                Type::Never => arena.never(),
+                Type::Void => arena.void(),
+                Type::Union(members) => arena.alloc_union(members),
+                Type::Intersection(members) => arena
+                    .alloc_intersection(members)
+                    .unwrap_or_else(|_| arena.error()),
+                shape => arena.alloc(shape),
+            };
+            if body == pending.reference {
+                // A direct self-only result has no structural body to close around.
+                // Keep the failure bounded instead of creating Ref -> Ref or Ref -> Ref
+                // -> ... chains that make TypeArena::get unwrap forever.
+                arena.fail_ref(pending.reference);
+                continue;
+            }
+            if arena.slot_of(body).is_some() {
+                // A reduction can collapse a single-member union/intersection to another
+                // declaration Ref. A Named wrapper keeps the body non-Ref at the root,
+                // which is the invariant required by resolve_ref; the inner declaration
+                // remains transparent to type relations.
+                let slot = match arena.raw(pending.application) {
+                    Type::App(slot, _, _) => *slot,
+                    _ => unreachable!("deferred application must be a Type::App"),
+                };
+                body = arena.alloc(Type::Named(slot, body));
+            }
+            arena.resolve_ref(pending.reference, body);
+            self.cache_instantiation(pending.base, pending.bindings, pending.application);
+        }
+    }
+
+    fn fail_deferred_instantiations(&mut self, base: TypeId, arena: &mut TypeArena) {
+        let mut waiting = Vec::new();
+        for pending in std::mem::take(&mut self.deferred_instantiations) {
+            if pending.base == base {
+                arena.fail_ref(pending.reference);
+            } else {
+                waiting.push(pending);
+            }
+        }
+        self.deferred_instantiations = waiting;
+    }
+
     // Only a finished instantiation belongs here, and the caller owns that judgement: it
     // must have come from a substitution that actually changed `base`. An unchanged
     // result means the shape was still an unfinished Ref, and remembering it would hand
@@ -382,6 +585,17 @@ impl<'a> TypeNamespace<'a> {
             instantiation_hits: self.instantiation_hits,
             instantiation_misses: self.instantiation_misses,
         }
+    }
+
+    /// Records that the project declares `name` globally but no type for it could be carried
+    /// over.
+    pub fn mark_unmodelled_global(&mut self, name: &str) {
+        self.unmodelled_globals.insert(name.to_owned());
+    }
+
+    /// True when `name` is a project global whose declaration could not be carried over.
+    pub fn is_unmodelled_global(&self, name: &str) -> bool {
+        self.unmodelled_globals.contains(name)
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -594,6 +808,44 @@ impl<'a> TypeNamespace<'a> {
             expected,
             span,
         });
+    }
+
+    // Problem: an interface's `extends` clause was never read, so `interface B extends A { y }` had
+    // only `y`: every member inherited from A was reported as not existing (and a required
+    // inherited member was never required), which is how `interface Console extends
+    // console.Console {}` made every `console.log` an error.
+    // Picked: each base is resolved like a type reference and its members are laid under the
+    // interface's own, which win on a repeated name. A base that is not a plain object type, or
+    // that cannot be resolved (circular, undeclared, an array, a union), leaves the whole interface
+    // unresolvable: it sees less and never invents an error.
+    // Cost: an interface that extends a class or an array is not modelled.
+    fn with_interface_bases(
+        &mut self,
+        own: TypeId,
+        bases: &[&oxc_ast::ast::TSInterfaceHeritage<'_>],
+        arena: &mut TypeArena,
+    ) -> Option<TypeId> {
+        let own_properties = match arena.get(own) {
+            Type::Object(object) => object.properties.to_vec(),
+            _ => return None,
+        };
+        let mut properties: Vec<PropertyEntry> = Vec::new();
+        for heritage in bases {
+            let base = crate::type_annotation::resolve_interface_base(heritage, self, arena)?;
+            let inherited = match arena.get(base) {
+                Type::Object(object) => object.properties.to_vec(),
+                _ => return None,
+            };
+            for property in inherited {
+                properties.retain(|existing| existing.name != property.name);
+                properties.push(property);
+            }
+        }
+        for property in own_properties {
+            properties.retain(|existing| existing.name != property.name);
+            properties.push(property);
+        }
+        Some(arena.alloc(Type::Object(ObjectType::new(properties))))
     }
 
     // The resolved `extends` bound of a declared type parameter, read back from
@@ -893,6 +1145,7 @@ impl<'a> TypeNamespace<'a> {
         };
 
         let mut saved = Vec::with_capacity(decl.params.len());
+        let mut deferred: Vec<usize> = Vec::new();
         for (index, param) in decl.params.iter().enumerate() {
             let name = param.name.name.to_string();
             let id = TypeParameterId::with_file(self.file_id, param.span().start, index as u32);
@@ -919,6 +1172,22 @@ impl<'a> TypeNamespace<'a> {
                         .as_ref()
                         .and_then(|c| crate::type_annotation::resolve_ts_type(c, self, arena));
                     self.resolving_constraints.pop();
+                    // A constraint may name a parameter declared later in the same list
+                    // (`<T extends U, U>`), which is not in scope yet. Stand in an
+                    // unconstrained node for now and resolve the constraint again once
+                    // the whole list is in scope, below.
+                    if param.constraint.is_some()
+                        && constraint.is_none()
+                        && index + 1 < decl.params.len()
+                    {
+                        deferred.push(index);
+                        let placeholder =
+                            arena.alloc(Type::GenericParameter(id, name.clone(), None));
+                        saved.push((name.clone(), self.entries.remove(&name)));
+                        self.insert_resolved(&name, placeholder);
+                        self.active_type_params.push(id);
+                        continue;
+                    }
                     if param.constraint.is_some()
                         && constraint.is_none()
                         && !self
@@ -939,8 +1208,84 @@ impl<'a> TypeNamespace<'a> {
             self.insert_resolved(&name, type_id);
             self.active_type_params.push(id);
         }
+        for index in deferred {
+            let param = &decl.params[index];
+            let name = param.name.name.to_string();
+            let id = TypeParameterId::with_file(self.file_id, param.span().start, index as u32);
+            self.resolving_constraints.push(id);
+            let constraint = param
+                .constraint
+                .as_ref()
+                .and_then(|c| crate::type_annotation::resolve_ts_type(c, self, arena));
+            self.resolving_constraints.pop();
+            if constraint.is_none()
+                && !self
+                    .unresolved_constraints
+                    .iter()
+                    .any(|(_, span)| span.start == param.span().start)
+            {
+                self.unresolved_constraints
+                    .push((name.clone(), param.span()));
+            }
+            let type_id = arena.alloc(Type::GenericParameter(id, name.clone(), constraint));
+            self.type_param_cache.insert(id, type_id);
+            self.insert_resolved(&name, type_id);
+        }
         let activated = saved.len();
         TypeParamScope { saved, activated }
+    }
+
+    /// Shadows names introduced by `infer U` inside a conditional type. These
+    /// parameters have their own source-position identity and disappear when the
+    /// conditional's arms have been resolved. All names are installed before any
+    /// bounds are resolved so a bound can refer to another inferred parameter in
+    /// the same pattern.
+    /// Declare the `infer` names of one conditional type: each is `(name, span start of its
+    /// declaration)`, in order of first appearance. They are unconstrained until
+    /// `constrain_infer_type_param` runs for them, once every name is in scope.
+    pub(crate) fn declare_infer_type_params(
+        &mut self,
+        arena: &mut TypeArena,
+        declared: &[(String, u32)],
+    ) -> TypeParamScope<'a> {
+        let mut saved = Vec::with_capacity(declared.len());
+        for (index, (name, start)) in declared.iter().enumerate() {
+            let id = TypeParameterId::with_file(self.file_id, *start, index as u32);
+            let node = arena.alloc(Type::GenericParameter(id, name.clone(), None));
+            saved.push((name.clone(), self.entries.remove(name)));
+            self.entries.insert(
+                name.clone(),
+                TypeEntry {
+                    kind: DeclKind::Resolved,
+                    resolved: Some(node),
+                    resolving: false,
+                    scope: self.scope.clone(),
+                },
+            );
+            self.type_param_cache.insert(id, node);
+            self.active_type_params.push(id);
+        }
+        let activated = saved.len();
+        TypeParamScope { saved, activated }
+    }
+
+    /// Give a declared `infer` name its constraint (`infer U extends string`).
+    pub(crate) fn constrain_infer_type_param(
+        &mut self,
+        arena: &mut TypeArena,
+        id: TypeParameterId,
+        name: &str,
+        constraint: TypeId,
+    ) {
+        let node = arena.alloc(Type::GenericParameter(
+            id,
+            name.to_string(),
+            Some(constraint),
+        ));
+        self.type_param_cache.insert(id, node);
+        if let Some(entry) = self.entries.get_mut(name) {
+            entry.resolved = Some(node);
+        }
     }
 
     pub fn pop_type_params(&mut self, scope: TypeParamScope<'a>) {
@@ -1051,7 +1396,8 @@ impl<'a> TypeNamespace<'a> {
         // alias chain that never bottoms out in an object shape (`type A = A;`,
         // which really is invalid TypeScript and stays unresolvable here too).
         let self_referenceable = matches!(kind, DeclKind::Interface(_) | DeclKind::Class(_))
-            || matches!(kind, DeclKind::TypeAlias(body, _) if matches!(body, TSType::TSTypeLiteral(_)));
+            || matches!(kind, DeclKind::TypeAlias(body, _) if
+                matches!(body, TSType::TSTypeLiteral(_)) || has_guarded_self_reference(body, name));
 
         let reference = if self_referenceable {
             let id = arena.alloc_ref();
@@ -1089,7 +1435,19 @@ impl<'a> TypeNamespace<'a> {
                                 parts.iter().flat_map(|part| part.body.body.iter())
                             }))
                             .collect();
-                    resolve_object_members(&members, self, arena)
+                    let bases: Vec<&oxc_ast::ast::TSInterfaceHeritage> =
+                        decl.extends
+                            .iter()
+                            .chain(merged.into_iter().flat_map(|parts| {
+                                parts.iter().flat_map(|part| part.extends.iter())
+                            }))
+                            .collect();
+                    let own = resolve_object_members(&members, self, arena);
+                    match own {
+                        Some(own) if bases.is_empty() => Some(own),
+                        Some(own) => self.with_interface_bases(own, &bases, arena),
+                        None => None,
+                    }
                 }
                 DeclKind::Class(class) => self.resolve_class(class, arena),
                 DeclKind::Resolved => None,
@@ -1101,43 +1459,33 @@ impl<'a> TypeNamespace<'a> {
         };
         entry.resolving = false;
 
-        // A non-generic interface, alias or class prints as its own name from
-        // here on ("Dog", not its member list). A generic one is left unnamed:
-        // this cached shape still holds bare GenericParameter placeholders and
-        // is never itself the type of anything a person sees -- each
-        // instantiation (type_annotation::resolve_ts_type's TSTypeReference
-        // arm) names its own substituted result instead ("Box<number>").
         let is_non_generic = type_params.is_none_or(|params| params.params.is_empty());
-
-        match (reference, resolved) {
+        let (resolution, completed_reference) = match (reference, resolved) {
+            (Some(reference), Some(body)) if body == reference => {
+                // A placeholder alone is not a recursive type. Preserve the circular-alias
+                // failure for `type A = A`; guarded cycles produce a distinct body node.
+                arena.fail_ref(reference);
+                entry.resolved = None;
+                (Resolution::Circular, None)
+            }
             (Some(reference), Some(body)) => {
-                // resolve_object_members and resolve_class allocate an Object
-                // (through alloc(), so it may be an id shared with an identical
-                // anonymous shape), and that is fine as the body: the id of the
-                // declaration itself is the Ref, which a self-reference (and
-                // entry.resolved) already points to, and it now reads as that body.
+                // The placeholder may be the root of an object, union, array or conditional
+                // type. Its identity stays stable while its completed body is filled in.
                 arena.resolve_ref(reference, body);
                 entry.resolved = Some(reference);
                 if is_non_generic {
                     arena.name_ref(reference, name);
                 }
-                Resolution::Resolved(reference)
+                (Resolution::Resolved(reference), Some(reference))
             }
             (Some(reference), None) => {
-                // A member turned out to be unresolvable after all. A failed
-                // resolution's partial work is discarded, never handed to a
-                // caller, so nothing outside this call could have captured the
-                // Ref as real by now -- safe to just forget it.
                 arena.fail_ref(reference);
                 entry.resolved = None;
-                Resolution::NotFound
+                (Resolution::NotFound, None)
             }
             (None, Some(type_id)) => {
-                // `type Scores = number[]` resolves to the id every `number[]`
-                // shares. The alias's name goes on a wrapper around that id, so the
-                // shared id is left as it is and no other array of numbers prints as
-                // "Scores". A primitive is not wrapped, so `type Age = number` still
-                // prints as `number`.
+                // Primitive aliases remain transparent (`type Age = number` prints as
+                // `number`); other non-generic aliases retain their display wrapper.
                 let type_id = if is_non_generic {
                     let slot = arena.alloc_name(name);
                     arena.alloc_named(slot, type_id)
@@ -1145,10 +1493,19 @@ impl<'a> TypeNamespace<'a> {
                     type_id
                 };
                 entry.resolved = Some(type_id);
-                Resolution::Resolved(type_id)
+                (Resolution::Resolved(type_id), None)
             }
-            (None, None) => Resolution::NotFound,
+            (None, None) => (Resolution::NotFound, None),
+        };
+
+        if let Some(base) = completed_reference {
+            self.finish_deferred_instantiations(base, arena);
+        } else if matches!(&resolution, Resolution::Circular | Resolution::NotFound) {
+            if let Some(base) = reference {
+                self.fail_deferred_instantiations(base, arena);
+            }
         }
+        resolution
     }
 
     /// Resolves the instance shape of an anonymous class expression/declaration for

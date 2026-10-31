@@ -27,7 +27,7 @@ Narrowing completion, sessions and file identity (joins, discriminated unions, `
     ↓
 Module Resolution (opt-in `module-resolution` feature: resolver, module graph, cycles, layers, project check)
     ↓
-Architecture Foundation (opt-in `incremental`, `scratchpad` and `mimalloc` features; petgraph topology under `module-resolution`)
+Architecture Foundation (opt-in `incremental`, `scratchpad` and `mimalloc` features)
     ↓
 Declaration Slots and Named Nodes (`Ref` slots, `Named` and `App` nodes)
     ↓
@@ -55,7 +55,7 @@ For the full, item-by-item picture of what's checked and what isn't across the e
 | Intersection Types | `A & B`: ordered identity, construction rules checked against tsc, lazy reduction of discriminant conflicts, relations, member access, calls and generics. 25 + 10 unit tests, 17 fixtures. Calls through an intersection of functions and TS2590 follow tsc; narrowing does not see intersections. | `tests/intersection_types.rs`, `tests/intersection_overloads.rs`, unit tests in `src/arena.rs` and `src/subtyping.rs` | [intersections](architecture/intersections.md) |
 | Declaration slots and named nodes (stage 1, steps 1 and 2) | Interfaces, classes and object-literal aliases are `Ref` slots that are never rewritten, and a name lives on a `Named` or `App` node instead of on an id. `set`, placeholders, `display_names`, `make_unique`, `duplicate_named` and the settled-display check are gone. Object properties are not yet bump slices (step 3). | unit tests in `src/arena.rs` and `src/type_display.rs`; the existing fixtures unchanged | [arena](architecture/arena.md) |
 | Module Resolution | Resolve imports with `oxc_resolver`, build a graph indexed by `FileId`, detect cycles, order files into dependency layers, check a project in parallel, and detect changed files. Behind the `module-resolution` feature. What the checker does with the files it is handed is the next row. | `tests/module_resolution.rs` (run with `--features module-resolution`) | [module-resolution](architecture/module-resolution.md) |
-| Architecture Foundation | The dependencies the design documents name, each behind its own feature and not yet used by the checker: a petgraph view of the module graph, a Salsa input and first query, a bump scratchpad that takes only `Copy` values, and mimalloc for the binary. | unit tests in `src/topology.rs`, `src/incremental.rs`, `src/scratchpad.rs`; the topology cases in `tests/module_resolution.rs` | [foundation-dependencies](architecture/foundation-dependencies.md) |
+| Architecture Foundation | The dependencies the design documents name, each behind its own feature and not yet used by the checker: a Salsa input and first query, a bump scratchpad that takes only `Copy` values, and mimalloc for the binary. | unit tests in `src/incremental.rs`, `src/scratchpad.rs` | [foundation-dependencies](architecture/foundation-dependencies.md) |
 | Cross-File Types | A declaration gets an identity that survives a run and moves between arenas as data. A file is a unit with an owned output, a layer's exports reach the files that import it, imports are diagnosed (TS2307, TS2305, TS1192) against complete export lists, and cycles are checked again until their exports settle. Classes, enums, overloads and packages are not exported yet. | `tests/unit_exports.rs`, `tests/unit_imports.rs`, `tests/project_imports.rs`, `tests/import_diagnostics.rs`; golden hashes in `src/stable_hash.rs` and `src/portable.rs` | [cross-file-types](architecture/cross-file-types.md) |
 
 Later work extends these milestones rather than adding a tier: `tests/narrowing_advanced.rs` and `tests/narrowing_complete.rs` (switch, `&&`/`||`, loops, joins, `in`, `instanceof`), `tests/generics_bounds.rs` (literal-preserving inference, explicit type arguments), `tests/declaration_collisions.rs`, `tests/union_member_access.rs` and `tests/check_session.rs` (sessions, metrics, file identity), `tests/unreachable_scopes.rs` (dead code in every construct, checked against tsc line for line) and `tests/everyday_patterns.rs` (empty arrays, parameter properties, boolean discriminants, generic callbacks).
@@ -70,7 +70,7 @@ A handful of smaller, cross-cutting suites support these milestones rather than 
 - [intersections](architecture/intersections.md): ordered identity and lazy reduction.
 - [module-resolution](architecture/module-resolution.md): the resolver, the graph, layers and the project check.
 - [cross-file-types](architecture/cross-file-types.md): keys, portable declarations, units, imports and exports.
-- [foundation-dependencies](architecture/foundation-dependencies.md): petgraph, Salsa, bump allocation, mimalloc.
+- [foundation-dependencies](architecture/foundation-dependencies.md): Salsa, bump allocation, mimalloc.
 
 ## Why it is built this way
 

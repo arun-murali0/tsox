@@ -1,5 +1,5 @@
 use crate::fxhash::{FxHashMap, FxHasher};
-use crate::types::{ObjectType, Type};
+use crate::types::{ObjectType, Type, TypeParameterId};
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -15,6 +15,20 @@ pub struct TypeId(u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DeclSlot(u32);
 
+/// Declaration metadata for a recursive generic application whose body was not yet
+/// available when the App node was first created. Rewriting its arguments may require
+/// re-instantiating the source declaration, not just substituting the old body snapshot.
+#[derive(Clone)]
+pub(crate) struct AppTemplate {
+    pub base: TypeId,
+    pub parameters: Vec<TypeParameterId>,
+}
+
+struct ActiveAppInstantiation {
+    base: TypeId,
+    bindings: Vec<(TypeParameterId, TypeId)>,
+}
+
 // An intersection whose distribution over unions would be too large to build. tsc reports
 // this as TS2590, "Expression produces a union type that is too complex to represent".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -28,6 +42,7 @@ pub struct TooComplex;
 pub(crate) const BUILTIN_GENERICS: [&str; 2] = ["Promise", "Record"];
 
 const MAX_INTERSECTION_DISTRIBUTION: usize = 100_000;
+const MAX_RECURSIVE_APP_INSTANTIATIONS: usize = 256;
 
 #[derive(Clone, Copy)]
 enum DeclState {
@@ -202,6 +217,28 @@ pub struct TypeArena {
     // 1.7); that is why a recursive declaration needs no placeholder patched afterwards.
     decls: Vec<DeclInfo>,
 
+    // Recursive applications created before a generic declaration finishes need their
+    // declaration body and binder list retained. When substitution changes their type
+    // arguments, semantic/generics rebuilds the body from this template rather than
+    // leaving the application attached to the old symbolic conditional body.
+    app_templates: FxHashMap<TypeId, AppTemplate>,
+
+    // Active recursive App re-instantiations. A changed argument may legitimately make
+    // progress (`Flatten<number[][]>` -> `Flatten<number[]>` -> `number`), but a cycle
+    // with the exact same arguments must stop instead of expanding forever.
+    active_app_instantiations: Vec<ActiveAppInstantiation>,
+    // The type each application was made from. Every application gets a slot of its own
+    // (see type_annotation), which no declaration key is registered under, so an export
+    // asks for the declaration it applies through this and `body_origins`.
+    app_bases: FxHashMap<DeclSlot, TypeId>,
+    // A generic alias is left unnamed, so its body is all an application has of it. This
+    // names the declaration slot a body belongs to, registered by whoever knows the key.
+    body_origins: FxHashMap<TypeId, DeclSlot>,
+    // Whether an application is of a conditional alias, and whether that conditional is
+    // distributive. Known where the application is made, and for an imported one from
+    // the declaration it was exported from.
+    app_conditionals: FxHashMap<DeclSlot, bool>,
+
     // The Named ids that are enums. An enum prints and relates as a union of its member
     // literals like an alias of one does, but tsc treats it as a primitive and does not
     // elaborate a mismatch below it, so the two have to be told apart.
@@ -229,6 +266,11 @@ impl TypeArena {
             empty_intersections: RefCell::new(FxHashMap::default()),
             generation: 0,
             decls: Vec::new(),
+            app_templates: FxHashMap::default(),
+            active_app_instantiations: Vec::new(),
+            app_bases: FxHashMap::default(),
+            body_origins: FxHashMap::default(),
+            app_conditionals: FxHashMap::default(),
             enum_types: Vec::new(),
             empty_object: Type::Object(ObjectType::new(Vec::new())),
         };
@@ -334,6 +376,56 @@ impl TypeArena {
         self.alloc(Type::App(slot, args, body))
     }
 
+    pub(crate) fn register_app_template(
+        &mut self,
+        application: TypeId,
+        base: TypeId,
+        parameters: Vec<TypeParameterId>,
+    ) {
+        self.app_templates
+            .insert(application, AppTemplate { base, parameters });
+    }
+
+    pub(crate) fn app_template(&self, application: TypeId) -> Option<&AppTemplate> {
+        self.app_templates.get(&application)
+    }
+
+    /// Enters a recursive application only when its (declaration, arguments) pair is not
+    /// already active. Exact repeats are cycles; changed arguments may make finite progress.
+    pub(crate) fn begin_app_instantiation(
+        &mut self,
+        base: TypeId,
+        bindings: &[(TypeParameterId, TypeId)],
+    ) -> bool {
+        if self
+            .active_app_instantiations
+            .iter()
+            .any(|active| active.base == base && active.bindings.as_slice() == bindings)
+            || self.active_app_instantiations.len() >= MAX_RECURSIVE_APP_INSTANTIATIONS
+        {
+            return false;
+        }
+        self.active_app_instantiations.push(ActiveAppInstantiation {
+            base,
+            bindings: bindings.to_vec(),
+        });
+        true
+    }
+
+    pub(crate) fn end_app_instantiation(
+        &mut self,
+        base: TypeId,
+        bindings: &[(TypeParameterId, TypeId)],
+    ) {
+        if let Some(index) = self
+            .active_app_instantiations
+            .iter()
+            .rposition(|active| active.base == base && active.bindings.as_slice() == bindings)
+        {
+            self.active_app_instantiations.remove(index);
+        }
+    }
+
     // A new slot that never enters the intern table, so the id is this call's own even
     // when identical content was allocated before. Tests use it to get distinct ids for
     // content that alloc() would give one id.
@@ -355,6 +447,7 @@ impl TypeArena {
             ty,
             Type::Object(_)
                 | Type::Array(_)
+                | Type::Tuple(_)
                 | Type::Function(_)
                 | Type::StringLiteral(_)
                 | Type::NumberLiteral(_)
@@ -363,6 +456,7 @@ impl TypeArena {
                 | Type::Named(..)
                 | Type::App(..)
                 | Type::Intersection(..)
+                | Type::Conditional(..)
         )
     }
 
@@ -386,6 +480,25 @@ impl TypeArena {
                 .collided
                 .get(&digest)
                 .is_some_and(|ids| ids.contains(&id))
+    }
+
+    /// A tuple type. The caller has already checked the two rules `Type::Tuple` states
+    /// (one rest element at most and only last, no required element after an optional one) and
+    /// reported the source error if they do not hold; this only interns.
+    pub fn alloc_tuple(&mut self, elements: Vec<crate::types::TupleElement>) -> TypeId {
+        debug_assert!(
+            elements.iter().filter(|e| e.rest).count() <= 1
+                && elements.iter().rev().skip(1).all(|e| !e.rest),
+            "a tuple has at most one rest element and it is the last"
+        );
+        debug_assert!(
+            !elements
+                .iter()
+                .skip_while(|e| !e.optional)
+                .any(|e| !e.optional && !e.rest),
+            "a required tuple element follows an optional one"
+        );
+        self.alloc(Type::Tuple(elements))
     }
 
     // Flattens nested unions and drops never members, since never contributes
@@ -633,7 +746,7 @@ impl TypeArena {
     fn is_object_like(&self, id: TypeId) -> bool {
         matches!(
             self.shallow(id),
-            Type::Object(_) | Type::Function(_) | Type::Array(_) | Type::Ref(_)
+            Type::Object(_) | Type::Function(_) | Type::Array(_) | Type::Tuple(_) | Type::Ref(_)
         )
     }
 
@@ -743,10 +856,65 @@ impl TypeArena {
         }
     }
 
+    /// True while a declaration reference is still waiting for its body. Generic
+    /// self-instantiations use this to leave a fix-up point when the declaration's
+    /// arguments differ from the declaration's own type parameters.
+    pub(crate) fn is_resolving_ref(&self, id: TypeId) -> bool {
+        let Some(Type::Ref(slot)) = self.types.get(id.0 as usize) else {
+            return false;
+        };
+        matches!(self.decls[slot.0 as usize].state, DeclState::Resolving)
+    }
+
     // The slot and body of a declaration as the namespace hands it out: a resolved Ref
     // (interface, class, type-literal alias) or a Named (alias). None for any other id,
     // including a Ref that has no body yet. Exporting needs the slot, to tell the unit's
     // resolver which declaration it is, and the body, which is what gets exported.
+    pub(crate) fn set_app_base(&mut self, application: DeclSlot, base: TypeId) {
+        self.app_bases.insert(application, base);
+    }
+
+    pub(crate) fn set_app_conditional(&mut self, application: DeclSlot, distributive: bool) {
+        self.app_conditionals.insert(application, distributive);
+    }
+
+    pub(crate) fn set_body_origin(&mut self, body: TypeId, declaration: DeclSlot) {
+        self.body_origins.insert(body, declaration);
+    }
+
+    /// The body of an application of a conditional alias that has been decided: tsc prints
+    /// what `Unwrap<Promise<string>>` came to (`string`), not the application, unless the
+    /// result is a union (a distributive alias keeps its name) or still deferred. None for
+    /// any other application, which prints as itself.
+    pub(crate) fn decided_conditional_body(&self, id: TypeId) -> Option<TypeId> {
+        let Type::App(slot, arguments, body) = self.types.get(id.0 as usize)? else {
+            return None;
+        };
+        let distributive = *self.app_conditionals.get(slot)?;
+        // A distributive alias run over a union keeps its name on the result, even when
+        // the result collapses to one type: `boolean` is the union `true | false`.
+        if distributive
+            && arguments
+                .iter()
+                .any(|&argument| matches!(self.get(argument), Type::Union(_) | Type::Boolean))
+        {
+            return None;
+        }
+        match self.get(*body) {
+            Type::Conditional(_) | Type::Union(_) => None,
+            _ => Some(*body),
+        }
+    }
+
+    /// The declaration slot an application was made from, if anything registered one.
+    pub(crate) fn app_origin(&self, application: DeclSlot) -> Option<DeclSlot> {
+        let base = *self.app_bases.get(&application)?;
+        match self.decl_parts(base) {
+            Some((slot, _)) => Some(slot),
+            None => self.body_origins.get(&base).copied(),
+        }
+    }
+
     pub(crate) fn decl_parts(&self, id: TypeId) -> Option<(DeclSlot, TypeId)> {
         match self.types.get(id.0 as usize)? {
             Type::Ref(slot) => match self.decls[slot.0 as usize].state {
@@ -755,6 +923,25 @@ impl TypeArena {
             },
             Type::Named(slot, inner) => Some((*slot, *inner)),
             _ => None,
+        }
+    }
+
+    // The slot and arguments of a built-in generic application (`Promise<T>`,
+    // `Record<K, V>`), found through any alias wrapped around it. `get` reads such an
+    // application as its empty body, so its arguments are only reachable from here.
+    pub(crate) fn builtin_app_args(&self, id: TypeId) -> Option<(DeclSlot, Vec<TypeId>)> {
+        let mut current = id;
+        loop {
+            match self.types.get(current.0 as usize)? {
+                Type::Named(_, inner) => current = *inner,
+                Type::App(slot, args, _) => {
+                    let builtin = BUILTIN_GENERICS
+                        .iter()
+                        .any(|name| self.builtin_slots.get(name) == Some(slot));
+                    return builtin.then(|| (*slot, args.clone()));
+                }
+                _ => return None,
+            }
         }
     }
 
@@ -850,6 +1037,33 @@ impl TypeArena {
     // Whether `id` prints under a name and not as its structure.
     pub fn is_named(&self, type_id: TypeId) -> bool {
         self.display_name(type_id).is_some() || self.app_parts(type_id).is_some()
+    }
+
+    // A `Promise<inner>`, the same node a written `Promise<T>` annotation makes.
+    pub fn alloc_promise(&mut self, inner: TypeId) -> TypeId {
+        let body = self.alloc(Type::Object(ObjectType::new(Vec::new())));
+        let slot = self.builtin_slot("Promise");
+        self.alloc_app(slot, vec![inner], body)
+    }
+
+    // The T of a `Promise<T>`, or None when `type_id` is not one.
+    pub fn promise_value_type(&self, type_id: TypeId) -> Option<TypeId> {
+        let promise = *self.builtin_slots.get("Promise")?;
+        match self.types.get(type_id.0 as usize) {
+            Some(Type::App(slot, args, _)) if *slot == promise => args.first().copied(),
+            _ => None,
+        }
+    }
+
+    // Whether `type_id` is a `Promise<T>`: an App of the built-in Promise slot.
+    pub fn is_promise(&self, type_id: TypeId) -> bool {
+        let Some(&promise) = self.builtin_slots.get("Promise") else {
+            return false;
+        };
+        matches!(
+            self.types.get(type_id.0 as usize),
+            Some(Type::App(slot, _, _)) if *slot == promise
+        )
     }
 
     // The value type V of a `Record<K, V>`: any key reads as V. Record has no real index
@@ -1008,6 +1222,17 @@ impl TypeArena {
 
             (Type::Array(x), Type::Array(y)) => self.structurally_equal_inner(*x, *y, seen),
 
+            // Position is the meaning of a tuple, so the elements are compared in order,
+            // with the same optional and rest marks.
+            (Type::Tuple(x), Type::Tuple(y)) => {
+                x.len() == y.len()
+                    && x.iter().zip(y).all(|(p, q)| {
+                        p.optional == q.optional
+                            && p.rest == q.rest
+                            && self.structurally_equal_inner(p.type_id, q.type_id, seen)
+                    })
+            }
+
             (Type::Function(f), Type::Function(g)) => {
                 f.is_untyped == g.is_untyped
                     && f.type_params == g.type_params
@@ -1085,6 +1310,8 @@ impl TypeArena {
         self.generation = self.generation.wrapping_add(1);
         self.types.truncate(FIXED_SLOTS as usize);
         self.decls.clear();
+        self.app_templates.clear();
+        self.active_app_instantiations.clear();
         self.enum_types.clear();
         self.builtin_slots.clear();
         self.interned.clear();

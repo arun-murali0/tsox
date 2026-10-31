@@ -111,8 +111,12 @@ fn check_identifier_declarator(
 
         (AnnotationOutcome::Resolved(declared), Some(actual)) => {
             if !ctx.is_assignable_instantiating(actual, declared) {
-                let whole = crate::diagnostic_messages::messages::declared_type_mismatch(
-                    &ctx.arena, actual, declared,
+                let instantiated = ctx.instantiate_for_message(actual, declared);
+                let whole = crate::diagnostic_messages::messages::declared_type_mismatch_via(
+                    &ctx.arena,
+                    actual,
+                    instantiated,
+                    declared,
                 );
                 report_mismatch(
                     declarator.init.as_ref(),
@@ -218,12 +222,20 @@ fn check_destructured_declarator(
         }
         (AnnotationOutcome::Resolved(declared), Some(actual)) => {
             if !ctx.is_assignable_instantiating(actual, declared) {
-                ctx.error(
-                    crate::diagnostic_messages::messages::destructuring_pattern_type_mismatch(),
+                let whole =
+                    crate::diagnostic_messages::messages::destructuring_pattern_type_mismatch(
+                        &ctx.arena, actual, declared,
+                    );
+                report_mismatch(
+                    declarator.init.as_ref(),
+                    actual,
+                    declared,
+                    whole,
                     declarator
                         .init
                         .as_ref()
                         .map_or(declarator.span(), GetSpan::span),
+                    ctx,
                 );
             }
             declared

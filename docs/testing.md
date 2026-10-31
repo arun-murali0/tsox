@@ -76,7 +76,7 @@ The repository contains:
 - Criterion benchmarks in `benches/checker_benchmark.rs`;
 - module graph benchmarks in `benches/module_graph_benchmark.rs` (graph build, layers, cycles, change detection and the parallel project check), which only build with `--features module-resolution`;
 - cache and memo counters, readable from a `CheckSession` after a check (`last_metrics`), for regressions that wall-clock time hides;
-- foundation benchmarks in `benches/foundation_benchmark.rs` (petgraph cycles next to the graph's own search, the scratchpad against a `Vec`, and the incremental layer's unchanged save and valid read), which need `module-resolution`, `incremental` and `scratchpad`;
+- foundation benchmarks in `benches/foundation_benchmark.rs` (the scratchpad against a `Vec`, and the incremental layer's unchanged save and valid read), which need `module-resolution`, `incremental` and `scratchpad`;
 - IAI callgrind benchmarks in `benches/checker_iai.rs`;
 - shared complex fixtures in `benches/support/complex_fixtures.rs`;
 - heap profiling in `examples/dhat_heap.rs`.
@@ -137,8 +137,13 @@ check meaningless.
 **`scripts/harness.sh`** is the one aimed at a real external project (Zustand
 by default) rather than curated fixtures — see the "Running it locally" section
 in the README for usage. It benchmarks `tsc`, `tsgo`, and `tsox` against the
-same project and records reproducibility information: compiler versions,
-source revision, timings, normalized diagnostics, and output hashes.
+same project and reports speed, peak memory and CPU, and how tsox's errors
+compare with tsc's and tsgo's (matches, false positives, gaps, lines that
+agree, files by class), plus what tsox skipped. It saves every run's raw
+output and timings with the compiler versions, project revision and exact
+commands, so each figure can be recomputed by hand. `--dhat` adds the
+allocation profile from `examples/dhat_heap`; the criterion benches
+(`cargo bench`) stay the place for fine-grained speed.
 
 None of the three are a semantic-equivalence proof. A matching diagnostic or
 exit code does not establish that two implementations have identical type

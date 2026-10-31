@@ -130,7 +130,6 @@ src/
 ├── line_index.rs
 ├── project.rs
 ├── module_resolution/     # opt-in `module-resolution` feature
-├── topology.rs            # petgraph view of the module graph (`module-resolution`)
 ├── incremental.rs         # Salsa input and first query (`incremental`)
 ├── scratchpad.rs          # bump scratch for one worker (`scratchpad`)
 ├── error.rs
@@ -302,7 +301,7 @@ Start with the [documentation index](docs/README.md), then inspect the relevant 
 | Module Resolution | `tests/module_resolution.rs` (feature `module-resolution`) | `tests/module-resolution-fixtures/` | [Module Resolution](docs/architecture/module-resolution.md) |
 | Intersection Types | `tests/intersection_types.rs`, `tests/intersection_overloads.rs` | `tests/fixtures/intersection-types/`, `intersection-calls/`, `intersection-edges/` | [Intersection Types](docs/architecture/intersections.md) |
 | Cross-File Types | `tests/unit_exports.rs`, `tests/unit_imports.rs`, `tests/project_imports.rs`, `tests/import_diagnostics.rs` | sources inline in the tests | [Cross-File Types](docs/architecture/cross-file-types.md) |
-| Architecture Foundation | unit tests in `src/topology.rs`, `src/incremental.rs`, `src/scratchpad.rs` | none | [Architecture Foundation](docs/architecture/foundation-dependencies.md) |
+| Architecture Foundation | unit tests in `src/incremental.rs`, `src/scratchpad.rs` | none | [Architecture Foundation](docs/architecture/foundation-dependencies.md) |
 | Generics | `tests/generics_tier1.rs`, `tests/generics_tier2.rs`, `tests/generic_classes.rs`, `tests/recursive_types.rs`, `tests/builtin_generics.rs`, `tests/interface_methods.rs` | `tests/fixtures/generics-tier1/`, `generics-tier2/`, `generic-classes/`, `recursive-types/`, `builtin-generics/`, `interface-methods/` | [Generics](docs/architecture/generics.md) |
 
 
@@ -317,7 +316,7 @@ Start with [docs/README.md](docs/README.md) for the milestone map and architectu
 - [Arena](docs/architecture/arena.md): ids, interning, `Ref` slots, named nodes and the performance phases.
 - [Case study](docs/case-study.md): why the checker is built the way it is, one decision per section.
 - [Decisions](docs/decisions.md): the choices that closed the open questions in `HLD.md`, with what would reopen each.
-- [Architecture Foundation](docs/architecture/foundation-dependencies.md): the optional dependencies from the design documents (petgraph, Salsa, Bumpalo, mimalloc), each behind its own feature and not yet used by the checker.
+- [Architecture Foundation](docs/architecture/foundation-dependencies.md): the optional dependencies from the design documents (Salsa, Bumpalo, mimalloc), each behind its own feature and not yet used by the checker.
 - [Testing](docs/testing.md): fixture conventions, regression policy, benchmarks, and compatibility harness.
 - [Purpose and boundaries](docs/purpose-and-overdesign.md): why the project exists and what it deliberately does not rebuild.
 
@@ -325,21 +324,16 @@ Each milestone document explains the semantic rule, implementation choice, and p
 
 ## Compatibility harness
 
-The repository contains an experimental harness for comparing tsox with TypeScript implementations such as `tsc` and `tsgo`.
+`scripts/harness.sh` compares tsox with `tsc` and `tsgo` on one real project and writes a report you can check by hand. The program is `bin/harness.rs`.
 
-It records information such as:
+It measures:
 
-- exit codes
-- normalized diagnostics
-- timing
-- repeated-run statistics
-- output hashes
+- **Speed:** wall time of each compiler after warm-up runs, with the runs interleaved so a slow minute hurts all three alike. Median, mean, standard deviation, min, max, quartiles and a noise flag.
+- **Memory and CPU:** peak resident memory and CPU time of each process. Each program is started by a small measuring process, because the kernel otherwise counts the parent's size as the child's.
+- **Agreement:** tsox's errors against tsc's and tsgo's, matched by file, line and tsc error code. It counts matches, false positives (tsox errors the reference lacks), gaps (reference errors tsox misses), lines that agree, and files by class. tsc and tsgo are also compared with each other, to show whether the reference itself is consistent.
+- **Coverage:** what tsox skipped. Every `TSR9xxx` warning is a construct it did not check, and a partial export is a file whose exports are incomplete. The report says how many agreeing files tsox fully checked, since agreement on a skipped file is weak evidence.
 
-The harness is useful for finding compatibility gaps and performance questions.
-
-**It is not a semantic-equivalence oracle.**
-
-A matching result does not prove that two compilers implement the same TypeScript semantics.
+**It is not a semantic-equivalence oracle.** A matching result does not prove two compilers implement the same TypeScript semantics, and tsox checks a smaller language than tsc, so a speed ratio only means something next to the agreement numbers.
 
 ### Running it locally
 
@@ -347,23 +341,30 @@ A matching result does not prove that two compilers implement the same TypeScrip
 ./scripts/harness.sh
 ```
 
-This clones a fixture project (Zustand, by default), installs its dependencies, builds `tsox` in release mode if needed, and benchmarks whichever of `tsc`/`tsgo`/`tsox` are available. Results are written to `.harness/results/<timestamp>/summary.json`.
+This clones Zustand (by default), installs its dependencies with its own lockfile, installs tsc and tsgo under `.harness/tools`, builds `tsox` in release mode, and runs everything. Open `.harness/results/<UTC time>/report.md`.
+
+Each results folder holds `report.md`, `summary.json`, `per-file.csv`, `tsox-false-positives.txt`, `tsox-missed.txt`, `tsc-vs-tsgo-differences.txt`, `REPRODUCE.sh` with the exact commands, and `raw/` with the output and `timings.csv` of every run.
 
 Common variations:
 
 ```bash
-# Benchmark your own project instead of Zustand
+# Your own project instead of Zustand (needs a tsconfig.json)
 ./scripts/harness.sh /path/to/your/ts/project
 
-# Skip dependency install if node_modules is already set up
-SKIP_INSTALL=1 ./scripts/harness.sh
-
 # More timed runs for steadier medians
-HARNESS_RUNS=10 ./scripts/harness.sh
+./scripts/harness.sh --runs 10
 
-# Reuse whatever fixture is already cached instead of auto-refreshing it
-HARNESS_REFRESH=0 ./scripts/harness.sh
+# Also run the allocation profile of the benchmark workloads (examples/dhat_heap)
+./scripts/harness.sh --dhat
+
+# A pinned Zustand revision, and exit 1 if the run is invalid or tsox has false positives
+./scripts/harness.sh --ref <commit> --strict
+
+# Every option
+./scripts/harness.sh --help
 ```
+
+Use a release build of tsox for speed and memory. The report marks a debug build as not meaningful, and marks the whole run invalid when the compilers cannot run or the project's dependencies are missing. Linux and macOS, 64-bit.
 
 ### Running it in CI
 

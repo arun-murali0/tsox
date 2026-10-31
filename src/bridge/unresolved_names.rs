@@ -43,6 +43,7 @@ pub(crate) fn is_unresolved_type_name(
 ) -> bool {
     resolve_symbol_id(id, scoping).is_none()
         && !namespace.contains(&id.name)
+        && !namespace.is_unmodelled_global(&id.name)
         && !is_lib_global_type(&id.name)
 }
 

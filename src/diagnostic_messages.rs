@@ -30,8 +30,11 @@ impl DiagnosticMessage {
 pub mod messages {
     use super::{DiagnosticCode, DiagnosticMessage};
     use crate::arena::{TypeArena, TypeId};
-    use crate::explain::{Level, mismatch_children, mismatch_levels, render, top_code};
+    use crate::explain::{
+        Level, mismatch_children, mismatch_levels, mismatch_levels_via, render, top_code,
+    };
     use crate::type_display::{display_source_type, display_type};
+    use crate::types::Type;
 
     // A plain "not assignable" message, with the chain of reasons tsc puts under it. A
     // missing property that is the only reason replaces the first line, and with it the
@@ -122,6 +125,37 @@ pub mod messages {
         )
     }
 
+    /// `declared_type_mismatch` for a generic source instantiated against the target:
+    /// the first line names `actual` as declared, the reasons come from `instantiated`.
+    pub fn declared_type_mismatch_via(
+        arena: &TypeArena,
+        actual: TypeId,
+        instantiated: TypeId,
+        expected: TypeId,
+    ) -> DiagnosticMessage {
+        let levels = mismatch_levels_via(arena, actual, instantiated, expected);
+        DiagnosticMessage::new(
+            top_code(&levels, DiagnosticCode::DeclaredTypeMismatch),
+            render(&levels),
+        )
+    }
+
+    /// `argument_not_assignable` for a generic argument instantiated against its parameter.
+    pub fn argument_not_assignable_via(
+        arena: &TypeArena,
+        actual: TypeId,
+        instantiated: TypeId,
+        expected: TypeId,
+    ) -> DiagnosticMessage {
+        let mut levels = vec![Level::headline(format!(
+            "Argument of type '{}' is not assignable to parameter of type '{}'.",
+            display_source_type(arena, actual, expected),
+            display_type(arena, expected)
+        ))];
+        levels.extend(mismatch_children(arena, instantiated, expected));
+        DiagnosticMessage::new(DiagnosticCode::ArgumentNotAssignable, render(&levels))
+    }
+
     pub fn return_type_mismatch(
         arena: &TypeArena,
         actual: TypeId,
@@ -143,10 +177,19 @@ pub mod messages {
         )
     }
 
-    pub fn destructuring_pattern_type_mismatch() -> DiagnosticMessage {
-        DiagnosticMessage::new(
+    // A destructuring declaration whose initializer does not fit the annotation. tsc has no
+    // wording of its own for this: it is the same TS2322 as any other assignment, with the
+    // same chain of reasons under it, so the text is built the same way.
+    pub fn destructuring_pattern_type_mismatch(
+        arena: &TypeArena,
+        actual: TypeId,
+        expected: TypeId,
+    ) -> DiagnosticMessage {
+        not_assignable(
+            arena,
+            actual,
+            expected,
             DiagnosticCode::DestructuringPatternTypeMismatch,
-            "Type mismatch: value is not assignable to the destructuring pattern's declared type.",
         )
     }
 
@@ -234,11 +277,65 @@ pub mod messages {
         DiagnosticMessage::new(DiagnosticCode::ImplicitAnyElement, text)
     }
 
+    // `t[5]` on `[string, number]`: tsc names the tuple, its length and the index.
+    pub fn tuple_index_out_of_bounds(
+        arena: &TypeArena,
+        tuple: TypeId,
+        length: usize,
+        index: usize,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::TupleIndexOutOfBounds,
+            format!(
+                "Tuple type '{}' of length '{length}' has no element at index '{index}'.",
+                display_type(arena, tuple)
+            ),
+        )
+    }
+
+    // The three tuple shape rules tsc reports as grammar errors, in tsc's words.
+    pub fn tuple_required_after_optional() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::TupleRequiredAfterOptional,
+            "A required element cannot follow an optional element.",
+        )
+    }
+
+    pub fn tuple_rest_after_rest() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::TupleRestAfterRest,
+            "A rest element cannot follow another rest element.",
+        )
+    }
+
+    pub fn tuple_optional_after_rest() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::TupleOptionalAfterRest,
+            "An optional element cannot follow a rest element.",
+        )
+    }
+
+    pub fn tuple_negative_index() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::TupleNegativeIndex,
+            "A tuple type cannot be indexed with a negative value.",
+        )
+    }
+
     pub fn return_implicitly_any(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::ImplicitAnyReturn,
             format!(
                 "'{name}' implicitly has return type 'any' because it does not have a return type annotation and is referenced directly or indirectly in one of its return expressions."
+            ),
+        )
+    }
+
+    pub fn setter_property_implicitly_any(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnySetter,
+            format!(
+                "Property '{name}' implicitly has type 'any', because its set accessor lacks a parameter type annotation."
             ),
         )
     }
@@ -250,17 +347,51 @@ pub mod messages {
         )
     }
 
-    pub fn not_callable(name: &str) -> DiagnosticMessage {
+    // tsc says the same thing for every callee, with the reason under it: a primitive is named
+    // by its wrapper (`Type 'Number' has no call signatures.`, also for a literal), a union by
+    // the whole union, anything else by its own type.
+    fn no_signatures_of(arena: &TypeArena, callee: TypeId) -> String {
+        match arena.get(callee) {
+            Type::Number | Type::NumberLiteral(_) => "Number".to_string(),
+            Type::String | Type::StringLiteral(_) => "String".to_string(),
+            Type::Boolean | Type::BooleanLiteral(_) => "Boolean".to_string(),
+            _ => display_type(arena, callee),
+        }
+    }
+
+    pub fn not_callable(arena: &TypeArena, callee: TypeId) -> DiagnosticMessage {
+        let reason = if matches!(arena.get(callee), Type::Union(_)) {
+            format!(
+                "No constituent of type '{}' is callable.",
+                display_type(arena, callee)
+            )
+        } else {
+            format!(
+                "Type '{}' has no call signatures.",
+                no_signatures_of(arena, callee)
+            )
+        };
         DiagnosticMessage::new(
             DiagnosticCode::NotCallable,
-            format!("'{name}' is not callable."),
+            format!("This expression is not callable.\n  {reason}"),
         )
     }
 
-    pub fn not_a_constructor(name: &str) -> DiagnosticMessage {
+    pub fn not_a_constructor(arena: &TypeArena, callee: TypeId) -> DiagnosticMessage {
+        let reason = if matches!(arena.get(callee), Type::Union(_)) {
+            format!(
+                "No constituent of type '{}' is constructable.",
+                display_type(arena, callee)
+            )
+        } else {
+            format!(
+                "Type '{}' has no construct signatures.",
+                no_signatures_of(arena, callee)
+            )
+        };
         DiagnosticMessage::new(
             DiagnosticCode::NotConstructor,
-            format!("'{name}' is not a constructor."),
+            format!("This expression is not constructable.\n  {reason}"),
         )
     }
 
@@ -335,6 +466,20 @@ pub mod messages {
         DiagnosticMessage::new(
             DiagnosticCode::ModuleNotFound,
             format!("Cannot find module '{specifier}' or its corresponding type declarations."),
+        )
+    }
+
+    pub fn type_definition_not_found(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::TypeDefinitionNotFound,
+            format!("Cannot find type definition file for '{name}'."),
+        )
+    }
+
+    pub fn referenced_file_not_found(path: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ReferencedFileNotFound,
+            format!("File '{path}' not found."),
         )
     }
 
@@ -519,6 +664,26 @@ pub mod messages {
             DiagnosticCode::TypeArgumentCountRange
         };
         DiagnosticMessage::new(code, text)
+    }
+
+    // TS2558 applies to an explicit type-argument list on a call or constructor.
+    // Unlike generic type references, its message is framed around the count written.
+    // tsc names a range when defaults make some of the parameters optional
+    // ("Expected 1-2 type arguments, but got 3.") and one number when there is no choice.
+    pub fn call_type_argument_count_mismatch(
+        min: usize,
+        max: usize,
+        actual: usize,
+    ) -> DiagnosticMessage {
+        let expected = if min == max {
+            min.to_string()
+        } else {
+            format!("{min}-{max}")
+        };
+        DiagnosticMessage::new(
+            DiagnosticCode::TypeArgumentListCountMismatch,
+            format!("Expected {expected} type arguments, but got {actual}."),
+        )
     }
 
     pub fn duplicate_type_declaration(name: &str) -> DiagnosticMessage {

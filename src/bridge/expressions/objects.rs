@@ -172,6 +172,67 @@ fn upsert_property(properties: &mut Vec<PropertyEntry>, entry: PropertyEntry) {
     }
 }
 
+// The tuple an expected type asks for: the type itself, or the one tuple member of a union
+// (`[string, number] | null`). Two tuple members leave the choice open, so no tuple.
+fn tuple_in_context(
+    ctx: &CheckContext<'_, '_>,
+    expected: TypeId,
+) -> Option<Vec<crate::types::TupleElement>> {
+    match ctx.arena.get(expected) {
+        Type::Tuple(elements) => Some(elements.clone()),
+        Type::Union(members) => {
+            let mut found = None;
+            for &member in members {
+                if let Type::Tuple(elements) = ctx.arena.get(member) {
+                    if found.is_some() {
+                        return None;
+                    }
+                    found = Some(elements.clone());
+                }
+            }
+            found
+        }
+        _ => None,
+    }
+}
+
+// Each written element is typed against the tuple element at its position (the rest
+// element's type past the last fixed one), keeping a literal only where that element asks
+// for one. The result has the literal's own length, so a literal that is too short or too
+// long is reported by the ordinary assignability check against the tuple it was meant for.
+fn infer_tuple_literal(
+    array: &oxc_ast::ast::ArrayExpression,
+    target: &[crate::types::TupleElement],
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> TypeId {
+    let rest = target.last().filter(|e| e.rest).map(|e| e.type_id);
+    let fixed = target.len() - usize::from(rest.is_some());
+    let mut elements = Vec::with_capacity(array.elements.len());
+    for (position, element) in array.elements.iter().enumerate() {
+        let Some(expr) = element.as_expression() else {
+            continue;
+        };
+        let wanted = if position < fixed {
+            Some(target[position].type_id)
+        } else {
+            rest
+        };
+        ctx.contextual = wanted;
+        let type_id = infer_expression_type(expr, scoping, ctx);
+        let type_id = match wanted {
+            Some(d) if holds_literal(ctx, d) => type_id,
+            _ => crate::types::widen(&ctx.arena, type_id),
+        };
+        elements.push(crate::types::TupleElement {
+            type_id,
+            optional: false,
+            rest: false,
+        });
+    }
+    ctx.arena.alloc_tuple(elements)
+}
+
 // Each element's type is widened (a literal 5 becomes number) before being added
 // to the element-type union, matching how [1, 2, 3] should infer as number[], not
 // a union of three numeric literal types. An empty array literal has nothing to
@@ -185,6 +246,19 @@ pub(super) fn infer_array_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
+    // A tuple type in the context makes the literal a tuple: `const p: [string, number] =
+    // ["a", 1]` is the tuple `[string, number]`, not `(string | number)[]`. Without such
+    // a context the literal stays an array, as it is in tsc. A literal with a spread or a
+    // hole is not read as a tuple: the length would not be known.
+    if let Some(target) = expected.and_then(|e| tuple_in_context(ctx, e))
+        && array.elements.iter().all(|e| {
+            e.as_expression().is_some()
+                && !matches!(e, oxc_ast::ast::ArrayExpressionElement::SpreadElement(_))
+        })
+    {
+        return infer_tuple_literal(array, &target, scoping, ctx);
+    }
+
     let mut element_types = Vec::with_capacity(array.elements.len());
 
     for element in &array.elements {

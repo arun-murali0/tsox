@@ -1,5 +1,6 @@
 mod arena;
 mod bridge;
+mod check_options;
 mod diagnostic_codes;
 mod diagnostic_messages;
 mod diagnostic_view;
@@ -18,6 +19,8 @@ mod namespace;
 #[allow(dead_code)]
 mod portable;
 mod project;
+mod reference_directives;
+#[cfg(feature = "module-resolution")]
 mod scc;
 #[cfg(feature = "scratchpad")]
 mod scratchpad;
@@ -30,8 +33,6 @@ mod stable_walk;
 mod stack_guard;
 mod subtyping;
 mod symbol_map;
-#[cfg(feature = "module-resolution")]
-mod topology;
 mod type_annotation;
 mod type_display;
 mod types;
@@ -42,6 +43,7 @@ mod wasm;
 #[cfg(feature = "wasm")]
 pub use wasm::TsoxChecker;
 
+pub use check_options::CheckOptions;
 pub use diagnostic_codes::DiagnosticCode;
 pub use diagnostic_view::{DiagnosticView, Position, Range};
 pub use diagnostics::{Diagnostic, Severity};
@@ -57,8 +59,12 @@ pub use portable::{
 };
 pub use stable_hash::Prim;
 pub use stack_guard::with_deep_stack;
-pub use unit::{AmbientExports, CancelToken, UnitContext, UnitError, UnitOutput, Worker};
+pub use unit::{
+    AmbientExports, CancelToken, ReturnRead, UnitContext, UnitError, UnitOutput, Worker,
+};
 
+#[cfg(feature = "incremental")]
+pub use incremental::{CheckStats, IncrementalProject, ModuleHeader, SecondPass};
 #[cfg(feature = "incremental")]
 pub use incremental::{
     Database as IncrementalDatabase, IncrementalDb, SourceFile, SourceKind, source_len,
@@ -68,13 +74,12 @@ pub use incremental::{
 pub use scratchpad::WorkerScratch;
 
 #[cfg(feature = "module-resolution")]
-pub use topology::ModuleTopology;
-
-#[cfg(feature = "module-resolution")]
 pub use module_resolution::{
-    FileFingerprint, FileOutcome, FileReport, ModuleEdge, ModuleError, ModuleGraph, ModuleRequest,
-    ModuleRequestKind, ModuleResolver, ModuleScan, PartialRow, PartialSummary, ProjectReport,
-    ReasonKind, check_project, content_hash, scan_module_requests, summarize_partial,
+    ConfigError, Cyclic, FileFingerprint, FileOutcome, FileReport, Finished, Json, ModuleEdge,
+    ModuleError, ModuleGraph, ModuleRequest, ModuleRequestKind, ModuleResolver, ModuleScan,
+    PartialRow, PartialSummary, ProjectConfig, ProjectReport, ReasonKind, ResolveMode, UnitOutcome,
+    check_project, content_hash, parse_jsonc, run_units, scan_module_requests, summarize_partial,
+    unit_dependencies,
 };
 
 // Exposed only so a test can make an import cycle run out of recheck rounds (see
@@ -83,6 +88,11 @@ pub use module_resolution::{
 #[cfg(feature = "module-resolution")]
 #[doc(hidden)]
 pub use module_resolution::check_project_bounded;
+
+// Public API, unlike the one above, but `module_resolution` only exists with its feature,
+// so the export needs the same gate or a build without the feature fails to resolve it.
+#[cfg(feature = "module-resolution")]
+pub use module_resolution::check_project_cancellable;
 
 pub use arena::TypeArenaStats;
 pub use bridge::{CheckMetrics, IncompleteReason};
