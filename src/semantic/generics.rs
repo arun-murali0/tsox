@@ -530,6 +530,17 @@ impl Substitution<'_> {
                 let substituted = self.rewrite(arena, element, cut);
                 arena.alloc(Type::Array(substituted))
             }
+            Type::Tuple(elements) => {
+                let mut rewritten = Vec::with_capacity(elements.len());
+                for element in &elements {
+                    rewritten.push(crate::types::TupleElement {
+                        type_id: self.rewrite(arena, element.type_id, cut),
+                        optional: element.optional,
+                        rest: element.rest,
+                    });
+                }
+                arena.alloc_tuple(rewritten)
+            }
             Type::Function(function) => {
                 let mut params = Vec::with_capacity(function.params.len());
                 for p in &function.params {
@@ -660,6 +671,7 @@ fn parts_of(arena: &TypeArena, type_id: TypeId) -> SmallVec<[TypeId; 8]> {
     let mut parts = SmallVec::new();
     match arena.get(type_id) {
         Type::Array(element) => parts.push(*element),
+        Type::Tuple(elements) => parts.extend(elements.iter().map(|e| e.type_id)),
         Type::Function(function) => {
             for parameter in &function.type_params {
                 parts.extend(
@@ -829,6 +841,17 @@ pub(crate) fn expected_param_type(
     Some(if param.rest {
         match arena.get(param.type_id) {
             Type::Array(element) => *element,
+            // `...args: [string, number?]`: the argument at this index is the tuple
+            // element at the same offset into the rest, or its rest element past the end.
+            Type::Tuple(elements) => {
+                let offset = index.saturating_sub(params.len() - 1);
+                let rest = elements.last().filter(|e| e.rest);
+                let fixed = elements.len() - usize::from(rest.is_some());
+                match elements.get(offset).filter(|_| offset < fixed) {
+                    Some(element) => element.type_id,
+                    None => rest?.type_id,
+                }
+            }
             _ => param.type_id,
         }
     } else {

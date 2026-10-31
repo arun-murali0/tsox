@@ -49,8 +49,8 @@ pub enum Type {
     // back to undefined or anything else concrete; see subtyping's own note on
     // this. Real TypeScript also lets a *function type* whose return is void
     // accept an implementation that returns something else, e.g. assigning
-    // `() => number` where `() => void` is expected; that call-site leniency
-    // isn't implemented, only the plain assignability rule above.
+    // `() => number` where `() => void` is expected. That exception lives in
+    // function signature compatibility, not in the primitive subtype relation.
     Void,
 
     // The Option is the parameter's own `extends` bound (`T extends { length:

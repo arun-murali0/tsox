@@ -277,6 +277,51 @@ pub mod messages {
         DiagnosticMessage::new(DiagnosticCode::ImplicitAnyElement, text)
     }
 
+    // `t[5]` on `[string, number]`: tsc names the tuple, its length and the index.
+    pub fn tuple_index_out_of_bounds(
+        arena: &TypeArena,
+        tuple: TypeId,
+        length: usize,
+        index: usize,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::TupleIndexOutOfBounds,
+            format!(
+                "Tuple type '{}' of length '{length}' has no element at index '{index}'.",
+                display_type(arena, tuple)
+            ),
+        )
+    }
+
+    // The three tuple shape rules tsc reports as grammar errors, in tsc's words.
+    pub fn tuple_required_after_optional() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::TupleRequiredAfterOptional,
+            "A required element cannot follow an optional element.",
+        )
+    }
+
+    pub fn tuple_rest_after_rest() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::TupleRestAfterRest,
+            "A rest element cannot follow another rest element.",
+        )
+    }
+
+    pub fn tuple_optional_after_rest() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::TupleOptionalAfterRest,
+            "An optional element cannot follow a rest element.",
+        )
+    }
+
+    pub fn tuple_negative_index() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::TupleNegativeIndex,
+            "A tuple type cannot be indexed with a negative value.",
+        )
+    }
+
     pub fn return_implicitly_any(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::ImplicitAnyReturn,

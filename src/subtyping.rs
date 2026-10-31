@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 use crate::arena::{PairStack, TypeArena, TypeId};
-use crate::types::{ObjectType, Param, Type};
+use crate::types::{ObjectType, Param, TupleElement, Type, TypeParameterId};
 
 // Structural subtyping: is sub usable wherever sup is expected. The identity check
 // comes first since it is the cheapest and covers the common case of comparing a
@@ -120,12 +120,74 @@ fn is_subtype_uncached(arena: &TypeArena, sub: TypeId, sup: TypeId, seen: &mut P
 
         (Type::Function(a), Type::Function(b)) => function_is_subtype(arena, a, b, seen),
 
-        (Type::Array(a), Type::Array(b)) => is_subtype_inner(arena, *a, *b, seen),
+        (Type::Tuple(a), Type::Tuple(b)) => tuple_is_subtype(arena, a, b, seen, binders),
 
-        (Type::Object(a), Type::Object(b)) => object_is_subtype(arena, a, b, seen),
+        // A tuple is an array of whatever its elements can be: `[string, number]` is a
+        // `(string | number)[]`. The reverse does not hold, an array has no fixed length.
+        (Type::Tuple(elements), Type::Array(target)) => elements
+            .iter()
+            .all(|e| is_subtype_inner(arena, e.type_id, *target, seen, binders)),
+
+        (Type::Object(a), Type::Object(b)) => object_is_subtype(arena, a, b, seen, binders),
 
         _ => false,
     }
+}
+
+// Tuple against tuple. The source has to promise at least as many elements as the target
+// requires, and no more than the target allows; every element it can supply then has to
+// fit the target element at the same position (or the target's rest element past the
+// last fixed one). `[string, number?]` fits `[string, number?]` and `[string, ...number[]]`
+// but not `[string, number]`, which needs the second element to be there.
+fn tuple_is_subtype(
+    arena: &TypeArena,
+    source: &[TupleElement],
+    target: &[TupleElement],
+    seen: &mut PairStack,
+    binders: &[(TypeParameterId, TypeParameterId)],
+) -> bool {
+    let required = |t: &[TupleElement]| t.iter().filter(|e| !e.optional && !e.rest).count();
+    let split = |t: &'_ [TupleElement]| -> (usize, Option<TupleElement>) {
+        match t.last() {
+            Some(last) if last.rest => (t.len() - 1, Some(*last)),
+            _ => (t.len(), None),
+        }
+    };
+    let (source_fixed, source_rest) = split(source);
+    let (target_fixed, target_rest) = split(target);
+
+    if required(source) < required(target) {
+        return false;
+    }
+    // Without a rest element the target has a largest length the source must stay under,
+    // and a source with a rest element has no largest length at all.
+    if target_rest.is_none() && (source_rest.is_some() || source_fixed > target_fixed) {
+        return false;
+    }
+    for (position, element) in source[..source_fixed].iter().enumerate() {
+        let wanted = match target[..target_fixed].get(position) {
+            Some(t) => t.type_id,
+            None => match target_rest {
+                Some(rest) => rest.type_id,
+                None => return false,
+            },
+        };
+        if !is_subtype_inner(arena, element.type_id, wanted, seen, binders) {
+            return false;
+        }
+    }
+    // A source rest element can stand at every target position from here on.
+    if let Some(rest) = source_rest {
+        for t in target[..target_fixed].iter().skip(source_fixed) {
+            if !is_subtype_inner(arena, rest.type_id, t.type_id, seen, binders) {
+                return false;
+            }
+        }
+        if let Some(target_rest) = target_rest {
+            return is_subtype_inner(arena, rest.type_id, target_rest.type_id, seen, binders);
+        }
+    }
+    true
 }
 
 // Contravariant in parameters, covariant in return type: a function can stand in
@@ -195,6 +257,17 @@ pub(crate) fn param_type_at(
     Some(if param.rest {
         match arena.get(param.type_id) {
             Type::Array(element) => *element,
+            // `...args: [string, number?]`: the argument at this position is the tuple
+            // element at the same offset into the rest, or its rest element past the end.
+            Type::Tuple(elements) => {
+                let offset = position.saturating_sub(params.len() - 1);
+                let rest = elements.last().filter(|e| e.rest);
+                let fixed = elements.len() - usize::from(rest.is_some());
+                match elements.get(offset).filter(|_| offset < fixed) {
+                    Some(element) => element.type_id,
+                    None => rest?.type_id,
+                }
+            }
             _ => param.type_id,
         }
     } else {

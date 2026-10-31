@@ -81,6 +81,13 @@ pub enum DiagnosticCode {
     // 1700s: type construction
     ExpressionTooComplex,
 
+    // 1800s: tuples
+    TupleIndexOutOfBounds,
+    TupleRequiredAfterOptional,
+    TupleRestAfterRest,
+    TupleOptionalAfterRest,
+    TupleNegativeIndex,
+
     // 9000s: not yet implemented (all currently emitted as warnings)
     UnimplementedCallExpressionKind,
     UnimplementedNewExpressionTarget,
@@ -158,10 +165,15 @@ impl DiagnosticCode {
             EnumDeclarationMerge => "TSR1505",
             TypeArgumentListCountMismatch => "TSR1506",
 
-            ImplicitAnyParameter => "TSR1401",
-            ImplicitAnyElement => "TSR1402",
-            ImplicitAnyThis => "TSR1403",
-            ImplicitAnyReturn => "TSR1404",
+            UnreachableCode => "TSR1601",
+
+            ExpressionTooComplex => "TSR1701",
+
+            TupleIndexOutOfBounds => "TSR1801",
+            TupleRequiredAfterOptional => "TSR1802",
+            TupleRestAfterRest => "TSR1803",
+            TupleOptionalAfterRest => "TSR1804",
+            TupleNegativeIndex => "TSR1805",
 
             UnimplementedCallExpressionKind => "TSR9001",
             UnimplementedNewExpressionTarget => "TSR9002",
@@ -243,6 +255,13 @@ impl DiagnosticCode {
             ImplicitAnyElement => 7053,
             ImplicitAnyThis => 2683,
             ImplicitAnyReturn => 7023,
+            ImplicitAnySetter => 7032,
+
+            TupleIndexOutOfBounds => 2493,
+            TupleRequiredAfterOptional => 1257,
+            TupleRestAfterRest => 1265,
+            TupleOptionalAfterRest => 1266,
+            TupleNegativeIndex => 2514,
 
             UnreachableCode => 7027,
             ExpressionTooComplex => 2590,

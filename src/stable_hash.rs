@@ -6,6 +6,7 @@
 //   Union         members sorted ascending by hash
 //   Object        properties sorted by name bytes
 //   Intersection  member order kept (it is identity, LLD 1.13)
+//   Tuple         element order kept (position is the meaning of a tuple)
 // Arena creation order, name numbers and thread timing never reach the stream.
 
 use crate::keys::{DeclKey, NodeHash, StreamWriter, TypeParamKey};
@@ -29,6 +30,12 @@ pub struct PropIn<'a> {
     pub name: &'a str,
     pub optional: bool,
     pub is_method: bool,
+    pub ty: NodeHash,
+}
+
+pub struct TupleIn {
+    pub optional: bool,
+    pub rest: bool,
     pub ty: NodeHash,
 }
 

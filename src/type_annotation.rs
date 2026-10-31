@@ -2,6 +2,7 @@ use oxc_ast::ast::{
     BindingPattern, FormalParameters, PropertyKey, TSMethodSignature, TSMethodSignatureKind,
     TSSignature, TSType, TSTypeAnnotation, TSTypeName, TSTypeQueryExprName,
 };
+use oxc_ast_visit::{Visit, walk};
 use oxc_span::GetSpan;
 
 use crate::arena::{TypeArena, TypeId};
@@ -53,6 +54,89 @@ pub(crate) fn resolve_function_type_params(
         .collect()
 }
 
+// `[A, B?, ...C[]]`. A form this checker does not model (a rest element that is not an
+// array or a tuple, such as the variadic `...T`, or a rest element that is not last) gives
+// None, the same answer a tuple annotation got before tuples existed, so it stays as
+// permissive as it was. A spread of a tuple (`[A, ...[B, C]]`) is spliced in place.
+fn resolve_tuple_type(
+    tuple: &TSTupleType,
+    namespace: &mut TypeNamespace,
+    arena: &mut TypeArena,
+) -> Option<TypeId> {
+    let mut elements: Vec<TupleElement> = Vec::with_capacity(tuple.element_types.len());
+    for written in &tuple.element_types {
+        resolve_tuple_element(written, false, namespace, arena, &mut elements)?;
+    }
+
+    // One rest element, last; nothing required after an optional one.
+    let rest_count = elements.iter().filter(|e| e.rest).count();
+    if rest_count > 1 || (rest_count == 1 && !elements.last().is_some_and(|e| e.rest)) {
+        return None;
+    }
+    let mut seen_optional = false;
+    for element in &elements {
+        if element.optional {
+            seen_optional = true;
+        } else if seen_optional && !element.rest {
+            return None;
+        }
+    }
+    Some(arena.alloc_tuple(elements))
+}
+
+fn resolve_tuple_element(
+    written: &TSTupleElement,
+    labeled_optional: bool,
+    namespace: &mut TypeNamespace,
+    arena: &mut TypeArena,
+    out: &mut Vec<TupleElement>,
+) -> Option<()> {
+    match written {
+        TSTupleElement::TSOptionalType(optional) => {
+            let type_id = resolve_ts_type(&optional.type_annotation, namespace, arena)?;
+            out.push(TupleElement {
+                type_id,
+                optional: true,
+                rest: false,
+            });
+        }
+        TSTupleElement::TSRestType(rest) => {
+            let spread = resolve_ts_type(&rest.type_annotation, namespace, arena)?;
+            match arena.get(spread).clone() {
+                Type::Array(element) => out.push(TupleElement {
+                    type_id: element,
+                    optional: false,
+                    rest: true,
+                }),
+                Type::Tuple(inner) => out.extend(inner),
+                _ => return None,
+            }
+        }
+        other => match other.as_ts_type()? {
+            // `[name: string]` and `[name?: string]`: the label only changes how the
+            // tuple prints in tsc, so it is dropped.
+            TSType::TSNamedTupleMember(member) => {
+                return resolve_tuple_element(
+                    &member.element_type,
+                    labeled_optional || member.optional,
+                    namespace,
+                    arena,
+                    out,
+                );
+            }
+            ty => {
+                let type_id = resolve_ts_type(ty, namespace, arena)?;
+                out.push(TupleElement {
+                    type_id,
+                    optional: labeled_optional,
+                    rest: false,
+                });
+            }
+        },
+    }
+    Some(())
+}
+
 pub fn resolve_ts_type(
     ty: &TSType,
     namespace: &mut TypeNamespace,
@@ -79,6 +163,8 @@ pub fn resolve_ts_type(
             let element = resolve_ts_type(&array.element_type, namespace, arena)?;
             Some(arena.alloc(Type::Array(element)))
         }
+
+        TSType::TSTupleType(tuple) => resolve_tuple_type(tuple, namespace, arena),
 
         TSType::TSUnionType(union) => {
             let mut members = Vec::with_capacity(union.types.len());
@@ -151,10 +237,19 @@ pub fn resolve_ts_type(
         // a name made from the specifier, so reading it is a lookup. A qualifier that is a
         // dotted path is looked up whole; type arguments and import options are not read.
         TSType::TSImportType(import) => {
-            if import.type_arguments.is_some() || import.options.is_some() {
+            if import.options.is_some() {
                 return None;
             }
             let name = import_type_name(&import.source.value, import.qualifier.as_ref()?)?;
+            if import.type_arguments.is_some() {
+                return resolve_named_reference(
+                    &name,
+                    import.type_arguments.as_deref(),
+                    import.span,
+                    namespace,
+                    arena,
+                );
+            }
             match namespace.resolve(&name, arena) {
                 Resolution::Resolved(type_id) => Some(type_id),
                 Resolution::Circular | Resolution::NotFound => None,
@@ -164,14 +259,19 @@ pub fn resolve_ts_type(
             let TSTypeQueryExprName::TSImportType(import) = &query.expr_name else {
                 return None;
             };
-            if import.qualifier.is_some()
-                || import.type_arguments.is_some()
+            if import.type_arguments.is_some()
                 || import.options.is_some()
                 || query.type_arguments.is_some()
             {
                 return None;
             }
-            let name = typeof_import_name(&import.source.value);
+            let name = match &import.qualifier {
+                None => typeof_import_name(&import.source.value),
+                Some(oxc_ast::ast::TSImportTypeQualifier::Identifier(id)) => {
+                    typeof_import_value_name(&import.source.value, &id.name)
+                }
+                Some(_) => return None,
+            };
             match namespace.resolve(&name, arena) {
                 Resolution::Resolved(type_id) => Some(type_id),
                 Resolution::Circular | Resolution::NotFound => None,
@@ -230,106 +330,151 @@ pub fn resolve_ts_type(
                 return Some(base);
             }
 
-            // A bare `Box` for `interface Box<T>` was reported above. As in tsc
-            // the reference is then the error type, which is compatible with
-            // everything, so the missing arguments cannot cascade into a second,
-            // unrelated diagnostic and no bare placeholder leaks out.
-            if given == 0 && arity.is_some_and(|(required, _)| required > 0) {
-                return Some(arena.error());
-            }
+// The type an interface extends: `extends Base`, `extends Base<T>`, `extends ns.Base`. The
+// base is read like a type reference to its (dotted) name. None when the expression is not a plain
+// name, or when nothing declared answers to it.
+pub(crate) fn resolve_interface_base(
+    heritage: &oxc_ast::ast::TSInterfaceHeritage<'_>,
+    namespace: &mut TypeNamespace,
+    arena: &mut TypeArena,
+) -> Option<TypeId> {
+    let name = dotted_type_name(&heritage.type_name)?;
+    resolve_named_reference(
+        &name,
+        heritage.type_arguments.as_deref(),
+        heritage.span,
+        namespace,
+        arena,
+    )
+}
 
-            // base is the declaration's own cached generic shape, still holding
-            // bare GenericParameter placeholders. One binding per *declared*
-            // parameter, in declaration order, keyed by the same TypeParameterId
-            // push_decl_type_params uses, so positions cannot drift: a parameter
-            // the body never mentions still owns its slot, and an argument that
-            // cannot be resolved becomes the error type in place instead of
-            // being dropped and shifting every later argument left. Each
-            // explicit argument is resolved in the *caller's* namespace, exactly
-            // like a generic call's explicit type arguments in calls.rs.
-            // Arguments beyond the declared count are ignored; an omitted one
-            // takes its declared default, or the error type if it has none.
-            let mut bindings: Vec<(TypeParameterId, TypeId)> = Vec::new();
-            if let Some(imported) = &imported {
-                for (index, param) in imported.params.iter().enumerate() {
-                    let bound = match reference
-                        .type_arguments
-                        .as_ref()
-                        .and_then(|arguments| arguments.params.get(index))
-                    {
-                        Some(argument) => {
-                            let resolved = resolve_ts_type(argument, namespace, arena)
-                                .unwrap_or_else(|| arena.error());
-                            check_type_argument_constraint(
-                                namespace,
-                                arena,
-                                (param.id, param.name.as_str()),
-                                resolved,
-                                &bindings,
-                                argument.span(),
-                            );
-                            resolved
-                        }
-                        // The default was resolved in the declaring file; it may name
-                        // an earlier parameter, which the arguments bound so far fill.
-                        None => param
-                            .default
-                            .map(|default| {
-                                crate::semantic::substitute_type_params(arena, default, &bindings)
-                            })
-                            .unwrap_or_else(|| arena.error()),
-                    };
-                    bindings.push((param.id, bound));
-                }
-            }
-            if let Some(decl) = decl {
-                for (index, param) in decl.params.iter().enumerate() {
-                    let parameter_id = TypeParameterId::with_file(
-                        namespace.file_id(),
-                        param.span().start,
-                        index as u32,
+// A reference to a declared type by `name`, with the type arguments the source gave it:
+// shared by `Box<T>` and `import("x").Box<T>`, which differ only in how the name is found.
+fn resolve_named_reference(
+    name: &str,
+    type_arguments: Option<&oxc_ast::ast::TSTypeParameterInstantiation<'_>>,
+    span: oxc_span::Span,
+    namespace: &mut TypeNamespace,
+    arena: &mut TypeArena,
+) -> Option<TypeId> {
+    let base = match namespace.resolve(name, arena) {
+        Resolution::Resolved(type_id) => type_id,
+        Resolution::Circular | Resolution::NotFound => return None,
+    };
+
+    // A reference whose type argument count disagrees with its
+    // declaration is recorded, not rejected here: resolution carries on
+    // leniently below, and the mismatch is reported afterward (see
+    // bridge::check_program). Parameters with a default may be omitted,
+    // so the valid range is required..=total, as in tsc.
+    let given = type_arguments.map_or(0, |arguments| arguments.params.len());
+    let arity = namespace.declared_type_param_arity(name);
+    if let Some((required, total)) = arity {
+        if given < required || given > total {
+            namespace.note_type_argument_issue(name, required, total, span);
+        }
+    }
+
+    // Not generic, or a declaration this checker does not model (a
+    // class): nothing to substitute.
+    // A generic imported from another file has no AST: its parameters come
+    // from the import record instead (see TypeNamespace::insert_imported), and
+    // everything after the bindings is shared with a local declaration.
+    let imported = namespace.imported_generic(name);
+    let decl = namespace.declared_type_param_decl(name);
+    if imported.is_none() && decl.is_none() {
+        return Some(base);
+    }
+
+    // A bare `Box` for `interface Box<T>` was reported above. As in tsc
+    // the reference is then the error type, which is compatible with
+    // everything, so the missing arguments cannot cascade into a second,
+    // unrelated diagnostic and no bare placeholder leaks out.
+    if given == 0 && arity.is_some_and(|(required, _)| required > 0) {
+        return Some(arena.error());
+    }
+
+    // base is the declaration's own cached generic shape, still holding
+    // bare GenericParameter placeholders. One binding per *declared*
+    // parameter, in declaration order, keyed by the same TypeParameterId
+    // push_decl_type_params uses, so positions cannot drift: a parameter
+    // the body never mentions still owns its slot, and an argument that
+    // cannot be resolved becomes the error type in place instead of
+    // being dropped and shifting every later argument left. Each
+    // explicit argument is resolved in the *caller's* namespace, exactly
+    // like a generic call's explicit type arguments in calls.rs.
+    // Arguments beyond the declared count are ignored; an omitted one
+    // takes its declared default, or the error type if it has none.
+    let mut bindings: Vec<(TypeParameterId, TypeId)> = Vec::new();
+    if let Some(imported) = &imported {
+        for (index, param) in imported.params.iter().enumerate() {
+            let bound = match type_arguments.and_then(|arguments| arguments.params.get(index)) {
+                Some(argument) => {
+                    let resolved = resolve_ts_type(argument, namespace, arena)
+                        .unwrap_or_else(|| arena.error());
+                    check_type_argument_constraint(
+                        namespace,
+                        arena,
+                        (param.id, param.name.as_str()),
+                        resolved,
+                        &bindings,
+                        argument.span(),
                     );
-                    let bound = match reference
-                        .type_arguments
-                        .as_ref()
-                        .and_then(|arguments| arguments.params.get(index))
-                    {
-                        Some(argument) => {
-                            let resolved = resolve_ts_type(argument, namespace, arena)
-                                .unwrap_or_else(|| arena.error());
-                            check_type_argument_constraint(
-                                namespace,
-                                arena,
-                                (parameter_id, param.name.name.as_str()),
-                                resolved,
-                                &bindings,
-                                argument.span(),
-                            );
-                            resolved
-                        }
-                        None => namespace
-                            .resolve_type_param_default(arena, decl, index)
-                            .map(|default| {
-                                crate::semantic::substitute_type_params(arena, default, &bindings)
-                            })
-                            .unwrap_or_else(|| arena.error()),
-                    };
-                    bindings.push((parameter_id, bound));
+                    resolved
                 }
-            }
+                // The default was resolved in the declaring file; it may name
+                // an earlier parameter, which the arguments bound so far fill.
+                None => param
+                    .default
+                    .map(|default| {
+                        crate::semantic::substitute_type_params(arena, default, &bindings)
+                    })
+                    .unwrap_or_else(|| arena.error()),
+            };
+            bindings.push((param.id, bound));
+        }
+    }
+    if let Some(decl) = decl {
+        for (index, param) in decl.params.iter().enumerate() {
+            let parameter_id =
+                TypeParameterId::with_file(namespace.file_id(), param.span().start, index as u32);
+            let bound = match type_arguments.and_then(|arguments| arguments.params.get(index)) {
+                Some(argument) => {
+                    let resolved = resolve_ts_type(argument, namespace, arena)
+                        .unwrap_or_else(|| arena.error());
+                    check_type_argument_constraint(
+                        namespace,
+                        arena,
+                        (parameter_id, param.name.name.as_str()),
+                        resolved,
+                        &bindings,
+                        argument.span(),
+                    );
+                    resolved
+                }
+                None => namespace
+                    .resolve_type_param_default(arena, decl, index)
+                    .map(|default| {
+                        crate::semantic::substitute_type_params(arena, default, &bindings)
+                    })
+                    .unwrap_or_else(|| arena.error()),
+            };
+            bindings.push((parameter_id, bound));
+        }
+    }
 
-            // Everything above is per reference and stays per reference: the arity
-            // and constraint checks report at this site's own span. Only the work
-            // below, which depends on nothing but the declaration and its resolved
-            // arguments, is reused.
-            //
-            // A hit is the stored application itself. It carries no name that a caller
-            // could change (`type Alias = Box<number>` wraps it, it does not rename it),
-            // and it prints from its arguments when it is displayed, so there is
-            // nothing a later reference could find out of date.
-            if let Some(application) = namespace.cached_instantiation(base, &bindings) {
-                return Some(application);
-            }
+    // A same-parameter recursive reference (`Node<T>` inside `Node<T>`) can
+    // keep pointing at the declaration placeholder and will be specialized when
+    // its outer reference is substituted. A changed-argument reference cannot:
+    // while the declaration is still resolving, substituting its placeholder sees
+    // only an empty object and loses the arguments. Allocate a distinct pending
+    // App/Ref pair and finish it when the generic declaration's body is available.
+    let changes_parameters = bindings.iter().any(|(parameter, argument)| {
+        !matches!(arena.get(*argument), Type::GenericParameter(argument_id, _, _) if argument_id == parameter)
+    });
+    if changes_parameters && arena.is_resolving_ref(base) {
+        return Some(namespace.defer_recursive_instantiation(arena, name, base, bindings));
+    }
 
             // Only the declaration's own parameters are bound here, so a parameter
             // a member declares for itself (`map<U>(...)`) is kept for inference
@@ -364,9 +509,18 @@ pub fn resolve_ts_type(
 
             Some(result)
         }
+        let arguments = bindings.iter().map(|&(_, bound)| bound).collect();
+        let application = arena.alloc_app(slot, arguments, result);
 
-        _ => None,
+        // Stored only here, inside `result != base`: an unchanged result
+        // means `base` was still an unresolved Ref (a reference from inside
+        // its own declaration), and remembering that would return the empty
+        // shape for every later reference, after it is resolved.
+        namespace.cache_instantiation(base, bindings, application);
+        return Some(application);
     }
+
+    Some(result)
 }
 
 // Checks one explicit type argument against the `extends` bound of the parameter
@@ -489,8 +643,63 @@ fn resolve_builtin_generic(
             let slot = arena.builtin_slot("Record");
             Some(arena.alloc_app(slot, vec![key, value], body))
         }
+        "Partial" | "Required" | "Pick" | "Omit" => {
+            let target = first_type_argument(namespace, arena)??;
+            let selected = if matches!(name, "Pick" | "Omit") {
+                let argument = reference.type_arguments.as_ref()?.params.get(1)?;
+                let keys_type = resolve_ts_type(argument, namespace, arena)?;
+                Some(string_literal_keys(arena, keys_type)?)
+            } else {
+                None
+            };
+            let Type::Object(object) = arena.get(target) else {
+                return None;
+            };
+            let properties = object
+                .properties
+                .iter()
+                .filter_map(|entry| {
+                    let keep = match (&selected, name) {
+                        (Some(keys), "Pick") => keys.iter().any(|key| key == entry.name.as_ref()),
+                        (Some(keys), "Omit") => !keys.iter().any(|key| key == entry.name.as_ref()),
+                        _ => true,
+                    };
+                    if !keep {
+                        return None;
+                    }
+                    let mut property = entry.clone();
+                    if name == "Partial" {
+                        property.optional = true;
+                    }
+                    if name == "Required" {
+                        property.optional = false;
+                    }
+                    Some(property)
+                })
+                .collect();
+            Some(arena.alloc(Type::Object(ObjectType::new(properties))))
+        }
         _ => None,
     }
+}
+
+fn string_literal_keys(arena: &TypeArena, id: TypeId) -> Option<Vec<String>> {
+    fn collect(arena: &TypeArena, id: TypeId, keys: &mut Vec<String>) -> Option<()> {
+        match arena.get(id) {
+            Type::StringLiteral(value) => keys.push(value.clone()),
+            Type::Union(members) => {
+                for member in members {
+                    collect(arena, *member, keys)?;
+                }
+            }
+            Type::Never => {}
+            _ => return None,
+        }
+        Some(())
+    }
+    let mut keys = Vec::new();
+    collect(arena, id, &mut keys)?;
+    Some(keys)
 }
 
 fn resolve_literal_type(
@@ -750,6 +959,11 @@ fn dotted_type_name(name: &TSTypeName) -> Option<String> {
 /// The name `typeof import("specifier")` is bound under in the namespace.
 pub(crate) fn typeof_import_name(specifier: &str) -> String {
     format!("typeof import({specifier:?})")
+}
+
+/// The name `typeof import("specifier").value` is bound under in the namespace.
+pub(crate) fn typeof_import_value_name(specifier: &str, value: &str) -> String {
+    format!("typeof import({specifier:?}).{value}")
 }
 
 /// The name `import("specifier").A.B` is bound under in the namespace, or None for a

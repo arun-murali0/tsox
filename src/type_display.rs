@@ -296,6 +296,39 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
             out.push_str("[]");
         }
 
+        // `[string, number?, ...boolean[]]`, the way tsc prints it: an optional element
+        // takes a `?`, the rest element reads as the array it stands for.
+        Type::Tuple(elements) => {
+            out.push('[');
+            for (index, element) in elements.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                if element.rest {
+                    out.push_str("...");
+                    let needs_parens = match arena.get(element.type_id) {
+                        Type::Union(_) => true,
+                        Type::Intersection(_) => !arena.is_named(element.type_id),
+                        _ => false,
+                    };
+                    if needs_parens {
+                        out.push('(');
+                    }
+                    write_type(arena, element.type_id, out, depth - 1);
+                    if needs_parens {
+                        out.push(')');
+                    }
+                    out.push_str("[]");
+                } else {
+                    write_type(arena, element.type_id, out, depth - 1);
+                    if element.optional {
+                        out.push('?');
+                    }
+                }
+            }
+            out.push(']');
+        }
+
         Type::Union(members) => {
             for (index, member) in union_display_order(arena, members).into_iter().enumerate() {
                 if index > 0 {

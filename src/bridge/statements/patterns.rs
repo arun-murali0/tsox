@@ -3,7 +3,7 @@ use oxc_semantic::Scoping;
 use oxc_span::GetSpan;
 
 use crate::arena::TypeId;
-use crate::types::{Param, Type};
+use crate::types::{Param, TupleElement, Type};
 
 use super::super::context::CheckContext;
 use super::super::expressions::{infer_expression_type, infer_member_access_type};
@@ -117,6 +117,63 @@ fn bind_object_pattern(
     }
 }
 
+// Destructuring a tuple. A hole (`const [, b] = t`) still takes up a position. An element
+// that is optional, or read from the rest element, may be missing, so it gets `undefined`
+// as well. A position past a closed tuple's end is an error unless the binding has a
+// default (`const [a, b = 1] = t`), which is what it is for.
+fn bind_tuple_pattern(
+    array: &ArrayPattern,
+    tuple: TypeId,
+    elements: &[TupleElement],
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) {
+    let rest = elements.last().filter(|e| e.rest).copied();
+    let fixed = elements.len() - usize::from(rest.is_some());
+
+    for (position, slot) in array.elements.iter().enumerate() {
+        let Some(element_pattern) = slot else {
+            continue;
+        };
+        let bound = if position < fixed {
+            let element = elements[position];
+            if element.optional {
+                ctx.arena
+                    .alloc_union(vec![element.type_id, ctx.arena.undefined()])
+            } else {
+                element.type_id
+            }
+        } else if let Some(rest) = rest {
+            ctx.arena
+                .alloc_union(vec![rest.type_id, ctx.arena.undefined()])
+        } else {
+            if !matches!(element_pattern, BindingPattern::AssignmentPattern(_)) {
+                ctx.error(
+                    crate::diagnostic_messages::messages::tuple_index_out_of_bounds(
+                        &ctx.arena,
+                        tuple,
+                        elements.len(),
+                        position,
+                    ),
+                    element_pattern.span(),
+                );
+            }
+            ctx.arena.error()
+        };
+        bind_pattern_in(element_pattern, bound, false, scoping, ctx);
+    }
+
+    if let Some(rest_pattern) = &array.rest {
+        let remaining: Vec<TupleElement> = elements
+            .iter()
+            .skip(array.elements.len())
+            .copied()
+            .collect();
+        let rest_type = ctx.arena.alloc_tuple(remaining);
+        bind_pattern(&rest_pattern.argument, rest_type, scoping, ctx);
+    }
+}
+
 fn bind_array_pattern(
     array: &ArrayPattern,
     type_id: TypeId,
@@ -124,6 +181,13 @@ fn bind_array_pattern(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) {
+    // A tuple is read by position: `const [a, b] = pair` gives `a` the first element and
+    // `b` the second, and `...rest` the tuple of what is left.
+    if let Type::Tuple(elements) = ctx.arena.get(type_id).clone() {
+        bind_tuple_pattern(array, type_id, &elements, scoping, ctx);
+        return;
+    }
+
     // Whether `type_id` was an honest `T[]`, distinct from the Any/Error/
     // not-an-array fallbacks below, all of which also set `element_type` but
     // must not get the "| undefined" treatment applied further down: adding

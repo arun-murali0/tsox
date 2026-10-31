@@ -36,6 +36,13 @@ pub struct PProp {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct PTupleElement {
+    pub optional: bool,
+    pub rest: bool,
+    pub ty: u32,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PParam {
     pub name: Option<Box<str>>,
     pub optional: bool,
@@ -257,7 +264,7 @@ impl<'a, R: KeyResolver> Exporter<'a, R> {
             Type::GenericParameter(param, name, bound) => {
                 let k = self.resolver.type_param_key(*param)?;
                 let bound = match bound {
-                    Some(b) => Some(self.emit(*b)?),
+                    Some(b) => Some(self.emit(b)?),
                     None => None,
                 };
                 PNode::TypeParam {
@@ -525,7 +532,11 @@ impl Importer {
                 } else {
                     // A generic alias is left unnamed, as the checker leaves it
                     // (namespace::resolve): its body still holds bare type
-                    // parameters, and each instantiation names itself.
+                    // parameters, and each instantiation names itself. The body is
+                    // registered against the declaration's slot, so an application of
+                    // it can be traced back to this key when it is exported again.
+                    let slot = self.name_slot(arena, key, &decl.name);
+                    arena.set_body_origin(body, slot);
                     body
                 }
             }

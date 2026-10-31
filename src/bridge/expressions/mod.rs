@@ -32,6 +32,7 @@ use logical::{
     infer_as_expression_type, infer_conditional_expression_type, infer_logical_expression_type,
     infer_non_null_expression_type,
 };
+pub(crate) use members::tuple_element_union;
 use members::{
     infer_chain_element_type, infer_computed_member_access_type,
     infer_member_access_type_with_optional,

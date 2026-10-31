@@ -293,6 +293,8 @@ fn report_arity_over_all(
     let mut most: Option<usize> = Some(0);
     for &member in callable {
         if let Type::Function(function) = ctx.arena.get(member) {
+            let expanded = expand_tuple_rest(&ctx.arena, function);
+            let function = expanded.as_ref().unwrap_or(function);
             let required = function
                 .params
                 .iter()
@@ -373,6 +375,32 @@ fn report_no_overload_matches(
     PickedCallable::Reported(first_return)
 }
 
+// `(...args: [string, number?])` takes the elements of its tuple as separate arguments, so
+// it is called like `(a: string, b?: number)`: how many arguments it needs, what each one
+// must be and which are optional all come from the tuple. A rest parameter that is not a
+// tuple (an array, or a type parameter) is left as it is. The rest element of such a tuple
+// becomes a rest parameter that carries its element type directly.
+fn expand_tuple_rest(
+    arena: &crate::arena::TypeArena,
+    function: &FunctionType,
+) -> Option<FunctionType> {
+    let last = function.params.last().filter(|p| p.rest)?;
+    let Type::Tuple(elements) = arena.get(last.type_id) else {
+        return None;
+    };
+    let mut expanded = function.clone();
+    expanded.params.pop();
+    for element in elements {
+        expanded.params.push(crate::types::Param {
+            type_id: element.type_id,
+            optional: element.optional || element.rest,
+            rest: element.rest,
+            name: None,
+        });
+    }
+    Some(expanded)
+}
+
 // How a call with these argument types meets the function: enough arguments, not too
 // many, and each one assignable to its parameter. A parameter that mentions a type
 // parameter is not judged here, since what it accepts depends on inference; arity decides.
@@ -381,6 +409,8 @@ fn fit_of(
     function: &FunctionType,
     argument_types: &[TypeId],
 ) -> Fit {
+    let expanded = expand_tuple_rest(arena, function);
+    let function = expanded.as_ref().unwrap_or(function);
     if function.is_untyped {
         return Fit::Fits;
     }
@@ -415,6 +445,41 @@ fn fit_of(
         }
     }
     Fit::Fits
+}
+
+/// Whether an expression holds a function whose parameters need a contextual type, the way
+/// tsc defines a context-sensitive argument: a function or arrow with a parameter that has
+/// no annotation, found directly or inside an object or array literal. Only such arguments
+/// are put off until the other arguments have bound the type parameters; an object whose
+/// callbacks are all annotated is inferred in the first pass like any ordinary argument.
+fn is_context_sensitive(expr: &Expression) -> bool {
+    use oxc_ast::ast::{ArrayExpressionElement, ObjectPropertyKind};
+    match expr {
+        Expression::ArrowFunctionExpression(arrow) => arrow
+            .params
+            .items
+            .iter()
+            .any(|param| param.type_annotation.is_none()),
+        Expression::FunctionExpression(function) => function
+            .params
+            .items
+            .iter()
+            .any(|param| param.type_annotation.is_none()),
+        Expression::ParenthesizedExpression(inner) => is_context_sensitive(&inner.expression),
+        Expression::ObjectExpression(object) => {
+            object.properties.iter().any(|property| match property {
+                ObjectPropertyKind::ObjectProperty(property) => {
+                    is_context_sensitive(&property.value)
+                }
+                ObjectPropertyKind::SpreadProperty(_) => false,
+            })
+        }
+        Expression::ArrayExpression(array) => array.elements.iter().any(|element| match element {
+            ArrayExpressionElement::SpreadElement(_) | ArrayExpressionElement::Elision(_) => false,
+            other => other.as_expression().is_some_and(is_context_sensitive),
+        }),
+        _ => false,
+    }
 }
 
 fn check_callable(
@@ -489,6 +554,40 @@ fn check_callable(
         return function_type.return_type;
     }
 
+    // Calls may omit trailing type parameters only when those parameters have defaults.
+    // Supplying a partial list for required parameters, or more arguments than exist, is
+    // TS2558. Like tsc, the call is then abandoned: the arguments are still walked so
+    // errors inside them show, but they are not matched against the parameters, and the
+    // result is the error type so nothing cascades from it.
+    if !explicit_type_args.is_empty() {
+        let required_type_args = function_type
+            .type_params
+            .iter()
+            .rposition(|parameter| parameter.default.is_none())
+            .map_or(0, |index| index + 1);
+        let total_type_args = function_type.type_params.len();
+        if explicit_type_args.len() < required_type_args
+            || explicit_type_args.len() > total_type_args
+        {
+            ctx.error(
+                crate::diagnostic_messages::messages::call_type_argument_count_mismatch(
+                    required_type_args,
+                    total_type_args,
+                    explicit_type_args.len(),
+                ),
+                span,
+            );
+            for arg in arguments {
+                if let Some(arg_expr) = arg.as_expression() {
+                    infer_expression_type(arg_expr, scoping, ctx);
+                }
+            }
+            return ctx.arena.error();
+        }
+    }
+
+    let function_type = expand_tuple_rest(&ctx.arena, &function_type).unwrap_or(function_type);
+
     let required = function_type
         .params
         .iter()
@@ -508,8 +607,8 @@ fn check_callable(
     // decided, from the arguments written before it.
     // Cost: a call like `f(...xs)` with too few values is not reported.
     //
-    // Now: when the first spread is known to be an array (not a tuple, which this checker
-    // does not model, so a tuple never reaches here as an array), tsc's own rule applies:
+    // Now: when the first spread is known to be an array (a tuple is not one here: it keeps
+    // the lenient rule, since its elements are not matched to parameters), tsc's own rule applies:
     // the spread is only accepted when it starts at or after the required parameters
     // and lands on a rest parameter or a parameter that exists. Anything else is TS2556 on
     // the spread, which tsc reports instead of an arity message. A spread of anything that
@@ -586,29 +685,58 @@ fn check_callable(
     // does every argument after it, because once a spread has been seen the index of
     // a later argument no longer lines up with a parameter position. A missing type
     // is skipped by both the inference pass and the assignability pass below.
-    let arg_types: Vec<Option<TypeId>> = arguments
-        .iter()
-        .enumerate()
-        .map(|(index, arg)| {
-            let after_spread = first_spread.is_some_and(|first| index >= first);
-            match arg {
-                oxc_ast::ast::Argument::SpreadElement(spread) => {
-                    if Some(index) != first_spread {
-                        infer_expression_type(&spread.argument, scoping, ctx);
-                    }
-                    None
+    // Infer ordinary arguments first. Direct callbacks are delayed until we have a
+    // preliminary view of the generic bindings, so their unannotated parameters can
+    // be contextually typed with concrete types instead of the caller's raw `T`/`U`.
+    // Each expression is still inferred exactly once, preserving diagnostic behavior.
+    let mut arg_types: Vec<Option<TypeId>> = vec![None; arguments.len()];
+    let mut deferred_contextual_args = Vec::new();
+    // An object literal can contain callbacks several properties below the argument
+    // itself. Delay such literals when another ordinary argument can establish generic
+    // bindings first. Object-only calls are left on the ordinary path so their literal
+    // properties remain available as the primary inference candidates.
+    let has_non_callback_non_object_anchor = arguments.iter().any(|argument| {
+        argument.as_expression().is_some_and(|expression| {
+            !matches!(
+                expression,
+                Expression::ArrowFunctionExpression(_)
+                    | Expression::FunctionExpression(_)
+                    | Expression::ObjectExpression(_)
+            )
+        })
+    });
+    for (index, arg) in arguments.iter().enumerate() {
+        let after_spread = first_spread.is_some_and(|first| index >= first);
+        match arg {
+            oxc_ast::ast::Argument::SpreadElement(spread) => {
+                if Some(index) != first_spread {
+                    infer_expression_type(&spread.argument, scoping, ctx);
                 }
-                other => other.as_expression().and_then(|expr| {
-                    // The parameter this argument lands on is its contextual type, so a
-                    // literal property is kept where the parameter declares a literal.
-                    ctx.contextual = function_type
-                        .params
-                        .get(index)
-                        .filter(|param| !param.rest && !after_spread)
-                        .map(|param| param.type_id);
-                    let inferred = infer_expression_type(expr, scoping, ctx);
-                    (!after_spread).then_some(inferred)
-                }),
+            }
+            other => {
+                let Some(expr) = other.as_expression() else {
+                    continue;
+                };
+                let is_callback = matches!(
+                    expr,
+                    Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
+                );
+                let is_contextual_object = has_non_callback_non_object_anchor
+                    && matches!(expr, Expression::ObjectExpression(_))
+                    && is_context_sensitive(expr);
+                if (is_callback || is_contextual_object) && !after_spread {
+                    deferred_contextual_args.push(index);
+                    continue;
+                }
+                ctx.contextual = if after_spread {
+                    None
+                } else {
+                    GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index)
+                };
+                let inferred = infer_expression_type(expr, scoping, ctx);
+                if !after_spread {
+                    arg_types[index] = Some(inferred);
+                }
             }
         })
         .collect();

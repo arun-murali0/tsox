@@ -135,6 +135,17 @@ fn lookup_member(arena: &mut TypeArena, type_id: TypeId, property_name: &str) ->
             array_member(arena, element, property_name)
                 .or_else(|| universal_member(arena, effective, property_name))
         }
+        // A tuple has the length it was written with and, past that, every method an array
+        // of its elements has: `[string, number]` offers what `(string | number)[]` does.
+        Type::Tuple(elements) => {
+            let elements = elements.clone();
+            if property_name == "length" {
+                return Some(tuple_length_type(arena, &elements));
+            }
+            let element = tuple_element_union(arena, &elements, false);
+            array_member(arena, element, property_name)
+                .or_else(|| universal_member(arena, effective, property_name))
+        }
         Type::Number
         | Type::Boolean
         | Type::NumberLiteral(_)
@@ -522,6 +533,46 @@ pub(super) fn infer_member_access_type_with_optional(
         .alloc_union(vec![property_type, ctx.arena.undefined()])
 }
 
+// `length` of a tuple: the one length a fixed tuple has, the lengths between the required
+// count and the full count when elements are optional, and plain `number` with a rest element.
+fn tuple_length_type(arena: &mut TypeArena, elements: &[crate::types::TupleElement]) -> TypeId {
+    if elements.iter().any(|e| e.rest) {
+        return arena.number();
+    }
+    let required = elements.iter().filter(|e| !e.optional).count();
+    let lengths: Vec<TypeId> = (required..=elements.len())
+        .map(|length| arena.alloc(Type::NumberLiteral(length as f64)))
+        .collect();
+    arena.alloc_union(lengths)
+}
+
+// What any element of the tuple can be, the type an array of them would have. An optional
+// element can be missing, so `with_missing` adds `undefined` for it (an index read does,
+// a method receiver does not). The empty tuple has no element: `never`.
+pub(crate) fn tuple_element_union(
+    arena: &mut TypeArena,
+    elements: &[crate::types::TupleElement],
+    with_missing: bool,
+) -> TypeId {
+    let mut members = Vec::with_capacity(elements.len() + 1);
+    for element in elements {
+        if !members.contains(&element.type_id) {
+            members.push(element.type_id);
+        }
+        if with_missing && element.optional {
+            let undefined = arena.undefined();
+            if !members.contains(&undefined) {
+                members.push(undefined);
+            }
+        }
+    }
+    match members.len() {
+        0 => arena.never(),
+        1 => members[0],
+        _ => arena.alloc_union(members),
+    }
+}
+
 pub(super) fn infer_computed_member_access_type(
     object_type: TypeId,
     key_expr: &Expression,
@@ -539,6 +590,67 @@ pub(super) fn infer_computed_member_access_type(
         return value_type;
     }
 
+    // A tuple knows its elements, so a literal index names one of them: `t[0]` on
+    // `[string, number]` is `string`, with no `undefined` added, and an index past the end
+    // is an error, as in tsc. Any other number-typed index can be any element.
+    if let Type::Tuple(elements) = ctx.arena.get(object_type).clone() {
+        let rest = elements.last().filter(|e| e.rest).map(|e| e.type_id);
+        let fixed = elements.len() - usize::from(rest.is_some());
+        match ctx.arena.get(key_type) {
+            &Type::NumberLiteral(value) if value >= 0.0 && value.fract() == 0.0 => {
+                let index = value as usize;
+                if index < fixed {
+                    let element = elements[index];
+                    return if element.optional {
+                        ctx.arena
+                            .alloc_union(vec![element.type_id, ctx.arena.undefined()])
+                    } else {
+                        element.type_id
+                    };
+                }
+                return match rest {
+                    // Past the fixed elements a rest element answers, as an array does.
+                    Some(rest) => ctx.arena.alloc_union(vec![rest, ctx.arena.undefined()]),
+                    // tsc reports the index (TS2493 at the number, not at the whole access)
+                    // and then reads it as `undefined`, so `const n: number = t[2]` is a
+                    // second error there too.
+                    None => {
+                        ctx.error(
+                            crate::diagnostic_messages::messages::tuple_index_out_of_bounds(
+                                &ctx.arena,
+                                object_type,
+                                elements.len(),
+                                index,
+                            ),
+                            key_expr.span(),
+                        );
+                        ctx.arena.undefined()
+                    }
+                };
+            }
+            // `t[-1]`: TS2514 at the index, and the read is `undefined`. A tuple with a rest
+            // element is left to the paths below, as tsc does.
+            &Type::NumberLiteral(value)
+                if value < 0.0 && value.fract() == 0.0 && rest.is_none() =>
+            {
+                ctx.error(
+                    crate::diagnostic_messages::messages::tuple_negative_index(),
+                    key_expr.span(),
+                );
+                return ctx.arena.undefined();
+            }
+            Type::Number | Type::Any => {
+                let union = tuple_element_union(&mut ctx.arena, &elements, true);
+                return if rest.is_some() {
+                    ctx.arena.alloc_union(vec![union, ctx.arena.undefined()])
+                } else {
+                    union
+                };
+            }
+            _ => {}
+        }
+    }
+
     if let &Type::Array(element_type) = ctx.arena.get(object_type) {
         // Every access to an array element, whether the index is a literal or
         // not, includes undefined: a literal index being in range is no more
@@ -546,6 +658,9 @@ pub(super) fn infer_computed_member_access_type(
         // (like tsc under noUncheckedIndexedAccess) does not track array
         // lengths. `arr[0]` and `arr[i]` are both indexing past the end of a
         // real array at runtime if the array turns out to be empty.
+        if !ctx.options.no_unchecked_indexed_access {
+            return element_type;
+        }
         return ctx
             .arena
             .alloc_union(vec![element_type, ctx.arena.undefined()]);

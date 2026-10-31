@@ -109,6 +109,25 @@ pub fn mismatch_levels(arena: &TypeArena, source: TypeId, target: TypeId) -> Vec
     reason(arena, source, target, 0)
 }
 
+/// Like `mismatch_levels`, for a generic source that was instantiated against the target
+/// before the comparison. The reasons come from `reason_source`, the instantiated type,
+/// while the first line still names `shown_source`, the type as declared, as tsc does.
+pub fn mismatch_levels_via(
+    arena: &TypeArena,
+    shown_source: TypeId,
+    reason_source: TypeId,
+    target: TypeId,
+) -> Vec<Level> {
+    let mut levels = reason(arena, reason_source, target, 0);
+    if shown_source != reason_source
+        && let Some(first) = levels.first_mut()
+        && first.kind == Kind::NotAssignable
+    {
+        *first = Level::not_assignable(arena, shown_source, target);
+    }
+    levels
+}
+
 /// The reasons under a head the caller writes itself (`Argument of type ...`,
 /// `Type ... does not satisfy the constraint ...`), without the "is not assignable"
 /// line that head replaces.
@@ -153,6 +172,132 @@ fn reason(arena: &TypeArena, source: TypeId, target: TypeId, depth: usize) -> Ve
     }
     let mut levels = vec![Level::not_assignable(arena, source, target)];
     levels.extend(below);
+    levels
+}
+
+// tsc's line under a tuple mismatch caused by length, in tsc's own order (structuredTypeRelatedTo,
+// for a tuple target). `from` is an array or a tuple, given as its elements; an array is one
+// rest element. Each rule is tried in turn and the first that fires is the whole reason:
+//   1. a source with no rest element that has fewer elements than the target requires,
+//   2. a source that requires more elements than a rest-less target has room for,
+//   3. a rest-less target against a source that may have a different length: it requires
+//      more than the source is sure to have, or it allows fewer than the source may have.
+// None of them fires when only the elements differ; that is `tuple_element_reason`.
+fn tuple_arity_reason(
+    from: &[crate::types::TupleElement],
+    to: &[crate::types::TupleElement],
+) -> Vec<Level> {
+    let min_length = |elements: &[crate::types::TupleElement]| {
+        elements.iter().filter(|e| !e.optional && !e.rest).count()
+    };
+    let (source_len, source_min) = (from.len(), min_length(from));
+    let (target_len, target_min) = (to.len(), min_length(to));
+    let source_rest = from.iter().any(|e| e.rest);
+    let target_rest = to.iter().any(|e| e.rest);
+
+    if !source_rest && source_len < target_min {
+        return vec![Level::detail(format!(
+            "Source has {source_len} element(s) but target requires {target_min}."
+        ))];
+    }
+    if !target_rest && target_len < source_min {
+        return vec![Level::detail(format!(
+            "Source has {source_len} element(s) but target allows only {target_len}."
+        ))];
+    }
+    if !target_rest && (source_rest || target_len < source_len) {
+        return vec![Level::detail(if source_min < target_min {
+            format!("Target requires {target_min} element(s) but source may have fewer.")
+        } else {
+            format!("Target allows only {target_len} element(s) but source may have more.")
+        })];
+    }
+    Vec::new()
+}
+
+// The first source element that does not fit the target element it lands on, as tsc says it:
+// the position on each side, then why the two types differ. Source elements past the target's
+// fixed ones all land on its rest element, and tsc names them as one range
+// ("positions 1 through 2"). A source with optional or rest elements of its own has no fixed
+// positions to name, so it is left with the head line alone.
+fn tuple_element_reason(
+    arena: &TypeArena,
+    from: &[crate::types::TupleElement],
+    to: &[crate::types::TupleElement],
+    depth: usize,
+) -> Vec<Level> {
+    if from.iter().any(|e| e.optional || e.rest) {
+        return Vec::new();
+    }
+    let target_rest = to.last().filter(|e| e.rest);
+    let target_fixed = to.len() - usize::from(target_rest.is_some());
+    for (position, source) in from.iter().enumerate() {
+        let (target_position, wanted) = if position < target_fixed {
+            (position, to[position].type_id)
+        } else if let Some(rest) = target_rest {
+            (target_fixed, rest.type_id)
+        } else {
+            return Vec::new();
+        };
+        if is_subtype(arena, source.type_id, wanted) {
+            continue;
+        }
+        let in_rest = position >= target_fixed;
+        let text = if in_rest && from.len() - target_fixed > 1 {
+            format!(
+                "Type at positions {target_fixed} through {} in source is not compatible with type at position {target_position} in target.",
+                from.len() - 1
+            )
+        } else {
+            format!(
+                "Type at position {position} in source is not compatible with type at position {target_position} in target."
+            )
+        };
+        let mut levels = vec![Level::detail(text)];
+        levels.extend(reason(arena, source.type_id, wanted, depth + 2));
+        return levels;
+    }
+    Vec::new()
+}
+
+// A tuple read as the array it is assignable to: tsc says the union of the element types
+// does not fit the array's element, and then which member of that union is the culprit.
+fn tuple_as_array_reason(
+    arena: &TypeArena,
+    from: &[crate::types::TupleElement],
+    to_element: TypeId,
+    depth: usize,
+) -> Vec<Level> {
+    let mut members: Vec<TypeId> = Vec::new();
+    for element in from {
+        if !members
+            .iter()
+            .any(|&m| display_type(arena, m) == display_type(arena, element.type_id))
+        {
+            members.push(element.type_id);
+        }
+    }
+    members.sort_by_key(|&member| tsc_rank(arena, member));
+    let Some(failing) = members
+        .iter()
+        .copied()
+        .find(|&member| !is_subtype(arena, member, to_element))
+    else {
+        return Vec::new();
+    };
+    if members.len() == 1 {
+        return reason(arena, failing, to_element, depth + 1);
+    }
+    let shown = members
+        .iter()
+        .map(|&m| display_type(arena, m))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let mut levels = vec![Level::detail(format!(
+        "Type '{shown}' is not assignable to type '{}'.",
+        display_type(arena, to_element)
+    ))];
+    levels.extend(reason(arena, failing, to_element, depth + 2));
     levels
 }
 
@@ -213,6 +358,24 @@ fn children(arena: &TypeArena, source: TypeId, target: TypeId, depth: usize) -> 
             }
         }
         (_, Type::Union(_)) => Vec::new(),
+        (Type::Tuple(from), Type::Tuple(to)) => {
+            let arity = tuple_arity_reason(from, to);
+            if arity.is_empty() {
+                tuple_element_reason(arena, from, to, depth)
+            } else {
+                arity
+            }
+        }
+        // An array has no fixed length, so it is a source with one rest element.
+        (Type::Array(element), Type::Tuple(to)) => tuple_arity_reason(
+            &[crate::types::TupleElement {
+                type_id: *element,
+                optional: false,
+                rest: true,
+            }],
+            to,
+        ),
+        (Type::Tuple(from), Type::Array(to)) => tuple_as_array_reason(arena, from, *to, depth),
         (Type::Array(from), Type::Array(to)) => reason(arena, *from, *to, depth + 1),
         (Type::Object(from), Type::Object(to)) => {
             if let (Some((from_name, from_args)), Some((to_name, to_args))) =
