@@ -50,6 +50,8 @@ pub struct UnitContext<'a> {
     // Where the file's imports resolve. A unit without one leaves its import
     // declarations unbound, as a single-file check does.
     pub imports: Option<&'a dyn ImportSource>,
+    // The compiler options the checker reads. The default is the checker's fixed behavior.
+    pub options: crate::check_options::CheckOptions,
 }
 
 impl<'a> UnitContext<'a> {
@@ -61,6 +63,7 @@ impl<'a> UnitContext<'a> {
             cancel: None,
             module: None,
             imports: None,
+            options: crate::check_options::CheckOptions::default(),
         }
     }
 
@@ -71,6 +74,11 @@ impl<'a> UnitContext<'a> {
 
     pub fn with_imports(mut self, imports: &'a dyn ImportSource) -> Self {
         self.imports = Some(imports);
+        self
+    }
+
+    pub fn with_options(mut self, options: crate::check_options::CheckOptions) -> Self {
+        self.options = options;
         self
     }
 
@@ -122,6 +130,24 @@ pub struct UnitOutput {
     /// members of each `declare global { }` block. At most one entry, with an empty
     /// specifier; the names are not exports of the file.
     pub globals: Vec<AmbientExports>,
+    /// Exported functions with no return annotation whose return expressions reach an imported
+    /// function without one. The project joins these across files to find a circle through
+    /// imports (TS7023), which no single file can see.
+    pub return_reads: Vec<ReturnRead>,
+}
+
+/// One exported function whose inferred return type is read from imported functions, directly
+/// or through functions of its own file (see `UnitOutput::return_reads`).
+#[derive(Clone, Debug)]
+pub struct ReturnRead {
+    pub owner: DeclKey,
+    pub name: String,
+    pub start: u32,
+    pub end: u32,
+    /// The imported functions its return expressions reach, sorted and without duplicates.
+    pub callees: Vec<DeclKey>,
+    /// True when the file already reported this function as part of a circle of its own.
+    pub reported_locally: bool,
 }
 
 /// The exports of one `declare module "x"` block (see `UnitOutput`).
@@ -191,9 +217,12 @@ impl Worker {
                 ctx.file_name,
                 ctx.file_id,
                 arena,
-                ctx.cancel.as_ref(),
-                ctx.module,
-                ctx.imports,
+                bridge::FileEnv {
+                    cancel: ctx.cancel.as_ref(),
+                    module: ctx.module,
+                    imports: ctx.imports,
+                    options: ctx.options,
+                },
             )
         })
     }
@@ -235,6 +264,7 @@ impl Worker {
                         .collect(),
                     umd_namespaces: table.umd_namespaces,
                     unresolved_names: table.unresolved_names,
+                    return_reads: table.return_reads,
                     globals: if table.global_names.is_empty() && table.global_unmodelled.is_empty()
                     {
                         Vec::new()
@@ -310,6 +340,7 @@ fn crashed(ctx: &UnitContext<'_>) -> UnitOutput {
         ambient: Vec::new(),
         umd_namespaces: Vec::new(),
         unresolved_names: Vec::new(),
+        return_reads: Vec::new(),
         augmentations: Vec::new(),
         globals: Vec::new(),
     }

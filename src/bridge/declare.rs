@@ -87,6 +87,40 @@ pub(super) fn own_global_block_names(program: &Program<'_>) -> std::collections:
     names
 }
 
+// The interfaces this file declares globally: those at the top of a script file and those
+// inside its `declare global { }` blocks. Other files may declare the same name, and the
+// declarations are one interface, so the project's copies are bound before this file's own.
+pub(super) fn own_global_interface_names(program: &Program<'_>) -> Vec<String> {
+    let mut names = Vec::new();
+    let is_module = program.body.iter().any(|statement| {
+        matches!(
+            statement,
+            Statement::ImportDeclaration(_)
+                | Statement::ExportNamedDeclaration(_)
+                | Statement::ExportDefaultDeclaration(_)
+                | Statement::ExportAllDeclaration(_)
+                | Statement::TSExportAssignment(_)
+                | Statement::TSImportEqualsDeclaration(_)
+        )
+    });
+    for stmt in &program.body {
+        match stmt {
+            Statement::TSInterfaceDeclaration(d) if !is_module => {
+                names.push(d.id.name.to_string());
+            }
+            Statement::TSGlobalDeclaration(block) => {
+                for (item, _) in items_in(&block.body.body) {
+                    if let TopLevelItem::Interface(d) = item {
+                        names.push(d.id.name.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
 // What a `namespace N { ... }` holds, as the same flat list any statement list gives.
 //
 // Problem: `namespace A.B { ... }` has no block of its own. Its body is another namespace
@@ -174,6 +208,7 @@ pub(super) fn items_in<'a>(statements: &'a [Statement<'a>]) -> Vec<(TopLevelItem
 pub fn declare_top_level<'ast>(program: &'ast Program<'ast>, ctx: &mut CheckContext<'ast, '_>) {
     let items = items_in(&program.body);
     declare_types(&items, ctx);
+    super::imports::merge_own_global_interfaces(program, ctx);
     for (name, span, involves_enum) in ctx.namespace.take_declaration_collisions() {
         let message = if involves_enum {
             crate::diagnostic_messages::messages::enum_declaration_merge()

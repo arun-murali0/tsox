@@ -185,3 +185,30 @@ fn help_describes_that_the_config_is_read() {
     assert!(!text.contains("not parsed"), "{text}");
     assert!(text.contains("include/exclude/files"), "{text}");
 }
+
+// `--incremental` is the same checker behind the query layer, so it prints what the default does,
+// with the same exit code. The default stays the full driver.
+#[cfg(feature = "incremental")]
+#[test]
+fn incremental_prints_what_the_default_prints() {
+    let root = project(
+        "incremental-flag",
+        &[
+            ("tsconfig.json", r#"{ "include": ["*.ts"] }"#),
+            ("a.ts", "export const a: number = 'no';\n"),
+            (
+                "b.ts",
+                "import { a } from './a';\nexport const b: string = a;\n",
+            ),
+        ],
+    );
+    let default = run(&root, "tsconfig.json");
+    let incremental = Command::new(env!("CARGO_BIN_EXE_tsox"))
+        .current_dir(&root)
+        .args(["--project", "tsconfig.json", "--incremental"])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(stdout(&default), stdout(&incremental));
+    assert_eq!(default.status.code(), incremental.status.code());
+    assert_eq!(default.status.code(), Some(1));
+}

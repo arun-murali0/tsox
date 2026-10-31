@@ -59,7 +59,9 @@ pub use portable::{
 };
 pub use stable_hash::Prim;
 pub use stack_guard::with_deep_stack;
-pub use unit::{AmbientExports, CancelToken, UnitContext, UnitError, UnitOutput, Worker};
+pub use unit::{
+    AmbientExports, CancelToken, ReturnRead, UnitContext, UnitError, UnitOutput, Worker,
+};
 
 #[cfg(feature = "incremental")]
 pub use incremental::{

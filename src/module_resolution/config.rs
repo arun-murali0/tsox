@@ -3,6 +3,8 @@ use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use super::resolver::ModuleResolver;
+
 // A project's `tsconfig.json` as the engine reads it: the file and everything it extends,
 // merged the way TypeScript merges them, and the list of files it selects.
 //
@@ -90,6 +92,32 @@ impl Json {
 
 /// Whether a package.json's text sets `"type": "module"`. Text that does not parse, or has
 /// no such value, is not a module package.
+// The declaration file a type package is read from: its package.json `types` or `typings`, else
+// `index.d.ts`. None when `directory` is not a package or has neither.
+fn declaration_entry(directory: &Path) -> Option<PathBuf> {
+    if !directory.is_dir() {
+        return None;
+    }
+    if let Ok(text) = fs::read_to_string(directory.join("package.json")) {
+        if let Ok(json) = parse_jsonc(&text) {
+            for field in ["types", "typings"] {
+                if let Some(relative) = json.get(field).and_then(Json::as_str) {
+                    let path = normalize(&directory.join(relative));
+                    if path.is_file() {
+                        return Some(path);
+                    }
+                    let with_extension = normalize(&directory.join(format!("{relative}.d.ts")));
+                    if with_extension.is_file() {
+                        return Some(with_extension);
+                    }
+                }
+            }
+        }
+    }
+    let index = directory.join("index.d.ts");
+    index.is_file().then_some(index)
+}
+
 pub(crate) fn package_json_type_is_module(text: &str) -> bool {
     parse_jsonc(text)
         .ok()
@@ -443,6 +471,27 @@ impl ProjectConfig {
         self.compiler_options.get(name)
     }
 
+    /// The compiler options the checker itself reads (see `CheckOptions`), as the effective
+    /// configuration sets them. A key the configuration leaves out keeps the checker's
+    /// default, so an empty tsconfig checks as before.
+    pub fn check_options(&self) -> crate::CheckOptions {
+        let flag = |name: &str| match self.compiler_option(name) {
+            Some(Json::Bool(value)) => Some(*value),
+            _ => None,
+        };
+        let mut options = crate::CheckOptions::default();
+        if let Some(value) = flag("noUncheckedIndexedAccess") {
+            options.no_unchecked_indexed_access = value;
+        }
+        if let Some(value) = flag("allowUnreachableCode") {
+            options.allow_unreachable_code = value;
+        }
+        if let Some(value) = flag("useUnknownInCatchVariables") {
+            options.use_unknown_in_catch_variables = value;
+        }
+        options
+    }
+
     /// The files the project selects, sorted, as absolute paths.
     pub fn entry_files(&self) -> Vec<PathBuf> {
         let mut found: Vec<PathBuf> = Vec::new();
@@ -491,6 +540,71 @@ impl ProjectConfig {
         found.sort();
         found.dedup();
         keep_highest_extension(found)
+    }
+
+    /// The declaration files `types` and `typeRoots` bring into the program without any file
+    /// importing them, as absolute paths, sorted. Their global declarations (an interface in a
+    /// script file, `declare global`, `declare module "x"`) are what the checker needs.
+    ///
+    /// `types` names the packages to take, each looked up in the type roots first and then as an
+    /// ordinary package, so `"types": ["node"]` finds `@types/node` and
+    /// `"types": ["@scope/pkg/sub"]` goes through the package's `exports`. Unset it takes none:
+    /// TypeScript 6.0 (the version this checker is measured against) changed the default to `[]`,
+    /// where TypeScript 5 took every package in every type root. `typeRoots` lists the
+    /// directories whose subdirectories are packages; unset, it is every `node_modules/@types`
+    /// from the config directory upward. A package with no declaration entry, or a name nothing
+    /// answers, adds no file.
+    pub fn type_entry_files(&self, resolver: &ModuleResolver) -> Vec<PathBuf> {
+        let roots: Vec<PathBuf> = match self.compiler_option("typeRoots").and_then(Json::as_strings)
+        {
+            Some(listed) => listed
+                .iter()
+                .map(|root| normalize(&self.root().join(root)))
+                .collect(),
+            None => self
+                .root()
+                .ancestors()
+                .map(|directory| directory.join("node_modules").join("@types"))
+                .collect(),
+        };
+        let mut found: Vec<PathBuf> = Vec::new();
+        match self.compiler_option("types").and_then(Json::as_strings) {
+            Some(names) => {
+                let probe = self.root().join("tsox-types-probe.ts");
+                for name in names {
+                    let in_roots = roots
+                        .iter()
+                        .map(|root| root.join(&name))
+                        .find_map(|directory| declaration_entry(&directory));
+                    match in_roots {
+                        Some(path) => found.push(path),
+                        None => {
+                            if let Ok(path) = resolver.resolve_dts_from_file(&probe, &name) {
+                                found.push(path);
+                            }
+                        }
+                    }
+                }
+            }
+            // TypeScript 6.0 changed the default of `types` to `[]`: with none listed no package
+            // is taken (TypeScript 5 took every package in every type root).
+            None => {}
+        }
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    /// The files that start the module graph: the ones the project selects and the declaration
+    /// files `types` and `typeRoots` bring in, without repeats.
+    pub fn project_entries(&self, resolver: &ModuleResolver) -> Vec<PathBuf> {
+        let mut entries = self.entry_files();
+        for path in self.type_entry_files(resolver) {
+            if !entries.contains(&path) {
+                entries.push(path);
+            }
+        }
+        entries
     }
 
     fn exclude_patterns(&self) -> Vec<Pattern> {

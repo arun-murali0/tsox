@@ -1,6 +1,6 @@
 // Strongly connected components and layers over plain adjacency lists.
 //
-// Problem: the module graph and the petgraph view of it each had their own component
+// Problem: the module graph and a petgraph view of it (since removed) each had their own component
 // search, kept equal by a test, and neither could be tested on graphs other than the few
 // built by hand.
 // Picked: one iterative Tarjan over `&[Vec<usize>]` that both call, plus the layering rule

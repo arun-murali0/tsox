@@ -16,17 +16,109 @@ use crate::unit::{CancelToken, UnitContext, UnitError, Worker};
 use super::graph::ModuleGraph;
 use super::schedule::{UnitOutcome, run_units, unit_dependencies};
 
+/// Text for a file that replaces what the graph kept (the query layer holds the text it checks).
+pub(crate) type TextFn = dyn Fn(FileId) -> Option<Arc<str>> + Sync;
+
+/// A source of finished units for the first pass: a unit it answers is not checked again. The
+/// query layer implements it (see `incremental`); `None` means "check it as usual".
+pub(crate) trait UnitMemo: Sync {
+    fn unit(&self, unit: usize) -> Option<UnitResult>;
+
+    /// The result of one ambient provider, which runs before the first pass. A memo that keeps
+    /// them answers here and is told what they declared by `providers_ready`, so it can answer
+    /// the units of the pass; `None` leaves the providers to the driver (and the units then are
+    /// not memoized). Called from the worker pool.
+    fn provider(&self, _id: FileId) -> Option<Checked> {
+        None
+    }
+
+    /// Called once the providers have all answered, in file order, before the first pass.
+    fn providers_ready(&self, _units: &[(FileId, UnitExports)]) {}
+
+    /// A digest of everything the first pass was answered from, or `None` when some unit was
+    /// not answered by the memo (the second pass is then never kept or reused). Two equal
+    /// digests mean the first pass handed the second the same thing.
+    fn first_pass_fingerprint(&self) -> Option<u128> {
+        None
+    }
+
+    /// The second pass's result kept under `fingerprint`, if that is the one held.
+    fn second_pass(&self, _fingerprint: u128) -> Option<UnitResult> {
+        None
+    }
+
+    /// Keeps the second pass's result under `fingerprint`, replacing any other.
+    fn keep_second_pass(&self, _fingerprint: u128, _result: &UnitResult) {}
+}
+
+// What the second pass reads, besides the first pass's results: the text of every file it
+// checks again, which files those are, and the graph's epoch (through the first pass's
+// fingerprint). A file whose first-pass output did not change can still come out differently
+// in the second pass, because the second pass sees names the first could not: a body edit that
+// changes a call to a global declaration changes nothing the first pass reports.
+fn second_pass_fingerprint(
+    memo: &dyn UnitMemo,
+    graph: &ModuleGraph,
+    texts: &TextFn,
+    affected: Option<&std::collections::HashSet<FileId>>,
+    scripts: &[FileId],
+    wildcard_declared: bool,
+) -> Option<u128> {
+    let first = memo.first_pass_fingerprint()?;
+    let mut ids: Vec<FileId> = match affected {
+        Some(set) => set.iter().copied().chain(scripts.iter().copied()).collect(),
+        None => (0..graph.len()).map(|i| FileId::new(i as u32)).collect(),
+    };
+    ids.sort();
+    ids.dedup();
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    hasher.update(&first.to_le_bytes());
+    hasher.update(&[u8::from(affected.is_some()), u8::from(wildcard_declared)]);
+    hasher.update(&(ids.len() as u64).to_le_bytes());
+    for id in ids {
+        hasher.update(&id.index().to_le_bytes());
+        match texts(id) {
+            Some(text) => {
+                hasher.update(&[1]);
+                hasher.update(&(text.len() as u64).to_le_bytes());
+                hasher.update(text.as_bytes());
+            }
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+    }
+    Some(hasher.digest128())
+}
+
+// A result worth keeping: no file crashed the checker and none was stopped by the token.
+fn second_pass_is_keepable(result: &UnitResult) -> bool {
+    result.files.iter().all(|(report, _)| {
+        !report
+            .incomplete_reasons
+            .contains(&IncompleteReason::CheckerCrashed)
+            && !matches!(&report.outcome, FileOutcome::ReadFailed(text) if text == CANCELLED)
+    })
+}
+
+/// What the callers of `run_project` may hand over besides the graph.
+#[derive(Default)]
+pub(crate) struct RunOptions<'a> {
+    pub texts: Option<&'a TextFn>,
+    pub memo: Option<&'a dyn UnitMemo>,
+}
+
 // What happened to one file. A file that could not be read or parsed is reported as
 // such and is never left out, because a report that silently omits files reads as "all
 // clear" for exactly the files nobody looked at.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum FileOutcome {
     Checked(Vec<Diagnostic>),
     ReadFailed(String),
     CheckFailed(CheckerError),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FileReport {
     pub file_id: FileId,
     pub outcome: FileOutcome,
@@ -104,6 +196,11 @@ struct Project<'a> {
     // Off in the passes; on for the providers and for the run that rebuilds the scripts
     // another file uses (see `run_project`).
     collect_global_decls: bool,
+    // Text that replaces the graph's own, when the caller holds the current text itself.
+    texts: Option<&'a TextFn>,
+    // Check the members of a unit one after another on this thread. The query layer needs
+    // it: a query's reads are recorded only on the thread that runs it.
+    sequential: bool,
 }
 
 impl Project<'_> {
@@ -112,6 +209,16 @@ impl Project<'_> {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .add(id, unit);
+    }
+
+    // Like `publish`, for exports that stay owned by the caller: only what the tables keep is
+    // copied (the names and the declaration handles), not the rest of the unit's exports.
+    #[cfg(feature = "incremental")]
+    fn publish_ref(&self, id: FileId, unit: &UnitExports) {
+        self.tables
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .add_ref(id, unit);
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, Tables> {
@@ -124,17 +231,26 @@ impl Project<'_> {
 // walked, so hash order cannot reach a result (LLD 8.2).
 #[derive(Default)]
 struct Tables {
-    names: FxHashMap<FileId, Vec<(String, DeclKey)>>,
+    names: FxHashMap<FileId, Arc<Vec<(String, DeclKey)>>>,
     complete: FxHashMap<FileId, bool>,
     decls: FxHashMap<DeclKey, Arc<PortableDecl>>,
 }
 
 impl Tables {
+    #[cfg(feature = "incremental")]
+    fn add_ref(&mut self, id: FileId, unit: &UnitExports) {
+        self.names.insert(id, Arc::clone(&unit.names));
+        self.complete.insert(id, unit.complete);
+        for decl in &unit.decls {
+            self.decls.insert(decl.key, Arc::clone(decl));
+        }
+    }
+
     fn add(&mut self, id: FileId, unit: UnitExports) {
         self.names.insert(id, unit.names);
         self.complete.insert(id, unit.complete);
         for decl in unit.decls {
-            self.decls.insert(decl.key, Arc::new(decl));
+            self.decls.insert(decl.key, decl);
         }
     }
 }
@@ -256,7 +372,7 @@ impl Globals {
             }
             if let Some(unit) = by_file.get(&id) {
                 for decl in &unit.decls {
-                    globals.decls.insert(decl.key, Arc::new(decl.clone()));
+                    globals.decls.insert(decl.key, Arc::clone(decl));
                 }
             }
             pending.extend(graph.dependencies(id).iter().copied());
@@ -309,13 +425,13 @@ fn global_namespaces(units: &[(FileId, &UnitExports)]) -> Vec<GlobalNamespace> {
 }
 
 /// The result of checking one file, as the report and the exports it hands on.
-type Checked = (FileReport, Option<UnitExports>);
+pub(crate) type Checked = (FileReport, Option<UnitExports>);
 
 // What one unit hands back: its files, and the files of a cycle that did not settle.
-#[derive(Default)]
-struct UnitResult {
-    files: Vec<Checked>,
-    unsettled: Vec<FileId>,
+#[derive(Clone, Default)]
+pub(crate) struct UnitResult {
+    pub(crate) files: Vec<Checked>,
+    pub(crate) unsettled: Vec<FileId>,
 }
 
 /// Checks every checkable file of `graph`. The files are the components of the import
@@ -332,7 +448,7 @@ struct UnitResult {
 /// declaration file) binds nothing, which leaves the name unknown: it loses an error and
 /// never invents one. The same holds for a file that panicked or was cancelled.
 pub fn check_project(graph: &ModuleGraph) -> ProjectReport {
-    run_project(graph, None, None)
+    run_project(graph, None, None, &RunOptions::default())
 }
 
 /// `check_project` with the recheck bound of every cycle replaced by `max_cycle_rounds`
@@ -343,7 +459,7 @@ pub fn check_project_bounded(
     graph: &ModuleGraph,
     max_cycle_rounds: Option<usize>,
 ) -> ProjectReport {
-    run_project(graph, max_cycle_rounds, None)
+    run_project(graph, max_cycle_rounds, None, &RunOptions::default())
 }
 
 /// `check_project` that stops when `cancel` is cancelled. The token is looked at as each
@@ -351,13 +467,14 @@ pub fn check_project_bounded(
 /// read failure that says so, and `ProjectReport::cancelled` is set, so a cancelled run is
 /// never mistaken for a clean one. Files that did run keep their results.
 pub fn check_project_cancellable(graph: &ModuleGraph, cancel: &CancelToken) -> ProjectReport {
-    run_project(graph, None, Some(cancel))
+    run_project(graph, None, Some(cancel), &RunOptions::default())
 }
 
-fn run_project(
+pub(crate) fn run_project(
     graph: &ModuleGraph,
     max_cycle_rounds: Option<usize>,
     cancel: Option<&CancelToken>,
+    options: &RunOptions<'_>,
 ) -> ProjectReport {
     let in_cycle: std::collections::HashSet<FileId> =
         graph.cycles().into_iter().flatten().collect();
@@ -367,6 +484,8 @@ fn run_project(
     let mut files: Vec<FileReport> = Vec::new();
     let mut unsettled: Vec<FileId> = Vec::new();
     let mut provider_units: Vec<(FileId, UnitExports)> = Vec::new();
+    // Whether the memo took the providers; when it did not, it is not asked about the units either.
+    let mut memo = options.memo;
     if !providers.is_empty() {
         let project = Project {
             graph,
@@ -374,8 +493,26 @@ fn run_project(
             globals: Globals::default(),
             cancel,
             collect_global_decls: true,
+            texts: options.texts,
+            sequential: false,
         };
-        for (report, unit_exports) in check_files(&project, &providers) {
+        let remembered: Option<Vec<Checked>> = options.memo.and_then(|memo| {
+            let ask = || {
+                providers
+                    .par_iter()
+                    .map(|id| memo.provider(*id))
+                    .collect::<Option<Vec<Checked>>>()
+            };
+            match worker_pool() {
+                Some(pool) => pool.install(ask),
+                None => ask(),
+            }
+        });
+        if remembered.is_none() {
+            memo = None;
+        }
+        let checked = remembered.unwrap_or_else(|| check_files(&project, &providers));
+        for (report, unit_exports) in checked {
             if let Some(unit_exports) = unit_exports {
                 provider_units.push((report.file_id, unit_exports));
             }
@@ -384,6 +521,9 @@ fn run_project(
             }
         }
         provider_units.sort_by_key(|(id, _)| *id);
+        if let Some(memo) = memo {
+            memo.providers_ready(&provider_units);
+        }
     }
     let provider_refs: Vec<(FileId, &UnitExports)> =
         provider_units.iter().map(|(id, u)| (*id, u)).collect();
@@ -402,12 +542,31 @@ fn run_project(
         in_cycle: &in_cycle,
         max_cycle_rounds,
         cancel,
+        texts: options.texts,
+        memo,
     };
 
     #[cfg(test)]
-    PASSES_RUN.with(|count| count.set(0));
+    {
+        PASSES_RUN.with(|count| count.set(0));
+        FILES_CHECKED.with(|count| count.set(0));
+    }
     let first = run_pass(&setup, globals);
     unsettled.extend(first.unsettled.iter().copied());
+    // What each file's inferred return types read from imported functions, for the circle
+    // check after the passes (see `report_cross_file_returns`). A file the second pass runs
+    // again is taken from the second pass.
+    let mut return_reads: FxHashMap<FileId, Vec<crate::unit::ReturnRead>> = FxHashMap::default();
+    for (id, unit) in provider_units.iter().map(|(id, unit)| (*id, unit)).chain(
+        first
+            .files
+            .iter()
+            .filter_map(|(report, unit)| unit.as_ref().map(|u| (report.file_id, u))),
+    ) {
+        if !unit.return_reads.is_empty() {
+            return_reads.insert(id, unit.return_reads.clone());
+        }
+    }
 
     // `export as namespace` exposes a module without a static import edge from its
     // consumers, and a module augmentation or an ambient module in a file that is not a
@@ -433,17 +592,102 @@ fn run_project(
                 .chain(block.unmodelled.iter().map(String::as_str))
         })
         .collect();
-    let wants_second = first.files.iter().any(|(_, unit)| {
-        unit.as_ref().is_some_and(|unit| {
-            !unit.umd_namespaces.is_empty()
-                || !unit.augmentations.is_empty()
-                || !unit.ambient.is_empty()
-                || unit
-                    .unresolved_names
+    // A name two files declare globally is one declaration (two interfaces of one name
+    // merge), so each of the files needs the other's half, though neither "uses" the name
+    // without declaring it. Counted per file, so a file naming it twice is still one.
+    let shared_globals: std::collections::HashSet<&str> = {
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (_, unit) in &first.files {
+            let Some(unit) = unit.as_ref() else {
+                continue;
+            };
+            let names: std::collections::HashSet<&str> = unit
+                .globals
+                .iter()
+                .flat_map(|block| {
+                    block
+                        .export_names
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .chain(block.unmodelled.iter().map(String::as_str))
+                })
+                .collect();
+            for name in names {
+                *counts.entry(name).or_default() += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .filter(|(_, files)| *files > 1)
+            .map(|(name, _)| name)
+            .collect()
+    };
+    let wants_second = !shared_globals.is_empty()
+        || first.files.iter().any(|(_, unit)| {
+            unit.as_ref().is_some_and(|unit| {
+                !unit.umd_namespaces.is_empty()
+                    || !unit.augmentations.is_empty()
+                    || !unit.ambient.is_empty()
+                    || unit
+                        .unresolved_names
+                        .iter()
+                        .any(|name| declared_globals.contains(name.as_str()))
+            })
+        });
+    // The files whose answer the second pass can change. The globals the first pass could not
+    // see are four kinds, and each reaches a file in a way that can be named:
+    //  - a global declaration, or a UMD alias (`export as namespace`), is read by a file that
+    //    leaves that name unresolved;
+    //  - an ambient module, or an augmentation of a module, is read by a file that imports
+    //    that specifier;
+    //  - an augmentation also changes what the augmented file exports, so the files that read
+    //    from it (added below, once the table is built).
+    // Everything else keeps its first result. A wildcard ambient module (`declare module
+    // "*.css"`) matches specifiers by pattern, so with one every file is checked again.
+    let umd_names: std::collections::HashSet<&str> = first
+        .files
+        .iter()
+        .filter_map(|(_, unit)| unit.as_ref())
+        .flat_map(|unit| unit.umd_namespaces.iter().map(String::as_str))
+        .collect();
+    let module_specifiers: std::collections::HashSet<&str> = first
+        .files
+        .iter()
+        .filter_map(|(_, unit)| unit.as_ref())
+        .flat_map(|unit| unit.ambient.iter().chain(unit.augmentations.iter()))
+        .map(|module| module.specifier.as_str())
+        .collect();
+    // Whether any specifier is a pattern; a yes or no, so the set's order cannot reach the answer.
+    let wildcard_module = first
+        .files
+        .iter()
+        .filter_map(|(_, unit)| unit.as_ref())
+        .flat_map(|unit| unit.ambient.iter().chain(unit.augmentations.iter()))
+        .any(|module| module.specifier.contains('*'));
+    let mut seeds: std::collections::HashSet<FileId> = first
+        .files
+        .iter()
+        .filter(|(report, unit)| {
+            let uses_a_name = unit.as_ref().is_some_and(|unit| {
+                unit.unresolved_names.iter().any(|name| {
+                    declared_globals.contains(name.as_str()) || umd_names.contains(name.as_str())
+                }) || unit.globals.iter().any(|block| {
+                    block
+                        .export_names
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .chain(block.unmodelled.iter().map(String::as_str))
+                        .any(|name| shared_globals.contains(name))
+                })
+            });
+            uses_a_name
+                || graph
+                    .edges(report.file_id)
                     .iter()
-                    .any(|name| declared_globals.contains(name.as_str()))
+                    .any(|edge| module_specifiers.contains(edge.specifier.as_str()))
         })
-    });
+        .map(|(report, _)| report.file_id)
+        .collect();
     drop(declared_globals);
     // A token cancelled after the first pass finished leaves every file with a result, so
     // the per-file failure below would not show it, yet those results were computed without
@@ -451,7 +695,7 @@ fn run_project(
     // cancellation keeps such a run from reading as a clean one.
     let skipped_second = wants_second && cancel.is_some_and(CancelToken::is_cancelled);
     let needs_second = wants_second && !skipped_second;
-    let last = if needs_second {
+    let (last, kept) = if needs_second {
         // A script lists only its global names in the first pass. The ones whose names some
         // other file uses are checked again on their own, asked for their declarations: a
         // script imports nothing, so it needs no other file's exports to do so. The rest keep
@@ -461,6 +705,11 @@ fn run_project(
             .iter()
             .filter_map(|(_, unit)| unit.as_ref())
             .flat_map(|unit| unit.unresolved_names.iter().map(String::as_str))
+            // Collected into a set, so the order it is read in cannot reach a result.
+            .chain(
+                #[allow(clippy::disallowed_methods)]
+                shared_globals.iter().copied(),
+            )
             .collect();
         let script_sources: Vec<FileId> = first
             .files
@@ -487,6 +736,8 @@ fn run_project(
                 globals: Globals::default(),
                 cancel,
                 collect_global_decls: true,
+                texts: options.texts,
+                sequential: false,
             };
             for (report, unit_exports) in check_files(&scripts, &script_sources) {
                 if let Some(unit_exports) = unit_exports {
@@ -508,18 +759,117 @@ fn run_project(
         all.sort_by_key(|(id, _)| *id);
         let mut second_globals = Globals::build(graph, &all);
         second_globals.bare_reportable = bare_specifiers_are_reportable(graph, wildcard_declared);
-        let second = run_pass(&setup, second_globals);
+        // Problem: the second pass checked every file again, though a file that uses none of the
+        // names the project declares globally, and imports nothing that does, cannot come out
+        // different.
+        // Picked: when global declarations are the only reason for a second pass, only the users
+        // of those names and every file that reads from them (importers, directly or through
+        // others, and files that load them lazily) are checked again. The rest keep their first
+        // result and are treated like providers: published up front, not run. A file's result
+        // depends on the globals only through the names it leaves unresolved, so this is the same
+        // answer as checking everything again.
+        // Cost: the files kept from the first pass stay in memory next to the second pass's.
+        // What reads from an augmented file sees the augmentation in what that file exports.
+        // The targets go into a set of seeds, so the order they are read in cannot reach a result.
+        #[allow(clippy::disallowed_methods)]
+        let targets: Vec<FileId> = second_globals.augmentations.keys().copied().collect();
+        for target in &targets {
+            seeds.extend(
+                graph
+                    .dependents(*target)
+                    .iter()
+                    .chain(graph.dynamic_dependents(*target))
+                    .copied(),
+            );
+        }
+        let affected: Option<std::collections::HashSet<FileId>> =
+            if wildcard_module || force_full_second() {
+                None
+            } else {
+                Some(affected_files(graph, &seeds))
+            };
+        let mut providers2 = provider_set.clone();
+        let mut units2: Vec<(FileId, UnitExports)> = provider_units.clone();
+        let mut kept: Vec<FileReport> = Vec::new();
+        if let Some(affected) = &affected {
+            for (report, unit) in first.files {
+                if affected.contains(&report.file_id) {
+                    continue;
+                }
+                providers2.insert(report.file_id);
+                if let Some(unit) = unit {
+                    units2.push((report.file_id, unit));
+                }
+                kept.push(report);
+            }
+        }
+        units2.sort_by_key(|(id, _)| *id);
+        let setup2 = PassSetup {
+            graph,
+            providers: &providers2,
+            provider_units: &units2,
+            in_cycle: &in_cycle,
+            max_cycle_rounds,
+            cancel,
+            texts: options.texts,
+            memo: None,
+        };
+        // The second pass is answered from the memo when everything it reads is what it read
+        // last time: the first pass's outputs (by their digests), and the text of each file it
+        // checks again. Without this a project with a shared global declaration checked its
+        // affected files again on every check, even an unchanged one.
+        let fingerprint = match (memo, options.texts) {
+            (Some(memo), Some(texts)) => second_pass_fingerprint(
+                memo,
+                graph,
+                texts,
+                affected.as_ref(),
+                &script_sources,
+                wildcard_declared,
+            ),
+            _ => None,
+        };
+        let second = match (memo, fingerprint) {
+            (Some(memo), Some(fingerprint)) => match memo.second_pass(fingerprint) {
+                Some(kept_result) => kept_result,
+                None => {
+                    let result = run_pass(&setup2, second_globals);
+                    let stopped = cancel.is_some_and(CancelToken::is_cancelled);
+                    if !stopped && second_pass_is_keepable(&result) {
+                        memo.keep_second_pass(fingerprint, &result);
+                    }
+                    result
+                }
+            },
+            _ => run_pass(&setup2, second_globals),
+        };
         unsettled.extend(second.unsettled.iter().copied());
-        second
+        for (report, unit) in &second.files {
+            match unit.as_ref().filter(|u| !u.return_reads.is_empty()) {
+                Some(unit) => {
+                    return_reads.insert(report.file_id, unit.return_reads.clone());
+                }
+                None => {
+                    return_reads.remove(&report.file_id);
+                }
+            }
+        }
+        (second, kept)
     } else {
-        first
+        (first, Vec::new())
     };
+    for report in kept {
+        if !graph.is_dependency_declaration(report.file_id) {
+            files.push(report);
+        }
+    }
     for (report, _) in last.files {
         // A package's declaration file is read for what it exports and never reported.
         if !graph.is_dependency_declaration(report.file_id) {
             files.push(report);
         }
     }
+    report_cross_file_returns(graph, &return_reads, &mut files);
     files.sort_by_key(|report| report.file_id);
     unsettled.sort();
     unsettled.dedup();
@@ -532,6 +882,124 @@ fn run_project(
         unsettled,
         cancelled,
     }
+}
+
+// Problem: two functions with no return annotation, in two files, whose return types are each
+// read from the other have no answer, and tsc reports TS7023 on both. A single file only sees
+// its own calls, so each file read the other's function as `any` without a word.
+// Picked: every file hands over, for each exported unannotated function, the imported
+// functions its return expressions reach (through its own functions too). Here the nodes are
+// those functions and an edge is such a read; a component of more than one function is a
+// circle, and each member is reported where it is declared, unless its own file already
+// reported it as part of a circle of its own.
+// Cost: a function that is not exported, though it lies on the circle, is not a node and is
+// not reported (tsc reports it); a call through a method or a variable is not read.
+fn report_cross_file_returns(
+    graph: &ModuleGraph,
+    reads: &FxHashMap<FileId, Vec<crate::unit::ReturnRead>>,
+    files: &mut [FileReport],
+) {
+    // Sorted straight away, so the order of the map does not reach the report.
+    #[allow(clippy::disallowed_methods)]
+    let mut ids: Vec<FileId> = reads.keys().copied().collect();
+    ids.sort();
+    let nodes: Vec<(FileId, &crate::unit::ReturnRead)> = ids
+        .iter()
+        .flat_map(|id| reads[id].iter().map(move |read| (*id, read)))
+        .collect();
+    if nodes.is_empty() {
+        return;
+    }
+    let index: FxHashMap<DeclKey, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(position, (_, read))| (read.owner, position))
+        .collect();
+    let adjacency: Vec<Vec<usize>> = nodes
+        .iter()
+        .map(|(_, read)| {
+            let mut targets: Vec<usize> = read
+                .callees
+                .iter()
+                .filter_map(|key| index.get(key).copied())
+                .collect();
+            targets.sort_unstable();
+            targets.dedup();
+            targets
+        })
+        .collect();
+    for component in crate::scc::components(&adjacency) {
+        if component.len() < 2 {
+            continue;
+        }
+        for position in component {
+            let (file, read) = nodes[position];
+            if read.reported_locally {
+                continue;
+            }
+            let Some(report) = files.iter_mut().find(|report| report.file_id == file) else {
+                continue;
+            };
+            let FileOutcome::Checked(diagnostics) = &mut report.outcome else {
+                continue;
+            };
+            let message = crate::diagnostic_messages::messages::return_implicitly_any(&read.name);
+            diagnostics.push(Diagnostic {
+                severity: crate::diagnostics::Severity::Error,
+                code: message.code,
+                message: message.text,
+                file_name: graph
+                    .files()
+                    .path(file)
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                start: read.start,
+                end: read.end,
+            });
+            diagnostics.sort_by_key(|diagnostic| diagnostic.start);
+        }
+    }
+}
+
+// The files whose result can change when what `seeds` see changes: the seeds and everything that
+// reads from them, through imports or lazy imports, followed to the end.
+fn affected_files(
+    graph: &ModuleGraph,
+    seeds: &std::collections::HashSet<FileId>,
+) -> std::collections::HashSet<FileId> {
+    let mut seen = seeds.clone();
+    // The walk fills a set, so the order the seeds are taken in cannot reach a result.
+    #[allow(clippy::disallowed_methods)]
+    let mut stack: Vec<FileId> = seeds.iter().copied().collect();
+    while let Some(id) = stack.pop() {
+        for dependent in graph
+            .dependents(id)
+            .iter()
+            .chain(graph.dynamic_dependents(id))
+        {
+            if seen.insert(*dependent) {
+                stack.push(*dependent);
+            }
+        }
+    }
+    seen
+}
+
+#[cfg(not(test))]
+fn force_full_second() -> bool {
+    false
+}
+
+#[cfg(test)]
+fn force_full_second() -> bool {
+    FORCE_FULL_SECOND.with(|flag| flag.get())
+}
+
+// Test hook: make the second pass check every file, to compare it with the narrowed one.
+#[cfg(test)]
+thread_local! {
+    static FORCE_FULL_SECOND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FILES_CHECKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 // Test hook: how many passes this thread's last `check_project` ran. Thread-local, because
@@ -548,6 +1016,9 @@ struct PassSetup<'a> {
     in_cycle: &'a std::collections::HashSet<FileId>,
     max_cycle_rounds: Option<usize>,
     cancel: Option<&'a CancelToken>,
+    texts: Option<&'a TextFn>,
+    // Answers units of the first pass only; None for the second.
+    memo: Option<&'a dyn UnitMemo>,
 }
 
 // One pass over every component of the graph, on the ready queue. The files come back in
@@ -562,6 +1033,8 @@ fn run_pass(setup: &PassSetup<'_>, globals: Globals) -> UnitResult {
         globals,
         cancel: setup.cancel,
         collect_global_decls: false,
+        texts: setup.texts,
+        sequential: false,
     };
     for (id, unit) in setup.provider_units {
         project.publish(*id, unit.clone());
@@ -593,6 +1066,8 @@ fn run_pass(setup: &PassSetup<'_>, globals: Globals) -> UnitResult {
             }
         }
     }
+    #[cfg(test)]
+    FILES_CHECKED.with(|count| count.set(count.get() + result.files.len()));
     result
 }
 
@@ -623,6 +1098,17 @@ fn run_unit(project: &Project<'_>, setup: &PassSetup<'_>, unit: usize) -> UnitRe
     if members.is_empty() {
         return UnitResult::default();
     }
+    if let Some(memo) = setup.memo
+        && let Some(done) = memo.unit(unit)
+    {
+        for (report, unit_exports) in &done.files {
+            if let Some(unit_exports) = unit_exports {
+                project.publish(report.file_id, unit_exports.clone());
+            }
+        }
+        return done;
+    }
+
     let cyclic = setup.graph.sccs()[unit]
         .iter()
         .any(|id| setup.in_cycle.contains(id));
@@ -667,6 +1153,101 @@ fn run_unit(project: &Project<'_>, setup: &PassSetup<'_>, unit: usize) -> UnitRe
     }
 }
 
+/// Checks one component of `graph` against what its dependencies exported, and nothing else:
+/// the first pass of `run_project` for one unit, without the other units. `dependencies` must
+/// hold every unit the component reads from, directly or through declarations it names.
+/// The members of a cycle are checked one after another, on this thread.
+#[cfg(feature = "incremental")]
+pub(crate) fn check_unit_isolated(
+    graph: &ModuleGraph,
+    unit: usize,
+    in_cycle: &std::collections::HashSet<FileId>,
+    dependencies: &[(FileId, &UnitExports)],
+    texts: &TextFn,
+    cancel: Option<&CancelToken>,
+    provider_units: &[(FileId, UnitExports)],
+) -> UnitResult {
+    // The same globals `run_project` builds for its first pass: what the ambient providers
+    // declared, and whether a missing package is reportable given a wildcard module they declare.
+    let provider_refs: Vec<(FileId, &UnitExports)> =
+        provider_units.iter().map(|(id, u)| (*id, u)).collect();
+    let mut globals = Globals::build(graph, &provider_refs);
+    let wildcard_declared = provider_refs
+        .iter()
+        .flat_map(|(_, unit)| unit.ambient.iter())
+        .any(|module| module.specifier.contains('*'));
+    globals.bare_reportable = bare_specifiers_are_reportable(graph, wildcard_declared);
+    let project = Project {
+        graph,
+        tables: RwLock::new(Tables::default()),
+        globals,
+        cancel,
+        collect_global_decls: false,
+        texts: Some(texts),
+        sequential: true,
+    };
+    for (id, unit) in provider_units {
+        project.publish(*id, unit.clone());
+    }
+    for (id, exports) in dependencies {
+        project.publish_ref(*id, exports);
+    }
+    let providers: std::collections::HashSet<FileId> =
+        provider_units.iter().map(|(id, _)| *id).collect();
+    let setup = PassSetup {
+        graph,
+        providers: &providers,
+        provider_units,
+        in_cycle,
+        max_cycle_rounds: None,
+        cancel,
+        texts: Some(texts),
+        memo: None,
+    };
+    run_unit(&project, &setup, unit)
+}
+
+/// Everything a unit reads from the graph besides its own edges and its dependencies' exports:
+/// the compiler options and whether a missing package is reported. Two graphs with the same
+/// digest give a unit the same environment.
+#[cfg(feature = "incremental")]
+pub(crate) fn unit_environment(graph: &ModuleGraph) -> String {
+    format!(
+        "{:?}|{}|{:?}|{}",
+        graph.check_options(),
+        bare_specifiers_are_reportable(graph, false),
+        graph.root(),
+        graph.type_entries_loaded(),
+    )
+}
+
+/// The ambient providers of a graph: the files `run_project` checks before the first pass.
+#[cfg(feature = "incremental")]
+pub(crate) fn provider_ids(graph: &ModuleGraph) -> Vec<FileId> {
+    ambient_providers(graph)
+}
+
+/// Checks one ambient provider the way `run_project` does before its first pass: against
+/// nothing, collecting the global declarations it makes.
+#[cfg(feature = "incremental")]
+pub(crate) fn check_provider_isolated(
+    graph: &ModuleGraph,
+    id: FileId,
+    texts: &TextFn,
+    cancel: Option<&CancelToken>,
+) -> Checked {
+    let project = Project {
+        graph,
+        tables: RwLock::new(Tables::default()),
+        globals: Globals::default(),
+        cancel,
+        collect_global_decls: true,
+        texts: Some(texts),
+        sequential: true,
+    };
+    with_worker(|worker| check_file(&project, worker, id))
+}
+
 thread_local! {
     // One worker per thread, so its arena is reused from file to file; the worker clears
     // it after every unit, so nothing carries over.
@@ -707,27 +1288,24 @@ fn bare_specifiers_are_reportable(graph: &ModuleGraph, wildcard_module_declared:
     // extended file can hold any of the rest.
     // `customConditions` and `moduleSuffixes` are never applied by the resolver, so they
     // count either way.
-    let keys: &[&str] = if graph.tsconfig_applied() {
-        &[
-            "\"rootDirs\"",
-            "\"extends\"",
-            "\"typeRoots\"",
-            "\"customConditions\"",
-            "\"moduleSuffixes\"",
-        ]
-    } else {
-        &[
-            "\"paths\"",
-            "\"baseUrl\"",
-            "\"rootDirs\"",
-            "\"extends\"",
-            "\"typeRoots\"",
-            "\"customConditions\"",
-            "\"moduleSuffixes\"",
-        ]
-    };
+    let loaded = graph.type_entries_loaded();
+    let mut keys: Vec<&str> = vec![
+        "\"rootDirs\"",
+        "\"extends\"",
+        "\"customConditions\"",
+        "\"moduleSuffixes\"",
+    ];
+    // `typeRoots` holds a package back only while the declarations in it are not read.
+    if !loaded {
+        keys.push("\"typeRoots\"");
+    }
+    if !graph.tsconfig_applied() {
+        keys.extend(["\"paths\"", "\"baseUrl\""]);
+    }
     for directory in root.ancestors() {
-        if directory.join("node_modules").join("@types").is_dir() {
+        // An `@types` package is global, so it can answer a name no import reaches, unless the
+        // declarations of those packages were loaded and are known.
+        if !loaded && directory.join("node_modules").join("@types").is_dir() {
             return false;
         }
         if parsed.is_some() {
@@ -735,7 +1313,7 @@ fn bare_specifiers_are_reportable(graph: &ModuleGraph, wildcard_module_declared:
         }
         for name in ["tsconfig.json", "jsconfig.json"] {
             if let Ok(text) = fs::read_to_string(directory.join(name)) {
-                if keys.iter().any(|key| text.contains(key)) {
+                if keys.iter().any(|key| text.contains(*key)) {
                     return false;
                 }
             }
@@ -882,6 +1460,13 @@ fn worker_pool() -> Option<&'static rayon::ThreadPool> {
 // have nothing to wait for, and for the rounds of one cycle.
 fn check_files(project: &Project<'_>, ids: &[FileId]) -> Vec<Checked> {
     let graph = project.graph;
+    if project.sequential {
+        return ids
+            .iter()
+            .filter(|id| graph.is_checkable(**id) || graph.is_dependency_declaration(**id))
+            .map(|id| with_worker(|worker| check_file(project, worker, *id)))
+            .collect();
+    }
     let check_layer = || {
         ids.par_iter()
             .filter(|id| graph.is_checkable(**id) || graph.is_dependency_declaration(**id))
@@ -940,7 +1525,7 @@ fn fingerprint(
 ) -> Vec<(
     FileId,
     bool,
-    Vec<(String, DeclKey)>,
+    Arc<Vec<(String, DeclKey)>>,
     Vec<crate::keys::SigHash>,
 )> {
     let mut seen: Vec<_> = done
@@ -962,20 +1547,23 @@ fn fingerprint(
 }
 
 // What one checked file hands to the files that import it.
-#[derive(Clone)]
-struct UnitExports {
-    names: Vec<(String, DeclKey)>,
-    decls: Vec<PortableDecl>,
+#[derive(Clone, Debug)]
+pub(crate) struct UnitExports {
+    // Shared, so a unit that reads many dependencies holds handles, not copies.
+    pub(crate) names: Arc<Vec<(String, DeclKey)>>,
+    pub(crate) decls: Vec<Arc<PortableDecl>>,
     // Whether `names` is the module's whole export list (see UnitOutput).
-    complete: bool,
+    pub(crate) complete: bool,
     // The modules the file declares with `declare module "x"`.
-    ambient: Vec<crate::unit::AmbientExports>,
-    augmentations: Vec<crate::unit::AmbientExports>,
-    umd_namespaces: Vec<String>,
+    pub(crate) ambient: Vec<crate::unit::AmbientExports>,
+    pub(crate) augmentations: Vec<crate::unit::AmbientExports>,
+    pub(crate) umd_namespaces: Vec<String>,
     // The names the file uses that nothing in it declares.
-    unresolved_names: Vec<String>,
+    pub(crate) unresolved_names: Vec<String>,
     // What the file declares globally (see UnitOutput::globals).
-    globals: Vec<crate::unit::AmbientExports>,
+    pub(crate) globals: Vec<crate::unit::AmbientExports>,
+    // Exported unannotated functions that read imported ones (see UnitOutput::return_reads).
+    pub(crate) return_reads: Vec<crate::unit::ReturnRead>,
 }
 
 // The imports of one file: its specifiers are resolved through the graph's own edges, so
@@ -1115,7 +1703,7 @@ impl ImportSource for ImportsOf<'_> {
             .names
             .get(&target)
             .into_iter()
-            .flatten()
+            .flat_map(|names| names.iter())
             .filter(|(name, _)| name != "default")
             .cloned()
             .collect::<Vec<_>>();
@@ -1179,7 +1767,7 @@ impl ImportSource for ImportsOf<'_> {
             .names
             .get(&target)
             .into_iter()
-            .flatten()
+            .flat_map(|names| names.iter())
             .filter(|(exported, _)| exported == name)
             .map(|(_, key)| *key)
             .collect::<Vec<_>>();
@@ -1249,7 +1837,10 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
     let mut incomplete_reasons = Vec::new();
     let outcome = match graph.files().path(id) {
         None => FileOutcome::ReadFailed(format!("no path recorded for file {}", id.index())),
-        Some(path) => match load_text(graph, id, path) {
+        Some(path) => match match project.texts.and_then(|texts| texts(id)) {
+            Some(text) => Ok(Cow::Owned(text.to_string())),
+            None => load_text(graph, id, path),
+        } {
             Err(error) => FileOutcome::ReadFailed(format!("{}: {error}", path.display())),
             Ok(source) => {
                 let name = path.to_string_lossy();
@@ -1258,7 +1849,9 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                     from: id,
                     reads: std::sync::Mutex::new(Vec::new()),
                 };
-                let mut ctx = UnitContext::new(id, &name, &source).with_imports(&imports);
+                let mut ctx = UnitContext::new(id, &name, &source)
+                    .with_imports(&imports)
+                    .with_options(graph.check_options());
                 // A file with no stable key (inside node_modules, until package keys
                 // exist) can import but exports nothing.
                 if let Some(module) = graph.module_key(id) {
@@ -1273,14 +1866,15 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                     Ok(output) => {
                         incomplete_reasons = output.incomplete_reasons.clone();
                         unit_exports = Some(UnitExports {
-                            names: output.export_names,
-                            decls: output.exports,
+                            names: Arc::new(output.export_names),
+                            decls: output.exports.into_iter().map(Arc::new).collect(),
                             complete: output.exports_complete,
                             ambient: output.ambient,
                             augmentations: output.augmentations,
                             umd_namespaces: output.umd_namespaces,
                             unresolved_names: output.unresolved_names,
                             globals: output.globals,
+                            return_reads: output.return_reads,
                         });
                         FileOutcome::Checked(output.diagnostics)
                     }
@@ -1479,6 +2073,142 @@ mod determinism_tests {
         let graph = ModuleGraph::build(&entries, &ModuleResolver::new()).unwrap();
         check_project(&graph);
         assert_eq!(PASSES_RUN.with(|count| count.get()), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn shared_global_project(tag: &str) -> (PathBuf, Vec<PathBuf>) {
+        let mut sources = vec![
+            (
+                "decl.d.ts".to_string(),
+                "interface Shared { n: number }".to_string(),
+            ),
+            (
+                "user.ts".to_string(),
+                "export const ok: Shared = { n: 1 };\nexport const bad: Shared = { n: 's' };\n"
+                    .to_string(),
+            ),
+            (
+                "importer.ts".to_string(),
+                "import { ok } from './user';\nexport const t: string = ok.n;\n".to_string(),
+            ),
+        ];
+        for index in 0..5 {
+            sources.push((
+                format!("lone{index}.ts"),
+                format!("export const a{index}: number = {index};\n"),
+            ));
+        }
+        write_project(tag, &sources)
+    }
+
+    #[test]
+    fn a_global_declaration_rechecks_only_its_users_and_what_reads_them() {
+        use super::{FILES_CHECKED, FORCE_FULL_SECOND};
+        let (root, entries) = shared_global_project("narrow-second-pass");
+        let graph = ModuleGraph::build(&entries, &ModuleResolver::new()).unwrap();
+        let narrowed = signature(&check_project(&graph));
+        assert_eq!(PASSES_RUN.with(|count| count.get()), 2);
+        // Eight files in the first pass; then only `user.ts`, which uses `Shared`, and
+        // `importer.ts`, which reads from it.
+        assert_eq!(FILES_CHECKED.with(|count| count.get()), 8 + 2);
+
+        FORCE_FULL_SECOND.with(|flag| flag.set(true));
+        let full = signature(&check_project(&graph));
+        FORCE_FULL_SECOND.with(|flag| flag.set(false));
+        assert_eq!(FILES_CHECKED.with(|count| count.get()), 8 + 8);
+        assert_eq!(
+            narrowed, full,
+            "narrowing must not change any file's result"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // Checks `graph` narrowed and with the second pass forced to every file, and says how many
+    // files each ran and whether the results are the same.
+    fn narrowed_and_full(graph: &ModuleGraph) -> (usize, usize, bool) {
+        use super::{FILES_CHECKED, FORCE_FULL_SECOND};
+        let narrowed = signature(&check_project(graph));
+        let narrowed_files = FILES_CHECKED.with(|count| count.get());
+        assert_eq!(PASSES_RUN.with(|count| count.get()), 2);
+        FORCE_FULL_SECOND.with(|flag| flag.set(true));
+        let full = signature(&check_project(graph));
+        FORCE_FULL_SECOND.with(|flag| flag.set(false));
+        let full_files = FILES_CHECKED.with(|count| count.get());
+        (narrowed_files, full_files, narrowed == full)
+    }
+
+    #[test]
+    fn a_umd_global_rechecks_only_the_files_that_use_it() {
+        let sources = vec![
+            (
+                "lib.d.ts".to_string(),
+                "export function make(): number;\nexport as namespace Lib;".to_string(),
+            ),
+            (
+                "use.ts".to_string(),
+                "const n: number = Lib.make();\nconst bad: string = Lib.make();\n".to_string(),
+            ),
+            ("lone.ts".to_string(), "export const a = 1;\n".to_string()),
+        ];
+        let (root, entries) = write_project("umd-narrow", &sources);
+        let graph = ModuleGraph::build(&entries, &ModuleResolver::new()).unwrap();
+        let (narrowed, full, same) = narrowed_and_full(&graph);
+        assert_eq!((narrowed, full), (3 + 1, 3 + 3));
+        assert!(same, "narrowing must not change any file's result");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_augmentation_rechecks_the_files_that_read_the_augmented_module() {
+        let mut sources = vec![
+            (
+                "a.ts".to_string(),
+                "export interface Foo { a: number }\n".to_string(),
+            ),
+            (
+                "aug.ts".to_string(),
+                "import './a';\ndeclare module './a' { interface Foo { b: string } }\n".to_string(),
+            ),
+            (
+                "use.ts".to_string(),
+                "import { Foo } from './a';\nexport const x: Foo = { a: 1 };\n".to_string(),
+            ),
+        ];
+        for index in 0..4 {
+            sources.push((
+                format!("lone{index}.ts"),
+                format!("export const a{index}: number = {index};\n"),
+            ));
+        }
+        let (root, entries) = write_project("augmentation-narrow", &sources);
+        let graph = ModuleGraph::build(&entries, &ModuleResolver::new()).unwrap();
+        let (narrowed, full, same) = narrowed_and_full(&graph);
+        // `aug.ts` and `use.ts` import `./a`; the four others have nothing to do with it.
+        assert_eq!((narrowed, full), (7 + 2, 7 + 7));
+        assert!(same, "narrowing must not change any file's result");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_wildcard_ambient_module_checks_every_file_again() {
+        let sources = vec![
+            (
+                "mixed.ts".to_string(),
+                "export const m: number = 1;\n\
+                 declare module '*.css' { const text: string; export default text; }\n"
+                    .to_string(),
+            ),
+            (
+                "use.ts".to_string(),
+                "import { m } from './mixed';\nexport const n: string = m;\n".to_string(),
+            ),
+            ("lone.ts".to_string(), "export const a = 1;\n".to_string()),
+        ];
+        let (root, entries) = write_project("wildcard-full", &sources);
+        let graph = ModuleGraph::build(&entries, &ModuleResolver::new()).unwrap();
+        let (narrowed, full, same) = narrowed_and_full(&graph);
+        assert_eq!(narrowed, full, "a pattern can match any specifier");
+        assert!(same);
         fs::remove_dir_all(root).unwrap();
     }
 

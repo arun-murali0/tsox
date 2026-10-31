@@ -40,6 +40,7 @@ pub(super) fn bind_imports<'ast>(
     let Some(source) = ctx.imports else {
         return;
     };
+    report_reference_directives(program.source_text, source, ctx);
     bind_project_globals(program, scoping, ctx, source);
     bind_import_types(program, ctx, source);
     // UMD aliases are global names for script consumers. An external module is isolated
@@ -138,8 +139,15 @@ fn bind_project_globals<'ast>(
         .collect();
     names.sort();
     let own = super::declare::own_global_block_names(program);
+    let own_interfaces = super::declare::own_global_interface_names(program);
+    for name in &own_interfaces {
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    names.sort();
     for name in names {
-        if own.contains(&name) {
+        if own.contains(&name) && !own_interfaces.contains(&name) {
             continue;
         }
         // A name the standard library provides is bound to nothing here: a project file that
@@ -149,6 +157,24 @@ fn bind_project_globals<'ast>(
             continue;
         }
         let keys = source.global_decls(&name);
+        if own_interfaces.contains(&name) {
+            // Declared here as well: the project's copies wait under a hidden name until the
+            // local declaration exists, and merge_own_global_interfaces joins them.
+            // One key is this file's own declaration: nothing to join, and nothing to read.
+            if keys.len() < 2 {
+                continue;
+            }
+            let hidden = hidden_global_name(&name);
+            for &key in &keys {
+                if source
+                    .decl(key)
+                    .is_some_and(|decl| decl.kind == DeclKind::Interface)
+                {
+                    bind_key_as(ctx, source, key, &hidden, None, true);
+                }
+            }
+            continue;
+        }
         if keys.is_empty() {
             if source.global_name_unmodelled(&name) {
                 ctx.namespace.mark_unmodelled_global(&name);
@@ -156,6 +182,47 @@ fn bind_project_globals<'ast>(
             continue;
         }
         bind_global_name(ctx, source, &name, &keys);
+    }
+}
+
+fn hidden_global_name(name: &str) -> String {
+    format!("\u{1}global {name}")
+}
+
+// Problem: `interface G` declared in two script files (or in a `declare global` block) is one
+// interface in TypeScript, but a file that declares it itself never looked at the other
+// files' parts, so each file saw only its own members and reported the other's as unknown.
+// Picked: bind_project_globals parks the project's copies under a hidden name; once the file's
+// own declarations exist, this joins them into the name. A duplicate member keeps the local
+// one, and the local declaration's own copy in the project table adds nothing.
+// Cost: only non-generic interfaces; a generic one keeps just this file's declaration.
+pub(super) fn merge_own_global_interfaces<'ast>(
+    program: &'ast Program<'ast>,
+    ctx: &mut CheckContext<'ast, '_>,
+) {
+    use crate::namespace::Resolution;
+    if ctx.imports.is_none() {
+        return;
+    }
+    for name in super::declare::own_global_interface_names(program) {
+        let hidden = hidden_global_name(&name);
+        if ctx
+            .namespace
+            .declared_type_param_arity(&name)
+            .is_some_and(|(_, total)| total > 0)
+            || ctx.namespace.imported_generic(&hidden).is_some()
+        {
+            continue;
+        }
+        let Resolution::Resolved(imported) = ctx.namespace.resolve(&hidden, &mut ctx.arena) else {
+            continue;
+        };
+        let Resolution::Resolved(local) = ctx.namespace.resolve(&name, &mut ctx.arena) else {
+            continue;
+        };
+        if let Some(merged) = merge_imported_object_shapes(&mut ctx.arena, local, imported) {
+            ctx.namespace.insert_resolved(&name, merged);
+        }
     }
 }
 
@@ -296,6 +363,27 @@ fn module_export_name(name: &ModuleExportName<'_>) -> String {
         ModuleExportName::IdentifierName(n) => n.name.to_string(),
         ModuleExportName::IdentifierReference(n) => n.name.to_string(),
         ModuleExportName::StringLiteral(s) => s.value.to_string(),
+    }
+}
+
+// TS2688 for a `/// <reference types="x" />` and TS6053 for a `/// <reference path="x" />`
+// that names nothing. Judged like an import: only when the graph is sure the name is missing.
+fn report_reference_directives<'ast>(
+    text: &str,
+    source: &dyn ImportSource,
+    ctx: &mut CheckContext<'ast, '_>,
+) {
+    use crate::reference_directives::{DirectiveKind, scan};
+    for directive in scan(text) {
+        if source.module_exports(&directive.specifier) != ModuleExports::Unresolved {
+            continue;
+        }
+        let span = Span::new(directive.start as u32, directive.end as u32);
+        let message = match directive.kind {
+            DirectiveKind::Types => messages::type_definition_not_found(&directive.written),
+            DirectiveKind::Path => messages::referenced_file_not_found(&directive.written),
+        };
+        ctx.error(message, span);
     }
 }
 
@@ -469,14 +557,23 @@ struct ImportTypeUses {
     modules: std::collections::BTreeSet<String>,
     // (specifier, dotted qualifier) of an `import("x").A.B` type.
     names: std::collections::BTreeSet<(String, String)>,
+    // (specifier, export name) of a `typeof import("x").y` query.
+    values: std::collections::BTreeSet<(String, String)>,
 }
 
 impl<'a> Visit<'a> for ImportTypeUses {
     fn visit_ts_type_query(&mut self, query: &TSTypeQuery<'a>) {
-        if let TSTypeQueryExprName::TSImportType(import) = &query.expr_name
-            && import.qualifier.is_none()
-        {
-            self.modules.insert(import.source.value.to_string());
+        if let TSTypeQueryExprName::TSImportType(import) = &query.expr_name {
+            match &import.qualifier {
+                None => {
+                    self.modules.insert(import.source.value.to_string());
+                }
+                Some(oxc_ast::ast::TSImportTypeQualifier::Identifier(name)) => {
+                    self.values
+                        .insert((import.source.value.to_string(), name.name.to_string()));
+                }
+                Some(_) => {}
+            }
         }
         walk::walk_ts_type_query(self, query);
     }
@@ -504,7 +601,7 @@ impl<'a> Visit<'a> for ImportTypeUses {
 // (see type_annotation::typeof_import_name), so the annotation reader only looks it up. Only
 // what the file writes is bound, so a file with no import types pays nothing.
 // Cost: a module object is built only from a module whose exports are known in full, as for
-// `import * as ns`; a type argument or a qualified `typeof import("x").y` is not read.
+// `import * as ns`; a type argument on an import type is not read.
 fn bind_import_types<'ast>(
     program: &'ast Program<'ast>,
     ctx: &mut CheckContext<'ast, '_>,
@@ -516,6 +613,23 @@ fn bind_import_types<'ast>(
         if let Some(object) = module_object(ctx, source, specifier) {
             let name = crate::type_annotation::typeof_import_name(specifier);
             ctx.namespace.insert_imported(&name, object, Vec::new());
+        }
+    }
+    for (specifier, export) in &uses.values {
+        let Some(object) = module_object(ctx, source, specifier) else {
+            continue;
+        };
+        let crate::types::Type::Object(object) = ctx.arena.get(object).clone() else {
+            continue;
+        };
+        if let Some(property) = object
+            .properties
+            .iter()
+            .find(|p| &*p.name == export.as_str())
+        {
+            let name = crate::type_annotation::typeof_import_value_name(specifier, export);
+            ctx.namespace
+                .insert_imported(&name, property.type_id, Vec::new());
         }
     }
     for (specifier, qualifier) in &uses.names {
@@ -576,6 +690,43 @@ fn bind_key<'ast>(
     );
 }
 
+// Problem: an imported class is its instance type and its constructor, bound separately, and
+// an interface that merges into the class (a module augmentation) changed only the type, so
+// `new C()` still produced the class without the added members.
+// Picked: when the type bound to a name differs from what its imported constructor returns,
+// the constructor is given the bound type, whichever of the two was bound last.
+// Cost: only a constructor that returns the imported instance type itself is rewritten.
+fn rewire_class_constructor<'ast>(
+    ctx: &mut CheckContext<'ast, '_>,
+    symbol: Option<oxc_semantic::SymbolId>,
+    name: &str,
+) {
+    let Some(symbol_id) = symbol else {
+        return;
+    };
+    let Some(value) = ctx.symbols.get(symbol_id) else {
+        return;
+    };
+    let crate::types::Type::Function(function) = ctx.arena.get(value).clone() else {
+        return;
+    };
+    if !ctx.class_instances.contains(&function.return_type) {
+        return;
+    }
+    let crate::namespace::Resolution::Resolved(current) =
+        ctx.namespace.resolve(name, &mut ctx.arena)
+    else {
+        return;
+    };
+    if current == function.return_type {
+        return;
+    }
+    let mut rewired = function;
+    rewired.return_type = current;
+    let rewired = ctx.arena.alloc(crate::types::Type::Function(rewired));
+    ctx.symbols.declare(symbol_id, rewired);
+}
+
 // Merge two imported interface/class object shapes. A module augmentation contributes
 // properties that the original declaration did not have; the original declaration wins
 // for a duplicate non-method member (which is separately an invalid declaration merge),
@@ -631,6 +782,15 @@ fn bind_key_as<'ast>(
     let Some(decl) = provider.decl(key) else {
         return;
     };
+    if decl.kind == DeclKind::Function
+        && !type_only
+        && let Some(symbol_id) = symbol
+    {
+        let keys = ctx.imported_function_symbols.entry(symbol_id).or_default();
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
     // Remembered before the kind is looked at, so that a name this file only passes on
     // (`import { X } from "./a"; export { X }`) still finds the declaration.
     if !(type_only && matches!(decl.kind, DeclKind::Function | DeclKind::Var)) {
@@ -651,6 +811,9 @@ fn bind_key_as<'ast>(
                 .generic_params(&mut ctx.arena, provider, key)
                 .unwrap_or_default();
 
+            if decl.kind == DeclKind::Class {
+                ctx.class_instances.insert(type_id);
+            }
             let mergeable = matches!(decl.kind, DeclKind::Interface | DeclKind::Class)
                 && previous_keys.iter().any(|previous| {
                     provider.decl(*previous).is_some_and(|previous_decl| {
@@ -711,6 +874,7 @@ fn bind_key_as<'ast>(
             }
             ctx.namespace
                 .insert_imported(name, binding_type, binding_params);
+            rewire_class_constructor(ctx, symbol, name);
         }
         // `import type { f }` brings in no value, only the right to name types.
         DeclKind::Function | DeclKind::Var if !type_only => {
@@ -732,8 +896,27 @@ fn bind_key_as<'ast>(
                         .unwrap_or(type_id);
                     ctx.symbols.declare(symbol_id, combined);
                 } else {
-                    ctx.symbols.declare(symbol_id, type_id);
+                    // Two namespace blocks (one of them a module augmentation) are one
+                    // object; an earlier key of this name is what makes the current type
+                    // the first block's and not something this file declared.
+                    let earlier_var = previous_keys.iter().any(|previous| {
+                        provider
+                            .decl(*previous)
+                            .is_some_and(|previous_decl| previous_decl.kind == DeclKind::Var)
+                    });
+                    let combined = match ctx.symbols.get(symbol_id) {
+                        Some(existing)
+                            if earlier_var && decl.kind == DeclKind::Var && existing != type_id =>
+                        {
+                            merge_imported_object_shapes(&mut ctx.arena, existing, type_id)
+                        }
+                        _ => None,
+                    };
+                    ctx.symbols.declare(symbol_id, combined.unwrap_or(type_id));
                 }
+            }
+            if decl.kind == DeclKind::Var {
+                rewire_class_constructor(ctx, symbol, name);
             }
         }
         // An enum is a type and a value under one name; `import type` brings in the type.
@@ -742,6 +925,35 @@ fn bind_key_as<'ast>(
                 ctx.importer.import_enum(&mut ctx.arena, provider, key)
             else {
                 return;
+            };
+            // An enum another declaration of the same name adds members to (a module
+            // augmentation) is one enum: its type is the union of the parts and its value
+            // has the members of all of them.
+            let earlier_enum = previous_keys.iter().any(|previous| {
+                provider
+                    .decl(*previous)
+                    .is_some_and(|previous_decl| previous_decl.kind == DeclKind::Enum)
+            });
+            let (type_position, value_type) = if earlier_enum {
+                let previous_type = match ctx.namespace.resolve(name, &mut ctx.arena) {
+                    crate::namespace::Resolution::Resolved(previous) => Some(previous),
+                    _ => None,
+                };
+                let previous_value = symbol.and_then(|symbol_id| ctx.symbols.get(symbol_id));
+                let joined = match previous_type {
+                    Some(previous) if previous != type_position => {
+                        ctx.arena.alloc_union(vec![previous, type_position])
+                    }
+                    _ => type_position,
+                };
+                let joined_value = previous_value
+                    .and_then(|previous| {
+                        merge_imported_object_shapes(&mut ctx.arena, previous, value_type)
+                    })
+                    .unwrap_or(value_type);
+                (joined, joined_value)
+            } else {
+                (type_position, value_type)
             };
             ctx.namespace
                 .insert_imported(name, type_position, Vec::new());

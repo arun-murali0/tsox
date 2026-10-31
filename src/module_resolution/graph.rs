@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::project::ProjectFiles;
-use crate::topology::ModuleTopology;
 use crate::types::FileId;
 
 use super::config::ProjectConfig;
@@ -68,6 +67,9 @@ pub struct ModuleGraph {
     // Whether the resolver that built the graph applied a tsconfig.json, so a `paths` or
     // `baseUrl` in it has already had its say in resolution.
     tsconfig_applied: bool,
+    // True when the declaration files `types` and `typeRoots` name were made entries of this
+    // graph, so a package or ambient module they declare is known and not a reason to hold back.
+    type_entries_loaded: bool,
     // The configuration the graph was built under, once a caller attaches it with
     // `with_config`: an input of the graph like the root.
     config: Option<ConfigInput>,
@@ -80,6 +82,11 @@ pub struct ModuleGraph {
 struct ConfigInput {
     files: Vec<(PathBuf, FileState)>,
     hides_bare_specifiers: bool,
+    // `typeRoots` is set; it holds back a missing-package report unless the type entries are
+    // loaded (`with_type_entries_loaded`).
+    type_roots_set: bool,
+    // The compiler options the checker reads, taken from the configuration when attached.
+    options: crate::CheckOptions,
 }
 
 impl ModuleGraph {
@@ -87,16 +94,31 @@ impl ModuleGraph {
     /// be absolute so that one file is never interned under two spellings of its path.
     /// The ids of the result follow path order, whatever order the entries were given in.
     pub fn build(entries: &[PathBuf], resolver: &ModuleResolver) -> Result<Self, ModuleError> {
+        Self::build_with_overlay(entries, resolver, &|_| None)
+    }
+
+    /// Like `build`, but a file the overlay has text for is read from the overlay instead of
+    /// from disk (an editor buffer that was not saved). The overlay file need not exist on disk.
+    pub fn build_with_overlay(
+        entries: &[PathBuf],
+        resolver: &ModuleResolver,
+        overlay: &(dyn Fn(&Path) -> Option<Arc<str>> + Sync),
+    ) -> Result<Self, ModuleError> {
         // Discovery parses every file on the calling thread, and the parser recurses on
         // nested syntax. It runs on the same 64 MB stack the checking workers have, so a
         // file this can parse is a file they can parse, and not on whatever stack the
         // caller happens to be on (8 MB for a main thread, 2 MB for a spawned one).
-        let mut graph = crate::stack_guard::on_big_stack(|| Self::discover(entries, resolver))?;
+        let mut graph =
+            crate::stack_guard::on_big_stack(|| Self::discover(entries, resolver, overlay))?;
         graph.tsconfig_applied = resolver.reads_tsconfig();
         Ok(graph)
     }
 
-    fn discover(entries: &[PathBuf], resolver: &ModuleResolver) -> Result<Self, ModuleError> {
+    fn discover(
+        entries: &[PathBuf],
+        resolver: &ModuleResolver,
+        overlay: &(dyn Fn(&Path) -> Option<Arc<str>> + Sync),
+    ) -> Result<Self, ModuleError> {
         // Discovery ids: handed out as files are found, and used only until the walk ends.
         let mut files = ProjectFiles::new();
         for entry in entries {
@@ -123,14 +145,25 @@ impl ModuleGraph {
 
             // The fingerprint is taken before the read. If the file changes in between,
             // the recorded fingerprint is the older one and the change is still seen.
-            let fingerprint = FileFingerprint::of(&path).map_err(|source| ModuleError::Read {
-                path: path.clone(),
-                source,
-            })?;
-            let bytes = fs::read(&path).map_err(|source| ModuleError::Read {
-                path: path.clone(),
-                source,
-            })?;
+            let buffer = overlay(&path);
+            let (fingerprint, bytes) = match buffer {
+                Some(text) => (
+                    FileFingerprint::of(&path).unwrap_or_else(|_| FileFingerprint::absent()),
+                    text.as_bytes().to_vec(),
+                ),
+                None => {
+                    let fingerprint =
+                        FileFingerprint::of(&path).map_err(|source| ModuleError::Read {
+                            path: path.clone(),
+                            source,
+                        })?;
+                    let bytes = fs::read(&path).map_err(|source| ModuleError::Read {
+                        path: path.clone(),
+                        source,
+                    })?;
+                    (fingerprint, bytes)
+                }
+            };
             let state = FileState::new(fingerprint, content_hash(&bytes));
 
             let mut kept: Option<Arc<str>> = None;
@@ -307,6 +340,7 @@ impl ModuleGraph {
             ambient_scripts,
             root: None,
             tsconfig_applied: false,
+            type_entries_loaded: false,
             config: None,
         }
     }
@@ -343,15 +377,24 @@ impl ModuleGraph {
         // specifiers, so it cannot answer a package name. `customConditions` and
         // `moduleSuffixes` change which file a package specifier lands on and the resolver
         // is not given either, so a package they would find must not be reported missing.
-        let hides_bare_specifiers = has("typeRoots")
-            || has("customConditions")
+        let hides_bare_specifiers = has("customConditions")
             || has("moduleSuffixes")
             || (!self.tsconfig_applied && (has("paths") || has("baseUrl")));
         self.config = Some(ConfigInput {
             files,
             hides_bare_specifiers,
+            type_roots_set: has("typeRoots"),
+            options: config.check_options(),
         });
         self
+    }
+
+    /// The compiler options the checker reads, as the attached configuration sets them; the
+    /// defaults when none was attached.
+    pub fn check_options(&self) -> crate::CheckOptions {
+        self.config
+            .as_ref()
+            .map_or_else(crate::CheckOptions::default, |config| config.options)
     }
 
     /// Whether any config file recorded by `with_config` has changed or gone since. False
@@ -384,9 +427,22 @@ impl ModuleGraph {
     /// answer a package specifier that no file answers, so a missing package should not
     /// be reported. None when no configuration was attached.
     pub fn config_hides_bare_specifiers(&self) -> Option<bool> {
-        self.config
-            .as_ref()
-            .map(|config| config.hides_bare_specifiers)
+        self.config.as_ref().map(|config| {
+            config.hides_bare_specifiers || (config.type_roots_set && !self.type_entries_loaded)
+        })
+    }
+
+    /// Says the declaration files `types` and `typeRoots` name were made entries of this graph
+    /// (see `ProjectConfig::project_entries`), so what they declare is read and a package they
+    /// would have answered no longer holds back the report of a missing one.
+    pub fn with_type_entries_loaded(mut self) -> Self {
+        self.type_entries_loaded = true;
+        self
+    }
+
+    /// Whether `with_type_entries_loaded` was called.
+    pub fn type_entries_loaded(&self) -> bool {
+        self.type_entries_loaded
     }
 
     /// Whether the resolver that built this graph applied a `tsconfig.json`.
@@ -535,26 +591,6 @@ impl ModuleGraph {
                     .is_none_or(|path| !self.states[index_of(*id)].is_unchanged(path))
             })
             .collect()
-    }
-
-    /// The import edges as a petgraph graph. A snapshot of the graph as it is now; it
-    /// does not follow changes made to the graph later.
-    pub fn topology(&self) -> ModuleTopology {
-        let mut topology = ModuleTopology::new();
-        for position in 0..self.len() {
-            let id = file_id(position);
-            topology.add_file(id);
-            for edge in &self.edges[index_of(id)] {
-                // The same edges that order the graph, so both agree on cycles.
-                if edge.kind == ModuleRequestKind::DynamicImport {
-                    continue;
-                }
-                if let Some(target) = edge.target {
-                    topology.add_typed_dependency(id, target, edge.kind);
-                }
-            }
-        }
-        topology
     }
 
     /// Groups of files that import each other, directly or through others. A file that
