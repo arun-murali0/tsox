@@ -43,7 +43,6 @@ smallvec = "1.16"
 oxc_resolver = { version = "=11.24.3", optional = true }
 rayon = { version = "1.10", optional = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-petgraph = { version = "=0.8.3", optional = true }
 salsa = { version = "=0.28.5", optional = true }
 bumpalo = { version = "=3.20.3", optional = true }
 proc-macro2 = "1.0.107"
@@ -114,7 +113,7 @@ dhat-heap = ["dep:dhat"]
 # Project-level module resolution and the module graph. On by default since the checker
 # is cross-file now. It reads the filesystem through oxc_resolver, so single-file,
 # in-memory and wasm callers build with --no-default-features.
-module-resolution = ["dep:oxc_resolver", "dep:rayon", "dep:petgraph"]
+module-resolution = ["dep:oxc_resolver", "dep:rayon"]
 
 # Salsa inputs and memoized queries over project files. A shell around the checker for
 # now; see docs/architecture/foundation-dependencies.md.

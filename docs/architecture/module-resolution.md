@@ -8,7 +8,7 @@ Every earlier milestone checks one source string. A real project is a set of fil
 
 Module Resolution answers those three and nothing else. It does not bind an imported name to its declaration in another file. That is the next consumer of what this milestone builds, and it is told in [cross-file-types](cross-file-types.md): this document stops at handing the checker its files in a safe order.
 
-There are 26 integration tests in `tests/module_resolution.rs` (3 of them cover the petgraph view added later, see [architecture-foundation](foundation-dependencies.md)), 10 unit tests next to the code, and 7 small projects under `tests/module-resolution-fixtures/`.
+There are 26 integration tests in `tests/module_resolution.rs`, 10 unit tests next to the code, and 7 small projects under `tests/module-resolution-fixtures/`.
 
 ## 2. An opt-in feature, not a default dependency
 

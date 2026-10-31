@@ -31,8 +31,6 @@ mod stable_walk;
 mod stack_guard;
 mod subtyping;
 mod symbol_map;
-#[cfg(feature = "module-resolution")]
-mod topology;
 mod type_annotation;
 mod type_display;
 mod types;
@@ -67,9 +65,6 @@ pub use incremental::{
 
 #[cfg(feature = "scratchpad")]
 pub use scratchpad::WorkerScratch;
-
-#[cfg(feature = "module-resolution")]
-pub use topology::ModuleTopology;
 
 #[cfg(feature = "module-resolution")]
 pub use module_resolution::{
