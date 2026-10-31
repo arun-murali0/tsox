@@ -6,6 +6,7 @@ mod imports;
 mod narrow;
 mod parse;
 mod statements;
+mod tuple_grammar;
 mod unreachable_code;
 mod unresolved_names;
 
@@ -183,6 +184,7 @@ fn bodies_phase<'ast>(
         return;
     }
     unresolved_names::report_unresolved_type_names(program, scoping, ctx);
+    tuple_grammar::report_tuple_grammar_errors(program, ctx);
     unreachable_code::check_unreachable_code(program, semantic, ctx);
 }
 
