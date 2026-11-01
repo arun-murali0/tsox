@@ -27,9 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
@@ -40,7 +40,7 @@ jobs:
         run: npm ci
 
       - name: Restore previous cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: scripts/ts-diag-tool/.tsc-cache.json
           key: tsc-diag-${{ hashFiles('scripts/ts-diag-tool/package-lock.json', 'scripts/ts-diag-tool/check-fixtures.js') }}-${{ github.sha }}
@@ -51,7 +51,7 @@ jobs:
         run: node scripts/ts-diag-tool/check-fixtures.js tests/fixtures --warm-cache
 
       - name: Save cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: scripts/ts-diag-tool/.tsc-cache.json
           key: tsc-diag-${{ hashFiles('scripts/ts-diag-tool/package-lock.json', 'scripts/ts-diag-tool/check-fixtures.js') }}-${{ github.sha }}

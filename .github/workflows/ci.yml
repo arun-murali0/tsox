@@ -36,7 +36,7 @@ jobs:
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -63,7 +63,7 @@ jobs:
       CARGO_PROFILE_RELEASE_OPT_LEVEL: "1"
       CARGO_PROFILE_RELEASE_DEBUG: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -73,7 +73,7 @@ jobs:
         with:
           shared-key: ci-drift
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
@@ -91,7 +91,7 @@ jobs:
       # a merge-tmp/* branch can only read caches from main, so this job only restores.
       # See check-fixtures.js for how an entry is judged still valid.
       - name: Restore tsc result cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: scripts/ts-diag-tool/.tsc-cache.json
           key: tsc-diag-${{ hashFiles('scripts/ts-diag-tool/package-lock.json', 'scripts/ts-diag-tool/check-fixtures.js') }}-${{ github.sha }}
@@ -144,7 +144,7 @@ jobs:
 
       - name: Keep the differences as a run artifact
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: differences-from-tsc
           path: /tmp/tsc-drift-result.json
