@@ -1,7 +1,7 @@
 use oxc_ast::ast::{
     BindingPattern, FormalParameters, PropertyKey, TSConditionalType, TSInferType,
     TSMethodSignature, TSMethodSignatureKind, TSSignature, TSTupleElement, TSTupleType, TSType,
-    TSTypeAnnotation, TSTypeName, TSTypeQueryExprName,
+    TSTypeAnnotation, TSTypeName, TSTypeOperatorOperator, TSTypeQueryExprName,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_span::GetSpan;
@@ -160,6 +160,13 @@ pub fn resolve_ts_type(
         TSType::TSUnknownKeyword(_) => Some(arena.unknown()),
         TSType::TSNeverKeyword(_) => Some(arena.never()),
         TSType::TSVoidKeyword(_) => Some(arena.void()),
+        // `x is T` is a boolean to every caller; `asserts x is T` returns nothing. What the
+        // predicate says about the argument is recorded separately (see TypePredicate).
+        TSType::TSTypePredicate(predicate) => Some(if predicate.asserts {
+            arena.void()
+        } else {
+            arena.boolean()
+        }),
 
         TSType::TSArrayType(array) => {
             let element = resolve_ts_type(&array.element_type, namespace, arena)?;
@@ -374,6 +381,34 @@ pub fn resolve_ts_type(
                 Resolution::Resolved(type_id) => Some(type_id),
                 Resolution::Circular | Resolution::NotFound => None,
             }
+        }
+
+        // `T[K]` when both sides are concrete: a property name, a union of names,
+        // `keyof T`, a number index into an array, or a position in a tuple. Anything
+        // still generic, or a key the object does not have, stays unresolved as before.
+        TSType::TSIndexedAccessType(access) => {
+            let object = resolve_ts_type(&access.object_type, namespace, arena)?;
+            let index = resolve_ts_type(&access.index_type, namespace, arena)?;
+            indexed_access(arena, object, index)
+        }
+
+        // `keyof T` for a type whose property names are all known. A type that is
+        // still generic (`keyof T` with T a parameter), or has index signatures,
+        // is not reduced here and stays unresolved as before.
+        TSType::TSTypeOperatorType(operator)
+            if operator.operator == TSTypeOperatorOperator::Keyof =>
+        {
+            let operand = resolve_ts_type(&operator.type_annotation, namespace, arena)?;
+            let keys = concrete_keys(arena, operand)?;
+            let members: Vec<TypeId> = keys
+                .iter()
+                .map(|key| arena.alloc(Type::StringLiteral(key.to_string())))
+                .collect();
+            Some(match members.len() {
+                0 => arena.never(),
+                1 => members[0],
+                _ => arena.alloc_union(members),
+            })
         }
 
         _ => None,
@@ -807,6 +842,97 @@ fn resolve_builtin_generic(
                 })
                 .collect();
             Some(arena.alloc(Type::Object(ObjectType::new(properties))))
+        }
+        _ => None,
+    }
+}
+
+/// The property names `keyof` of this type is made of, or `None` when they cannot
+/// all be named (a type parameter, an index signature, anything not an object shape).
+/// `keyof (A & B)` is the keys of either side, and `keyof (A | B)` is only the keys
+/// every member has.
+fn concrete_keys(arena: &TypeArena, id: TypeId) -> Option<Vec<std::rc::Rc<str>>> {
+    match arena.get(id) {
+        Type::Object(object) => Some(object.properties.iter().map(|p| p.name.clone()).collect()),
+        Type::Intersection(members) => {
+            let mut keys: Vec<std::rc::Rc<str>> = Vec::new();
+            for member in members.clone() {
+                for key in concrete_keys(arena, member)? {
+                    if !keys.contains(&key) {
+                        keys.push(key);
+                    }
+                }
+            }
+            Some(keys)
+        }
+        Type::Union(members) => {
+            let mut shared: Option<Vec<std::rc::Rc<str>>> = None;
+            for member in members.clone() {
+                let member_keys = concrete_keys(arena, member)?;
+                shared = Some(match shared {
+                    None => member_keys,
+                    Some(mut so_far) => {
+                        so_far.retain(|key| member_keys.contains(key));
+                        so_far
+                    }
+                });
+            }
+            shared
+        }
+        _ => None,
+    }
+}
+
+/// `object[index]` for concrete types, or `None` when it cannot be worked out here.
+/// A union of keys, or a union as the object, gives the union of each member's result;
+/// an optional property or tuple element also admits `undefined`.
+fn indexed_access(arena: &mut TypeArena, object: TypeId, index: TypeId) -> Option<TypeId> {
+    if let Type::Union(members) = arena.get(index).clone() {
+        let mut parts = Vec::with_capacity(members.len());
+        for member in members {
+            parts.push(indexed_access(arena, object, member)?);
+        }
+        return Some(arena.alloc_union(parts));
+    }
+    if let Type::Union(members) = arena.get(object).clone() {
+        let mut parts = Vec::with_capacity(members.len());
+        for member in members {
+            parts.push(indexed_access(arena, member, index)?);
+        }
+        return Some(arena.alloc_union(parts));
+    }
+    let with_undefined = |arena: &mut TypeArena, id: TypeId, optional: bool| {
+        if optional {
+            let undefined = arena.undefined();
+            arena.alloc_union(vec![id, undefined])
+        } else {
+            id
+        }
+    };
+    match (arena.get(object).clone(), arena.get(index).clone()) {
+        (_, Type::Never) => Some(arena.never()),
+        (Type::Object(object), Type::StringLiteral(name)) => {
+            let property = object.properties.iter().find(|p| p.name.as_ref() == name)?;
+            Some(with_undefined(arena, property.type_id, property.optional))
+        }
+        (Type::Array(element), Type::Number | Type::NumberLiteral(_)) => Some(element),
+        (Type::Tuple(elements), Type::NumberLiteral(position)) => {
+            if position.fract() != 0.0 || position < 0.0 {
+                return None;
+            }
+            let element = *elements.get(position as usize)?;
+            Some(with_undefined(arena, element.type_id, element.optional))
+        }
+        (Type::Tuple(elements), Type::Number) => {
+            let parts: Vec<TypeId> = elements
+                .iter()
+                .map(|element| with_undefined(arena, element.type_id, element.optional))
+                .collect();
+            Some(if parts.is_empty() {
+                arena.never()
+            } else {
+                arena.alloc_union(parts)
+            })
         }
         _ => None,
     }

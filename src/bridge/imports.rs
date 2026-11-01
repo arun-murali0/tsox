@@ -38,6 +38,7 @@ pub(super) fn bind_imports<'ast>(
     ctx: &mut CheckContext<'ast, '_>,
 ) {
     let Some(source) = ctx.imports else {
+        report_standalone_imports(program, ctx);
         return;
     };
     report_reference_directives(program.source_text, source, ctx);
@@ -384,6 +385,58 @@ fn report_reference_directives<'ast>(
             DirectiveKind::Path => messages::referenced_file_not_found(&directive.written),
         };
         ctx.error(message, span);
+    }
+}
+
+// A file checked on its own (no project) has no other file to import from, so every
+// specifier it names is missing unless the file itself declares that module with
+// `declare module "x"` (a trailing or inner `*` makes it a pattern). That is what tsc says
+// of a single-file program, which is how its test suite runs each case.
+fn report_standalone_imports<'ast>(program: &'ast Program<'ast>, ctx: &mut CheckContext<'ast, '_>) {
+    let mut ambient: Vec<String> = Vec::new();
+    for stmt in &program.body {
+        if let Statement::TSExternalModuleDeclaration(module) = stmt {
+            ambient.push(module.id.value.to_string());
+        }
+    }
+    let declared = |specifier: &str| {
+        ambient.iter().any(|pattern| match pattern.split_once('*') {
+            Some((prefix, suffix)) => {
+                specifier.len() >= prefix.len() + suffix.len()
+                    && specifier.starts_with(prefix)
+                    && specifier.ends_with(suffix)
+            }
+            None => pattern == specifier,
+        })
+    };
+    let mut report = |specifier: &str, span: Span| {
+        if !declared(specifier) {
+            ctx.error(messages::module_not_found(specifier), span);
+        }
+    };
+    for stmt in &program.body {
+        match stmt {
+            Statement::ImportDeclaration(decl) => {
+                report(decl.source.value.as_str(), decl.source.span)
+            }
+            Statement::ExportFromDeclaration(from) => {
+                report(from.source.value.as_str(), from.source.span)
+            }
+            Statement::ExportAllDeclaration(all) => {
+                report(all.source.value.as_str(), all.source.span)
+            }
+            Statement::TSImportEqualsDeclaration(decl) => {
+                if let TSModuleReference::ExternalModuleReference(reference) =
+                    &decl.module_reference
+                {
+                    report(
+                        reference.expression.value.as_str(),
+                        reference.expression.span,
+                    )
+                }
+            }
+            _ => {}
+        }
     }
 }
 

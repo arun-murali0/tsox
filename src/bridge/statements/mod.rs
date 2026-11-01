@@ -112,6 +112,17 @@ pub(super) fn check_expression_statement(
     ctx: &mut CheckContext<'_, '_>,
 ) {
     infer_expression_type(&expr_stmt.expression, scoping, ctx);
+    // `assertFoo(x);` leaves `x` narrowed for the rest of the block.
+    let mut expression = &expr_stmt.expression;
+    while let oxc_ast::ast::Expression::ParenthesizedExpression(inner) = expression {
+        expression = &inner.expression;
+    }
+    if let oxc_ast::ast::Expression::CallExpression(call) = expression
+        && let Some((narrowed, _)) =
+            crate::bridge::narrow::narrow_by_predicate_call(call, scoping, ctx, true)
+    {
+        ctx.narrow.extend(narrowed);
+    }
 }
 
 // The single dispatch point for every statement kind this checker understands,

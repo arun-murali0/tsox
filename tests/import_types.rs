@@ -240,7 +240,7 @@ fn a_module_that_is_not_known_in_full_is_left_unresolved() {
         &[
             (
                 "a.ts",
-                "export const k = 1;\nexport class C extends Missing { z = 1; }\n",
+                "export const k = 1;\nexport class C extends Missing { [Symbol.iterator]() {} }\n",
             ),
             (
                 "use.ts",

@@ -399,6 +399,40 @@ type SeenPairs = HashSet<(TypeId, TypeId), FxBuildHasher>;
 // again against the wider binding. Both the first match and a repeat are compared
 // with the binding as it stands, so a candidate that was ignored once for being
 // unrelated to the binding can no longer be picked up by a later route to it.
+/// The index of a rest parameter whose type is not itself an array or tuple, such as the
+/// `ARGS` of `(...args: ARGS) => R`. That parameter stands for every remaining parameter
+/// of the other signature, so it is inferred as a tuple rather than matched per position.
+fn rest_parameter_standing_for_tuple(
+    arena: &TypeArena,
+    params: &[crate::types::Param],
+) -> Option<usize> {
+    params.iter().position(|p| {
+        p.rest && !matches!(arena.get(p.type_id), Type::Array(_) | Type::Tuple(_))
+    })
+}
+
+/// The parameters of a signature from `index` on, as a tuple type. A rest parameter
+/// contributes its element type and stays a rest element.
+fn remaining_parameters_as_tuple(
+    arena: &mut TypeArena,
+    params: &[crate::types::Param],
+    index: usize,
+) -> TypeId {
+    let elements: Vec<crate::types::TupleElement> = params
+        .iter()
+        .skip(index)
+        .map(|a| crate::types::TupleElement {
+            type_id: match (a.rest, arena.get(a.type_id)) {
+                (true, Type::Array(element)) => *element,
+                _ => a.type_id,
+            },
+            optional: a.optional,
+            rest: a.rest,
+        })
+        .collect();
+    arena.alloc_tuple(elements)
+}
+
 fn infer_type_param_bindings_inner(
     arena: &mut TypeArena,
     param_type: TypeId,
@@ -635,7 +669,15 @@ fn infer_type_param_bindings_uncached(
             // Optional and rest parameters can make the declared lists differ while
             // still describing overlapping argument positions. `param_type_at`
             // also unwraps a rest array to its element type for each consumed slot.
-            let checked_positions = param_fn.params.len().max(arg_fn.params.len());
+            //
+            // `(...args: ARGS) => R` against `(a: string, b?: number) => R`: the rest
+            // parameter stands for all the remaining parameters, so ARGS is the tuple
+            // `[a: string, b?: number]`. Positions before it are matched as usual.
+            let tuple_rest = rest_parameter_standing_for_tuple(arena, &param_fn.params);
+            let checked_positions = match tuple_rest {
+                Some(index) => index,
+                None => param_fn.params.len().max(arg_fn.params.len()),
+            };
             for position in 0..checked_positions {
                 if let (Some(parameter), Some(argument)) = (
                     crate::subtyping::param_type_at(arena, &param_fn.params, position),
@@ -652,6 +694,19 @@ fn infer_type_param_bindings_uncached(
                         preserve_literals,
                     );
                 }
+            }
+            if let Some(index) = tuple_rest {
+                let tuple = remaining_parameters_as_tuple(arena, &arg_fn.params, index);
+                infer_type_param_bindings_inner(
+                    arena,
+                    param_fn.params[index].type_id,
+                    tuple,
+                    bindings,
+                    &nested_locked,
+                    cache,
+                    seen,
+                    preserve_literals,
+                );
             }
             infer_type_param_bindings_inner(
                 arena,
@@ -974,7 +1029,11 @@ fn collect_inference_candidates_inner(
                     nested_locked.push(parameter.id);
                 }
             }
-            let positions = param_fn.params.len().max(arg_fn.params.len());
+            let tuple_rest = rest_parameter_standing_for_tuple(arena, &param_fn.params);
+            let positions = match tuple_rest {
+                Some(index) => index,
+                None => param_fn.params.len().max(arg_fn.params.len()),
+            };
             for position in 0..positions {
                 if let (Some(parameter), Some(argument)) = (
                     crate::subtyping::param_type_at(arena, &param_fn.params, position),
@@ -992,6 +1051,20 @@ fn collect_inference_candidates_inner(
                         seen,
                     );
                 }
+            }
+            if let Some(index) = tuple_rest {
+                let tuple = remaining_parameters_as_tuple(arena, &arg_fn.params, index);
+                collect_inference_candidates_inner(
+                    arena,
+                    param_fn.params[index].type_id,
+                    tuple,
+                    &nested_locked,
+                    variance.reversed(),
+                    false,
+                    out,
+                    cache,
+                    seen,
+                );
             }
             collect_inference_candidates_inner(
                 arena,

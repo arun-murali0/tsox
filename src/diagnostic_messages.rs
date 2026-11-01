@@ -274,6 +274,13 @@ pub mod messages {
                 display_type(arena, object)
             ));
         }
+        if let crate::types::Type::StringLiteral(name) = arena.get(key) {
+            text.push_str(&format!(
+                "\n  Property '{}' does not exist on type '{}'.",
+                name,
+                display_type(arena, object)
+            ));
+        }
         DiagnosticMessage::new(DiagnosticCode::ImplicitAnyElement, text)
     }
 
@@ -337,6 +344,36 @@ pub mod messages {
             format!(
                 "Property '{name}' implicitly has type 'any', because its set accessor lacks a parameter type annotation."
             ),
+        )
+    }
+
+    pub fn member_implicitly_any(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyMember,
+            format!("Member '{name}' implicitly has an 'any' type."),
+        )
+    }
+
+    pub fn function_lacks_return_annotation(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyFunctionReturn,
+            format!(
+                "'{name}', which lacks return-type annotation, implicitly has an 'any' return type."
+            ),
+        )
+    }
+
+    pub fn call_signature_lacks_return_annotation() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyCallSignature,
+            "Call signature, which lacks return-type annotation, implicitly has an 'any' return type.",
+        )
+    }
+
+    pub fn construct_signature_lacks_return_annotation() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyConstructSignature,
+            "Construct signature, which lacks return-type annotation, implicitly has an 'any' return type.",
         )
     }
 
@@ -683,6 +720,13 @@ pub mod messages {
         DiagnosticMessage::new(
             DiagnosticCode::TypeArgumentListCountMismatch,
             format!("Expected {expected} type arguments, but got {actual}."),
+        )
+    }
+
+    pub fn duplicate_block_scoped_variable(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::DuplicateBlockScopedVariable,
+            format!("Cannot redeclare block-scoped variable '{name}'."),
         )
     }
 

@@ -225,7 +225,9 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
     // its name instead of unfolding its shape -- `Dog`, not
     // `{ name: string; breed: string }`. Checked before the structural match
     // below so it applies uniformly, whatever the underlying Type is.
-    if let Some(name) = arena.display_name(type_id) {
+    if let Some(name) = arena.display_name(type_id)
+        && !arena.alias_prints_as_its_body(type_id)
+    {
         out.push_str(name);
         return;
     }

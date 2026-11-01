@@ -1,0 +1,103 @@
+{
+  "compiler": "TypeScript 5.8.3",
+  "validation": "oracle-only; this does not execute TSOX",
+  "fixtures": [
+    {
+      "file": "constraint_fallback.ts",
+      "expectedCodes": [],
+      "actualCodes": [],
+      "pass": true,
+      "diagnostics": []
+    },
+    {
+      "file": "independent_candidate_inference.ts",
+      "expectedCodes": [],
+      "actualCodes": [],
+      "pass": true,
+      "diagnostics": []
+    },
+    {
+      "file": "explicit_type_arguments.ts",
+      "expectedCodes": [],
+      "actualCodes": [],
+      "pass": true,
+      "diagnostics": []
+    },
+    {
+      "file": "multiple_argument_inference.ts",
+      "expectedCodes": [],
+      "actualCodes": [],
+      "pass": true,
+      "diagnostics": []
+    },
+    {
+      "file": "composite_parameter_inference.ts",
+      "expectedCodes": [],
+      "actualCodes": [],
+      "pass": true,
+      "diagnostics": []
+    },
+    {
+      "file": "contextual_callback_selection.ts",
+      "expectedCodes": [],
+      "actualCodes": [],
+      "pass": true,
+      "diagnostics": []
+    },
+    {
+      "file": "callback_return_drives_inference.ts",
+      "expectedCodes": [],
+      "actualCodes": [],
+      "pass": true,
+      "diagnostics": []
+    },
+    {
+      "file": "first_applicable_overload_wins.ts",
+      "expectedCodes": [],
+      "actualCodes": [],
+      "pass": true,
+      "diagnostics": []
+    },
+    {
+      "file": "broad_before_narrow.ts",
+      "expectedCodes": [],
+      "actualCodes": [],
+      "pass": true,
+      "diagnostics": []
+    },
+    {
+      "file": "arity_falls_through.ts",
+      "expectedCodes": [],
+      "actualCodes": [],
+      "pass": true,
+      "diagnostics": []
+    },
+    {
+      "file": "defaulted_generic_candidate.ts",
+      "expectedCodes": [],
+      "actualCodes": [],
+      "pass": true,
+      "diagnostics": []
+    },
+    {
+      "file": "no_overload_matches.ts",
+      "expectedCodes": [
+        2769
+      ],
+      "actualCodes": [
+        2769
+      ],
+      "pass": true,
+      "diagnostics": [
+        {
+          "code": 2769,
+          "message": "No overload matches this call.\n  Overload 1 of 2, '(value: string): \"text\"', gave the following error.\n    Argument of type 'boolean' is not assignable to parameter of type 'string'.\n  Overload 2 of 2, '(value: number): \"numeric\"', gave the following error.\n    Argument of type 'boolean' is not assignable to parameter of type 'number'.",
+          "line": 4
+        }
+      ]
+    }
+  ],
+  "passed": 12,
+  "total": 12,
+  "result": "PASS"
+}
