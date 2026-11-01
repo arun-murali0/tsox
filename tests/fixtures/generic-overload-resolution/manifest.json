@@ -1,0 +1,37 @@
+{
+  "phase": "13A",
+  "topic": "generic overload resolution",
+  "typescript_oracle": "5.8.3",
+  "fixture_count": 9,
+  "expected": {
+    "clean": [
+      "constraint_fallback.ts",
+      "independent_candidate_inference.ts",
+      "explicit_type_arguments.ts",
+      "multiple_argument_inference.ts",
+      "composite_parameter_inference.ts",
+      "contextual_callback_selection.ts",
+      "callback_return_drives_inference.ts",
+      "first_applicable_overload_wins.ts"
+    ],
+    "diagnostics": {
+      "no_overload_matches.ts": [2769]
+    }
+  },
+  "coverage": [
+    "candidate-local generic inference",
+    "generic constraints during applicability checks",
+    "explicit generic argument applicability",
+    "multi-argument inference",
+    "nested object-property inference",
+    "candidate-specific callback contextual typing",
+    "callback return inference",
+    "source-order precedence among applicable overloads",
+    "TS2769 when no candidate applies"
+  ],
+  "limitations": [
+    "spread calls retain the existing first-signature fallback because tuple/spread length modeling is outside this phase",
+    "this phase preserves source order rather than globally reordering signatures",
+    "the TypeScript oracle is not a TSOX execution result"
+  ]
+}

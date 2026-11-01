@@ -238,6 +238,9 @@ pub struct TypeArena {
     // distributive. Known where the application is made, and for an imported one from
     // the declaration it was exported from.
     app_conditionals: FxHashMap<DeclSlot, bool>,
+    // The name slots of enums: the enum type and each member read off it print under the
+    // enum's name even though they stand for literals, unlike an alias of a primitive.
+    enum_name_slots: Vec<DeclSlot>,
 
     // The Named ids that are enums. An enum prints and relates as a union of its member
     // literals like an alias of one does, but tsc treats it as a primitive and does not
@@ -271,6 +274,7 @@ impl TypeArena {
             app_bases: FxHashMap::default(),
             body_origins: FxHashMap::default(),
             app_conditionals: FxHashMap::default(),
+            enum_name_slots: Vec::new(),
             enum_types: Vec::new(),
             empty_object: Type::Object(ObjectType::new(Vec::new())),
         };
@@ -507,14 +511,21 @@ impl TypeArena {
     // callers get a plain type back instead of having to unwrap a trivial union.
     pub fn alloc_union(&mut self, members: Vec<TypeId>) -> TypeId {
         let mut flat: Vec<TypeId> = Vec::with_capacity(members.len());
+        // A stack, popped from the end: reversed first, so members come out in the order
+        // they were written (`"a" | "b"` stays that, as tsc prints it), and a nested union
+        // is pushed reversed for the same reason so it unfolds in place.
         let mut queue = members;
+        queue.reverse();
         while let Some(id) = queue.pop() {
             match self.get(id) {
                 Type::Union(nested) => {
-                    queue.extend(nested.iter().copied());
+                    queue.extend(nested.iter().rev().copied());
                     continue;
                 }
                 Type::Never => continue,
+                // `any` absorbs the rest, as in tsc: `any | string[]` is `any`, so `x || []` on an `any`
+                // stays `any` and its methods are not looked up on a union of one hole and an array.
+                Type::Any => return self.any(),
                 _ => {}
             }
             // Plain structurally_equal, not structurally_equal_cached. This loop is
@@ -620,12 +631,9 @@ impl TypeArena {
                 choice[position] = alternative;
                 results.push(self.alloc_intersection(choice)?);
             }
-            // alloc_union keeps its members in the reverse of the order it is given, so
-            // handing it the results as they came would flip the union's stored order,
-            // and `("a" | "b") & string` would be a different id from `"a" | "b"` though
-            // it is the same type. Reversed, the result keeps the order of the union it
-            // was distributed from.
-            results.reverse();
+            // alloc_union keeps the order it is given, so the results, one per alternative
+            // and in the alternatives' order, keep the order of the union it was
+            // distributed from: `("a" | "b") & string` is the same id as `"a" | "b"`.
             return Ok(self.alloc_union(results));
         }
 
@@ -977,6 +985,35 @@ impl TypeArena {
         self.decls[slot.0 as usize].name.as_deref()
     }
 
+    /// Whether an alias prints as what it stands for and not under its own name. tsc keeps an
+    /// alias name only on a type that can carry one (an object, a union, a function ...); a
+    /// primitive, a literal, `never`, `any` or `unknown` is one shared type and prints as
+    /// itself, so `type Result = Unwrap<Promise<number>>` shows as `number`. An enum is a
+    /// union of literals under its own name and keeps it.
+    pub fn alias_prints_as_its_body(&self, type_id: TypeId) -> bool {
+        let Some(Type::Named(slot, _)) = self.types.get(type_id.0 as usize) else {
+            return false;
+        };
+        if self.is_enum(type_id) || self.enum_name_slots.contains(slot) {
+            return false;
+        }
+        matches!(
+            self.get(type_id),
+            Type::Number
+                | Type::String
+                | Type::Boolean
+                | Type::Null
+                | Type::Undefined
+                | Type::Void
+                | Type::Never
+                | Type::Any
+                | Type::Unknown
+                | Type::StringLiteral(_)
+                | Type::NumberLiteral(_)
+                | Type::BooleanLiteral(_)
+        )
+    }
+
     // The declaration's name and the arguments of an application, for display to write
     // out as `Box<Dog>`.
     pub fn app_parts(&self, type_id: TypeId) -> Option<(&str, &[TypeId])> {
@@ -1001,6 +1038,7 @@ impl TypeArena {
         // goes on a wrapper around the union: a one-member enum collapses to its member's
         // literal type, an id every identical literal shares, and that id stays unnamed.
         let type_name = self.alloc_name(name.to_string());
+        self.enum_name_slots.push(type_name);
         let type_position = self.alloc_named(type_name, union);
         self.mark_enum(type_position);
 
@@ -1008,6 +1046,7 @@ impl TypeArena {
         // tsc widens an enum literal when it is the source of a mismatch, so each member's
         // type carries the enum's name. The wrapper is transparent to every relation.
         let enum_name = self.alloc_name(name.to_string());
+        self.enum_name_slots.push(enum_name);
         let properties = members
             .into_iter()
             .map(|(member, type_id)| crate::types::PropertyEntry {

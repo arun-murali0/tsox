@@ -4,4 +4,6 @@ class Point {
   getY(y) {
     return y;
   }
+
+  [Symbol.iterator]() {}
 }

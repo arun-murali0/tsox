@@ -41,7 +41,15 @@ pub(super) fn check_function_declaration(
     if ctx.symbols.get(symbol_id).is_none() {
         declare_function(func, ctx);
     }
-    let Some(declared) = ctx.symbols.get(symbol_id) else {
+    // An overloaded function is checked against its implementation's own signature, which
+    // callers do not see (see `declare_function`).
+    let overloaded = ctx.overload_signatures.contains_key(&symbol_id);
+    let declared = if overloaded {
+        ctx.implementation_signatures.get(&symbol_id).copied()
+    } else {
+        ctx.symbols.get(symbol_id)
+    };
+    let Some(declared) = declared else {
         tracing::trace!(name = %name.name, "function signature not fully annotated, body not checked");
         return;
     };
@@ -134,7 +142,12 @@ pub(super) fn check_function_declaration(
                 type_params: function_type.type_params,
                 is_untyped: function_type.is_untyped,
             }));
-        ctx.symbols.declare(symbol_id, updated);
+        // The callers of an overloaded function see its overloads, whatever the body returns.
+        if overloaded {
+            ctx.implementation_signatures.insert(symbol_id, updated);
+        } else {
+            ctx.symbols.declare(symbol_id, updated);
+        }
     }
 
     ctx.namespace.pop_type_params(type_param_scope);

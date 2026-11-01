@@ -44,6 +44,18 @@ use objects::{infer_array_expression_type, infer_object_expression_type};
 // function's own job is only to route, not to hold checking logic itself. An
 // expression kind with no arm here falls through to the catch-all at the bottom,
 // which reports it honestly as unsupported rather than guessing a type for it.
+// A literal that is expected to be a type parameter is read against that parameter's
+// constraint: `{ kind: "numeric" }` for a `U extends { kind: "numeric" }` keeps the literal
+// `"numeric"`, as tsc does, since the constraint is what says a literal is wanted there. A
+// parameter with no constraint gives no such hint and is left as it is.
+fn through_constraint(expected: Option<TypeId>, ctx: &CheckContext<'_, '_>) -> Option<TypeId> {
+    let expected = expected?;
+    match ctx.arena.get(expected) {
+        Type::GenericParameter(_, _, Some(bound)) => Some(*bound),
+        _ => Some(expected),
+    }
+}
+
 pub fn infer_expression_type(
     expr: &Expression,
     scoping: &Scoping,
@@ -140,10 +152,12 @@ pub fn infer_expression_type(
         }
 
         Expression::ObjectExpression(object) => {
+            let expected = through_constraint(expected, ctx);
             infer_object_expression_type(object, expected, scoping, ctx)
         }
 
         Expression::ArrayExpression(array) => {
+            let expected = through_constraint(expected, ctx);
             infer_array_expression_type(array, expected, scoping, ctx)
         }
 

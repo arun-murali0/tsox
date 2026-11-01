@@ -253,6 +253,11 @@ fn check_destructured_declarator(
     };
 
     bind_pattern(&declarator.id, source_type, scoping, ctx);
+    if decl_kind == VariableDeclarationKind::Const
+        && let BindingPattern::ObjectPattern(object) = &declarator.id
+    {
+        crate::bridge::narrow::register_destructured_group(object, source_type, ctx);
+    }
 }
 
 // `const xs = []` followed by `xs.push(1)` is ordinary code, and tsc accepts it by letting

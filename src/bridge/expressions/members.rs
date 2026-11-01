@@ -41,7 +41,7 @@ pub(crate) fn infer_member_access_type(
         _ => object_type,
     };
 
-    match lookup_member(&mut ctx.arena, effective_type, property_name) {
+    match lookup_with_augmentation(ctx, effective_type, property_name) {
         Some(found) => found,
         None => {
             ctx.error(
@@ -54,6 +54,47 @@ pub(crate) fn infer_member_access_type(
             );
             ctx.arena.error()
         }
+    }
+}
+
+// `lookup_member`, then the program's own `interface Array<T> {...}` / `String` /
+// `Object` / `Function` declarations, which add members to the built-in types.
+fn lookup_with_augmentation(
+    ctx: &mut CheckContext<'_, '_>,
+    type_id: TypeId,
+    property_name: &str,
+) -> Option<TypeId> {
+    if let Some(found) = lookup_member(&mut ctx.arena, type_id, property_name) {
+        return Some(found);
+    }
+    let (interface, args): (&str, Vec<TypeId>) = match ctx.arena.get(type_id) {
+        Type::Union(members) => {
+            let members = members.clone();
+            let mut found = Vec::with_capacity(members.len());
+            for member in members {
+                found.push(lookup_with_augmentation(ctx, member, property_name)?);
+            }
+            return Some(ctx.arena.alloc_union(found));
+        }
+        Type::Array(element) => ("Array", vec![*element]),
+        Type::Tuple(_) => ("Array", vec![ctx.arena.any()]),
+        Type::String | Type::StringLiteral(_) => ("String", Vec::new()),
+        Type::Number | Type::NumberLiteral(_) => ("Number", Vec::new()),
+        Type::Boolean | Type::BooleanLiteral(_) => ("Boolean", Vec::new()),
+        Type::Function(_) => ("Function", Vec::new()),
+        _ => ("Object", Vec::new()),
+    };
+    let first = ctx
+        .namespace
+        .augmentation_member(interface, property_name, &args, &mut ctx.arena);
+    match first {
+        Some(found) => Some(found),
+        // Everything but `any` is also an `Object`.
+        None if interface != "Object" => {
+            ctx.namespace
+                .augmentation_member("Object", property_name, &[], &mut ctx.arena)
+        }
+        None => None,
     }
 }
 
@@ -341,7 +382,13 @@ fn array_member(arena: &mut TypeArena, element: TypeId, property_name: &str) -> 
         ),
         "reduce" | "reduceRight" => (vec![param(any, false, false), param(any, true, false)], any),
         "keys" | "values" | "entries" => (Vec::new(), any),
-        "toString" | "toLocaleString" => (Vec::new(), string),
+        "toString" => (Vec::new(), string),
+        // The library gives an array's `toLocaleString` the optional `locales` and `options` of
+        // `Intl`; they are `any` here, so a call with them is accepted rather than counted wrong.
+        "toLocaleString" => (
+            vec![param(any, true, false), param(any, true, false)],
+            string,
+        ),
         _ => return None,
     };
     Some(arena.alloc(Type::Function(FunctionType {
@@ -418,6 +465,19 @@ fn universal_member(
             type_params: Vec::new(),
             is_untyped: false,
         })));
+    }
+    // Problem: `Point.prototype.add = ...` and `fn.name` reported "Property does not exist" on a
+    // function or a class's constructor, because only the methods every value has were known.
+    // Picked: the properties of tsc's `Function` interface. `prototype` is `any`, as it is in
+    // tsc for a plain function; for a class tsc gives the instance type, which `any` accepts.
+    // Cost: an assignment to `C.prototype.x` is not checked against the instance type.
+    if matches!(arena.get(receiver), Type::Function(_)) {
+        match property_name {
+            "prototype" | "arguments" | "caller" => return Some(any),
+            "name" => return Some(arena.string()),
+            "length" => return Some(arena.number()),
+            _ => {}
+        }
     }
     let result = match property_name {
         "toString" | "toLocaleString" => arena.string(),
@@ -695,6 +755,24 @@ pub(super) fn infer_computed_member_access_type(
         }
         return ctx.arena.error();
     };
+
+    // On a plain object type a missing property named by a string literal is not
+    // "property does not exist" (TS2339): tsc, indexing with brackets under
+    // noImplicitAny, reports the implicit-any element access (TS7053).
+    if matches!(ctx.arena.get(object_type), Type::Object(_))
+        && lookup_with_augmentation(ctx, object_type, &key.value).is_none()
+        && !ctx.arena.is_promise(object_type)
+    {
+        ctx.error(
+            crate::diagnostic_messages::messages::element_implicitly_any(
+                &ctx.arena,
+                key_type,
+                object_type,
+            ),
+            span,
+        );
+        return ctx.arena.error();
+    }
 
     infer_member_access_type_with_optional(object_type, &key.value, optional, span, ctx)
 }

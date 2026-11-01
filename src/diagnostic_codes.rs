@@ -66,6 +66,10 @@ pub enum DiagnosticCode {
     ImplicitAnyThis,
     ImplicitAnyReturn,
     ImplicitAnySetter,
+    ImplicitAnyMember,
+    ImplicitAnyFunctionReturn,
+    ImplicitAnyConstructSignature,
+    ImplicitAnyCallSignature,
 
     // 1500s: generics
     TypeArgumentCountMismatch,
@@ -74,6 +78,7 @@ pub enum DiagnosticCode {
     TypeIsNotGeneric,
     DuplicateTypeDeclaration,
     EnumDeclarationMerge,
+    DuplicateBlockScopedVariable,
 
     // 1600s: reachability
     UnreachableCode,
@@ -157,6 +162,10 @@ impl DiagnosticCode {
             ImplicitAnyThis => "TSR1403",
             ImplicitAnyReturn => "TSR1404",
             ImplicitAnySetter => "TSR1405",
+            ImplicitAnyMember => "TSR1406",
+            ImplicitAnyFunctionReturn => "TSR1407",
+            ImplicitAnyConstructSignature => "TSR1408",
+            ImplicitAnyCallSignature => "TSR1409",
 
             TypeArgumentCountMismatch => "TSR1501",
             TypeIsNotGeneric => "TSR1502",
@@ -164,6 +173,7 @@ impl DiagnosticCode {
             TypeArgumentCountRange => "TSR1504",
             EnumDeclarationMerge => "TSR1505",
             TypeArgumentListCountMismatch => "TSR1506",
+            DuplicateBlockScopedVariable => "TSR1507",
 
             UnreachableCode => "TSR1601",
 
@@ -250,12 +260,17 @@ impl DiagnosticCode {
             TypeIsNotGeneric => 2315,
             DuplicateTypeDeclaration => 2300,
             EnumDeclarationMerge => 2567,
+            DuplicateBlockScopedVariable => 2451,
 
             ImplicitAnyParameter => 7006,
             ImplicitAnyElement => 7053,
             ImplicitAnyThis => 2683,
             ImplicitAnyReturn => 7023,
             ImplicitAnySetter => 7032,
+            ImplicitAnyMember => 7008,
+            ImplicitAnyFunctionReturn => 7010,
+            ImplicitAnyConstructSignature => 7013,
+            ImplicitAnyCallSignature => 7020,
 
             TupleIndexOutOfBounds => 2493,
             TupleRequiredAfterOptional => 1257,

@@ -184,6 +184,53 @@ fn is_subtype_uncached(
 
         (Type::Object(a), Type::Object(b)) => object_is_subtype(arena, a, b, seen, binders),
 
+        // A function (or a class's constructor) is an object with the members of `Function`:
+        // `{ prototype: C }` accepts `C`, and `{}` accepts any function. A property it has no
+        // member for is not satisfied unless the target marks it optional. `prototype` is `any`
+        // here (see `universal_member`), so it satisfies whatever the target asks.
+        // A Record or a Promise reads as an empty body here too, but a function is neither,
+        // so they are left to their own rules.
+        (Type::Function(_), Type::Object(target)) => {
+            arena.record_value_type(sup).is_none()
+                && !arena.is_promise(sup)
+                && target.properties.iter().all(|property| {
+                    property.optional
+                        || match &*property.name {
+                            "prototype" | "arguments" | "caller" | "apply" | "call" | "bind" => {
+                                true
+                            }
+                            "name" => matches!(
+                                arena.get(property.type_id),
+                                Type::String | Type::Any | Type::Error
+                            ),
+                            "length" => matches!(
+                                arena.get(property.type_id),
+                                Type::Number | Type::Any | Type::Error
+                            ),
+                            _ => false,
+                        }
+                })
+        }
+
+        // `{}` (an empty interface included) accepts every value but null and
+        // undefined: arrays, strings, numbers and booleans among them. A Record or
+        // a Promise also reads as an empty body here, so they are left to their own rules.
+        (
+            Type::Array(_)
+            | Type::Tuple(_)
+            | Type::String
+            | Type::StringLiteral(_)
+            | Type::Number
+            | Type::NumberLiteral(_)
+            | Type::Boolean
+            | Type::BooleanLiteral(_),
+            Type::Object(target),
+        ) => {
+            target.properties.is_empty()
+                && arena.record_value_type(sup).is_none()
+                && !arena.is_promise(sup)
+        }
+
         _ => false,
     }
 }
@@ -298,7 +345,14 @@ fn function_is_subtype_with(
     // sub cannot require more arguments than callers of sup are guaranteed to
     // supply. It is free to require fewer; its extra optional or rest slots simply
     // never get filled by such a caller.
-    if required_param_count(&sub.params) > required_param_count(&sup.params) {
+    // Problem: `(s: string, ...args: string[]) => string` was refused for `(...args: any[]) => string`,
+    // because the source needs one argument and the target has none required.
+    // Picked: tsc's rule. What counts is the target's number of parameters, optional ones
+    // included, and a target with a rest parameter can be called with any number of arguments,
+    // so it has no limit at all.
+    // Cost: `(a: number) => void` is accepted for `(a?: number) => void`, as tsc does.
+    let sup_has_rest = sup.params.last().is_some_and(|p| p.rest);
+    if !sup_has_rest && required_param_count(&sub.params) > sup.params.len() {
         return false;
     }
 

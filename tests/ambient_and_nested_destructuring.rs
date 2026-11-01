@@ -89,8 +89,9 @@ fn private_methods_of_a_class_in_a_declare_namespace_are_not_implicit_any() {
 
 #[test]
 fn public_methods_of_an_ambient_class_are_still_implicit_any() {
+    // tsc also asks for the return type of a public method with no body (TS7010).
     let found = tsc_codes("declare class C { m(a); }\n");
-    assert_eq!(found, vec![7006]);
+    assert_eq!(found, vec![7010, 7006]);
 }
 
 #[test]

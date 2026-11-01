@@ -301,6 +301,17 @@ pub fn narrow_condition(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> (NarrowState, NarrowState) {
+    let (on_true, on_false) = narrow_condition_inner(test, scoping, ctx);
+    let on_true = propagate_destructured(ctx, on_true);
+    let on_false = propagate_destructured(ctx, on_false);
+    (on_true, on_false)
+}
+
+fn narrow_condition_inner(
+    test: &Expression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> (NarrowState, NarrowState) {
     let (mut on_true, mut on_false) = narrow_condition_by_symbol(test, scoping, ctx);
     // Property paths (`user.address !== null`) are narrowed alongside, never instead:
     // a shape the symbol layer already understands yields nothing here.
@@ -472,6 +483,11 @@ fn narrow_condition_by_symbol(
                 return empty_pair();
             };
             by_symbol(ctx, symbol_id, narrow_truthy)
+        }
+
+        // `if (isFoo(x))`: a user-defined type guard.
+        Expression::CallExpression(call) => {
+            narrow_by_predicate_call(call, scoping, ctx, false).unwrap_or_else(empty_pair)
         }
 
         // `if (result.ok)`: the truthiness of a property narrows the object itself when it
@@ -748,6 +764,15 @@ pub fn narrow_switch_case(
     tests: &[&Expression],
     ctx: &mut CheckContext<'_, '_>,
 ) -> NarrowState {
+    let state = narrow_switch_case_inner(discriminant, tests, ctx);
+    propagate_destructured(ctx, state)
+}
+
+fn narrow_switch_case_inner(
+    discriminant: &SwitchDiscriminant,
+    tests: &[&Expression],
+    ctx: &mut CheckContext<'_, '_>,
+) -> NarrowState {
     match discriminant {
         SwitchDiscriminant::Identifier(symbol_id) => {
             let Some(literals) = resolve_all_literals(tests, &mut ctx.arena) else {
@@ -791,6 +816,15 @@ pub fn narrow_switch_case(
 // out. A test this checker cannot resolve is simply left out of the exclusion,
 // which keeps more members than strictly necessary and is always safe.
 pub fn narrow_switch_default(
+    discriminant: &SwitchDiscriminant,
+    tests: &[&Expression],
+    ctx: &mut CheckContext<'_, '_>,
+) -> NarrowState {
+    let state = narrow_switch_default_inner(discriminant, tests, ctx);
+    propagate_destructured(ctx, state)
+}
+
+fn narrow_switch_default_inner(
     discriminant: &SwitchDiscriminant,
     tests: &[&Expression],
     ctx: &mut CheckContext<'_, '_>,
@@ -1656,4 +1690,239 @@ pub fn narrow_to_non_nullish(arena: &mut TypeArena, id: TypeId) -> TypeId {
             }
         }
     }
+}
+
+// What a call to a function that says `x is T` (or `asserts x is T`, or `asserts x`) tells
+// about its argument: the pair of overlays for the call being true or false. The argument
+// can be a variable, or a property of one (`animal.type`), which narrows the variable by
+// that property like a comparison with a literal does.
+//
+// `allow_asserts` picks which kind of predicate counts: a condition (`if (isFoo(x))`) takes
+// `x is T`, a statement (`assertFoo(x);`) takes the `asserts` kind.
+pub(crate) fn narrow_by_predicate_call(
+    call: &oxc_ast::ast::CallExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+    allow_asserts: bool,
+) -> Option<(NarrowState, NarrowState)> {
+    let Expression::Identifier(callee) = &call.callee else {
+        return None;
+    };
+    let symbol_id = resolve_symbol_id(callee, scoping)?;
+    let predicate = *ctx.type_predicates.get(&symbol_id)?;
+    if predicate.asserts != allow_asserts {
+        return None;
+    }
+    let argument = call.arguments.get(predicate.param_index)?.as_expression()?;
+    let Some(claimed) = predicate.type_id else {
+        // `asserts x`: the argument is truthy afterwards.
+        return Some(narrow_condition(argument, scoping, ctx));
+    };
+    let claimed = claimed_type(call, symbol_id, claimed, scoping, ctx)?;
+
+    let mut argument = argument;
+    while let Expression::ParenthesizedExpression(inner) = argument {
+        argument = &inner.expression;
+    }
+    // `a?.p` is a chain around the member access.
+    let chained_member = match argument {
+        Expression::ChainExpression(chain) => match &chain.expression {
+            oxc_ast::ast::ChainElement::StaticMemberExpression(member) => Some(member),
+            _ => None,
+        },
+        _ => None,
+    };
+    match argument {
+        Expression::Identifier(ident) => {
+            let symbol = resolve_symbol_id(ident, scoping)?;
+            Some(by_symbol(ctx, symbol, move |arena, current, want_true| {
+                narrow_to_claimed(arena, current, claimed, want_true)
+            }))
+        }
+        _ if chained_member.is_some()
+            || matches!(argument, Expression::StaticMemberExpression(_)) =>
+        {
+            let member = match chained_member {
+                Some(member) => member,
+                None => match argument {
+                    Expression::StaticMemberExpression(member) => member,
+                    _ => return None,
+                },
+            };
+            let Expression::Identifier(ident) = &member.object else {
+                return None;
+            };
+            let symbol = resolve_symbol_id(ident, scoping)?;
+            let literals = union_members(&ctx.arena, claimed).unwrap_or_else(|| vec![claimed]);
+            if !literals.iter().all(|&l| {
+                matches!(
+                    ctx.arena.get(l),
+                    Type::StringLiteral(_) | Type::NumberLiteral(_) | Type::BooleanLiteral(_)
+                )
+            }) {
+                return None;
+            }
+            let property = member.property.name.to_string();
+            let optional = member.optional;
+            Some(by_symbol(ctx, symbol, move |arena, current, want_true| {
+                // `a?.p` equal to a literal means `a` is there.
+                let base = if optional && want_true {
+                    narrow_to_non_nullish(arena, current)
+                } else {
+                    current
+                };
+                narrow_by_property_literals(arena, base, &property, &literals, want_true)
+            }))
+        }
+        _ => None,
+    }
+}
+
+// The `T` of a predicate. A bare type parameter of the function (`asserts value is T` in
+// `<T>(value: any, type: T)`) is whatever the other argument of that type is.
+fn claimed_type(
+    call: &oxc_ast::ast::CallExpression,
+    callee: SymbolId,
+    claimed: TypeId,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> Option<TypeId> {
+    if !matches!(ctx.arena.get(claimed), Type::GenericParameter(..)) {
+        return Some(claimed);
+    }
+    let signature = ctx.symbols.get(callee)?;
+    let Type::Function(function) = ctx.arena.get(signature).clone() else {
+        return None;
+    };
+    let index = function.params.iter().position(|p| p.type_id == claimed)?;
+    let argument = call.arguments.get(index)?.as_expression()?;
+    // The argument was inferred once already, with its diagnostics; inferring it again
+    // must not report them a second time.
+    let before = ctx.diagnostics.len();
+    let inferred = crate::bridge::expressions::infer_expression_type(argument, scoping, ctx);
+    ctx.diagnostics.truncate(before);
+    Some(inferred)
+}
+
+fn narrow_to_claimed(
+    arena: &mut TypeArena,
+    current: TypeId,
+    claimed: TypeId,
+    want_true: bool,
+) -> TypeId {
+    let members = union_members(arena, current).unwrap_or_else(|| vec![current]);
+    let mut kept = Vec::with_capacity(members.len());
+    for member in &members {
+        let fits = crate::subtyping::is_subtype(arena, *member, claimed);
+        if fits == want_true {
+            kept.push(*member);
+        }
+    }
+    if want_true && kept.is_empty() {
+        // Nothing of `current` is `claimed`: it is `claimed` itself when that is narrower,
+        // and the two together otherwise.
+        if crate::subtyping::is_subtype(arena, claimed, current) {
+            return claimed;
+        }
+        return arena
+            .alloc_intersection(vec![current, claimed])
+            .unwrap_or(claimed);
+    }
+    arena.alloc_union(kept)
+}
+
+// `const { kind, a } = x` with `x: { kind: "a", a: A } | { kind: "b", a: B }`: `kind` and `a`
+// stay tied to each other, so once `kind` is "a" the binding `a` is an `A`. Only a `const`
+// pattern of plain names over a union of object types is recorded.
+pub(crate) fn register_destructured_group(
+    object: &oxc_ast::ast::ObjectPattern,
+    source: TypeId,
+    ctx: &mut CheckContext<'_, '_>,
+) {
+    if union_members(&ctx.arena, source).is_none() {
+        return;
+    }
+    let mut members = Vec::new();
+    for property in &object.properties {
+        let oxc_ast::ast::PropertyKey::StaticIdentifier(key) = &property.key else {
+            continue;
+        };
+        let oxc_ast::ast::BindingPattern::BindingIdentifier(id) = &property.value else {
+            continue;
+        };
+        if let Some(symbol) = id.symbol_id.get() {
+            members.push((symbol, key.name.to_string()));
+        }
+    }
+    if members.len() < 2 {
+        return;
+    }
+    let group = ctx.destructured_groups.len();
+    for (symbol, property) in &members {
+        ctx.destructured_index
+            .insert(*symbol, (group, property.clone()));
+    }
+    ctx.destructured_groups
+        .push(crate::bridge::context::DestructuredGroup { source, members });
+}
+
+// For each narrowed binding that came out of a registered destructuring, narrows its
+// siblings to what the members of the source that can still hold the new type say.
+fn propagate_destructured(ctx: &mut CheckContext<'_, '_>, state: NarrowState) -> NarrowState {
+    if ctx.destructured_index.is_empty() {
+        return state;
+    }
+    let mut out = state.clone();
+    for &(symbol, narrowed) in &state.0 {
+        let Some((group_index, property)) = ctx.destructured_index.get(&symbol).cloned() else {
+            continue;
+        };
+        let source = ctx.destructured_groups[group_index].source;
+        let siblings = ctx.destructured_groups[group_index].members.clone();
+        let Some(members) = union_members(&ctx.arena, source) else {
+            continue;
+        };
+        let property_of = |arena: &TypeArena, member: TypeId, name: &str| match arena.get(member) {
+            Type::Object(object) => object
+                .properties
+                .iter()
+                .find(|entry| &*entry.name == name)
+                .map(|entry| entry.type_id),
+            _ => None,
+        };
+        let mut kept = Vec::new();
+        for member in members {
+            let Some(discriminant) = property_of(&ctx.arena, member, &property) else {
+                kept.push(member);
+                continue;
+            };
+            let parts =
+                union_members(&ctx.arena, discriminant).unwrap_or_else(|| vec![discriminant]);
+            let overlaps = parts
+                .iter()
+                .any(|&part| crate::subtyping::is_subtype(&ctx.arena, part, narrowed));
+            if overlaps {
+                kept.push(member);
+            }
+        }
+        for (other, name) in siblings {
+            if other == symbol {
+                continue;
+            }
+            let mut parts = Vec::new();
+            let mut complete = true;
+            for &member in &kept {
+                match property_of(&ctx.arena, member, &name) {
+                    Some(property_type) => parts.push(property_type),
+                    None => complete = false,
+                }
+            }
+            if !complete {
+                continue;
+            }
+            let narrowed_type = ctx.arena.alloc_union(parts);
+            out.insert(other, narrowed_type);
+        }
+    }
+    out
 }
