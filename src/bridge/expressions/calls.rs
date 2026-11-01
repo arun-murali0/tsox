@@ -190,8 +190,15 @@ enum PickedCallable {
 enum Fit {
     Fits,
     WrongArity,
-    // The first argument that is not assignable to its parameter.
-    WrongArgument { index: usize, parameter: TypeId },
+    // The first argument that is not assignable to its inferred parameter.
+    WrongArgument {
+        index: usize,
+        parameter: TypeId,
+        argument: TypeId,
+    },
+    // The explicit type argument list cannot instantiate this signature. The ordinary
+    // call checker owns the TS2558 diagnostic if no other overload accepts the list.
+    WrongTypeArguments,
 }
 
 // A call through an intersection of functions uses the first member that accepts it, in the
@@ -209,14 +216,17 @@ enum Fit {
 //   the argument when every overload fails on the same one and on the callee otherwise.
 // The callee's position is the call's span here; the comparison with tsc goes by line.
 //
-// The argument types are inferred once here and whatever that reported is dropped; the
-// ordinary check of the member picked then infers and reports them again, so each problem
-// in an argument is still reported once. A spread argument is not probed: its length
-// is not known, so the first function member is used.
+// Candidate probing infers ordinary argument types once and evaluates callbacks against
+// each candidate's contextual signature. Provisional diagnostics are discarded; the final
+// selected-signature check re-infers the arguments and owns all visible diagnostics. A
+// spread argument is not probed: its length is not known, so the first function member is
+// used.
 fn pick_callable_member(
     callee_type: TypeId,
     arguments: &[oxc_ast::ast::Argument<'_>],
     call_span: Span,
+    explicit_type_args: &[TypeId],
+    callee_is_declaration: bool,
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> PickedCallable {
@@ -241,44 +251,78 @@ fn pick_callable_member(
                 return PickedCallable::Member(callable[0]);
             }
             let reported_before = ctx.diagnostics.len();
-            let argument_types: Vec<TypeId> = arguments
-                .iter()
-                .filter_map(|argument| argument.as_expression())
-                .map(|expression| infer_expression_type(expression, scoping, ctx))
-                .collect();
+            // Ordinary arguments have candidate-independent types and are inferred once.
+            // Callbacks, and object and array literals, are left for each candidate's
+            // contextual probe below: a callback's parameter and return types can decide
+            // whether a generic overload applies, and a literal reads differently against
+            // each candidate (`{ kind: "numeric" }` keeps its literal where the expected
+            // type holds one, and widens to `string` where it does not).
+            let mut argument_types = Vec::with_capacity(arguments.len());
+            for argument in arguments {
+                let Some(expression) = argument.as_expression() else {
+                    argument_types.push(None);
+                    continue;
+                };
+                argument_types.push(if is_candidate_typed(expression) {
+                    None
+                } else {
+                    Some(infer_expression_type(expression, scoping, ctx))
+                });
+            }
             ctx.diagnostics.truncate(reported_before);
 
             let fits: Vec<(TypeId, Fit)> = callable
                 .iter()
                 .map(|&member| {
-                    let fit = match ctx.arena.get(member) {
-                        Type::Function(function) => fit_of(&ctx.arena, function, &argument_types),
+                    let fit = match ctx.arena.get(member).clone() {
+                        Type::Function(function) => fit_of_candidate(
+                            ctx,
+                            &function,
+                            &argument_types,
+                            arguments,
+                            scoping,
+                            explicit_type_args,
+                            callee_is_declaration,
+                        ),
                         _ => Fit::WrongArity,
                     };
                     (member, fit)
                 })
                 .collect();
+            ctx.diagnostics.truncate(reported_before);
             if let Some((member, _)) = fits.iter().find(|(_, fit)| matches!(fit, Fit::Fits)) {
                 return PickedCallable::Member(*member);
             }
 
-            let rejected: Vec<(TypeId, usize, TypeId)> = fits
+            let rejected: Vec<(TypeId, usize, TypeId, TypeId)> = fits
                 .iter()
                 .filter_map(|(member, fit)| match fit {
-                    Fit::WrongArgument { index, parameter } => Some((*member, *index, *parameter)),
+                    Fit::WrongArgument {
+                        index,
+                        parameter,
+                        argument,
+                    } => Some((*member, *index, *parameter, *argument)),
                     _ => None,
                 })
                 .collect();
             match rejected.as_slice() {
+                [] if fits
+                    .iter()
+                    .any(|(_, fit)| matches!(fit, Fit::WrongTypeArguments)) =>
+                {
+                    // Keep one candidate so check_callable can issue the established
+                    // TS2558 type-argument-count diagnostic. If another overload accepts
+                    // the written list, it would already have been selected above.
+                    let candidate = fits
+                        .iter()
+                        .find(|(_, fit)| matches!(fit, Fit::WrongTypeArguments))
+                        .map(|(member, _)| *member)
+                        .unwrap_or(callable[0]);
+                    PickedCallable::Member(candidate)
+                }
                 [] => report_arity_over_all(&callable, arguments, call_span, ctx),
                 [(only, ..)] => PickedCallable::Member(*only),
-                _ => report_no_overload_matches(
-                    &rejected,
-                    &argument_types,
-                    arguments,
-                    call_span,
-                    ctx,
-                ),
+                _ => report_no_overload_matches(&rejected, arguments, call_span, ctx),
             }
         }
     }
@@ -328,14 +372,13 @@ fn report_arity_over_all(
 // Each branch is the line naming the overload and the reason under it, which is the
 // ordinary "Argument of type ... is not assignable to parameter of type ..." text.
 fn report_no_overload_matches(
-    rejected: &[(TypeId, usize, TypeId)],
-    argument_types: &[TypeId],
+    rejected: &[(TypeId, usize, TypeId, TypeId)],
     arguments: &[oxc_ast::ast::Argument<'_>],
     call_span: Span,
     ctx: &mut CheckContext<'_, '_>,
 ) -> PickedCallable {
     let mut text = String::from("No overload matches this call.");
-    for (number, (member, index, parameter)) in rejected.iter().enumerate() {
+    for (number, (member, _index, parameter, argument)) in rejected.iter().enumerate() {
         let signature = match ctx.arena.get(*member) {
             Type::Function(function) => {
                 crate::type_display::display_signature(&ctx.arena, function)
@@ -349,9 +392,7 @@ fn report_no_overload_matches(
             signature
         ));
         let reason = crate::diagnostic_messages::messages::argument_not_assignable(
-            &ctx.arena,
-            argument_types[*index],
-            *parameter,
+            &ctx.arena, *argument, *parameter,
         );
         for line in reason.text.lines() {
             text.push_str("\n    ");
@@ -362,7 +403,9 @@ fn report_no_overload_matches(
     // Overloads that all failed on the same argument blame that argument, so the error
     // sits on it. Failing on different ones, no single argument is to blame, so it sits on
     // the call.
-    let same_argument = rejected.iter().all(|(_, index, _)| *index == rejected[0].1);
+    let same_argument = rejected
+        .iter()
+        .all(|(_, index, _, _)| *index == rejected[0].1);
     let span = if same_argument {
         arguments[rejected[0].1].span()
     } else {
@@ -405,50 +448,320 @@ fn expand_tuple_rest(
     Some(expanded)
 }
 
-// How a call with these argument types meets the function: enough arguments, not too
-// many, and each one assignable to its parameter. A parameter that mentions a type
-// parameter is not judged here, since what it accepts depends on inference; arity decides.
-fn fit_of(
-    arena: &crate::arena::TypeArena,
+// Evaluate one overload in an independent inference session. A generic parameter is
+// never treated as an automatic match: candidates are inferred from this call's arguments,
+// defaults and constraints are applied, and the resulting parameter types are checked just
+// like a non-generic signature. The session is local to this candidate, so a failed
+// overload cannot leave bindings behind for the next one.
+fn fit_of_candidate(
+    ctx: &mut CheckContext<'_, '_>,
     function: &FunctionType,
-    argument_types: &[TypeId],
+    initial_argument_types: &[Option<TypeId>],
+    arguments: &[oxc_ast::ast::Argument<'_>],
+    scoping: &Scoping,
+    explicit_type_args: &[TypeId],
+    callee_is_declaration: bool,
 ) -> Fit {
-    let expanded = expand_tuple_rest(arena, function);
+    // A rest parameter typed as a tuple stands for its elements, as a fixed run of parameters.
+    let expanded = expand_tuple_rest(&ctx.arena, function);
     let function = expanded.as_ref().unwrap_or(function);
-    if function.is_untyped {
-        return Fit::Fits;
-    }
-    let required = function
-        .params
-        .iter()
-        .filter(|param| !param.optional && !param.rest)
-        .count();
-    let rest = function.params.last().filter(|param| param.rest);
-    if argument_types.len() < required {
-        return Fit::WrongArity;
-    }
-    if rest.is_none() && argument_types.len() > function.params.len() {
-        return Fit::WrongArity;
-    }
-
-    for (index, &argument) in argument_types.iter().enumerate() {
-        let parameter = match function.params.get(index) {
-            Some(param) if !param.rest => param.type_id,
-            _ => match rest {
-                Some(rest) => match arena.get(rest.type_id) {
-                    Type::Array(element) => *element,
-                    _ => rest.type_id,
-                },
-                None => continue,
-            },
-        };
-        let judged = GenericSolver::contains_type_param(arena, parameter)
-            || crate::subtyping::is_subtype(arena, argument, parameter);
-        if !judged {
-            return Fit::WrongArgument { index, parameter };
+    let diagnostics_before = ctx.diagnostics.len();
+    let result = (|| {
+        if function.is_untyped {
+            return Fit::Fits;
         }
-    }
-    Fit::Fits
+
+        let required = function
+            .params
+            .iter()
+            .filter(|param| !param.optional && !param.rest)
+            .count();
+        let rest = function.params.last().filter(|param| param.rest);
+        if arguments.len() < required {
+            return Fit::WrongArity;
+        }
+        if rest.is_none() && arguments.len() > function.params.len() {
+            return Fit::WrongArity;
+        }
+
+        // Keep declaration order and include parameters that occur only in constraints,
+        // defaults, or the return type. This mirrors the final call checker, rather than
+        // discovering only parameters that happen to occur in an input position.
+        let mut declared_param_ids = Vec::new();
+        for parameter in &function.type_params {
+            if !declared_param_ids.contains(&parameter.id) {
+                declared_param_ids.push(parameter.id);
+            }
+        }
+        for parameter in &function.params {
+            GenericSolver::ordered_generic_param_ids(
+                &ctx.arena,
+                parameter.type_id,
+                &mut declared_param_ids,
+            );
+        }
+        GenericSolver::ordered_generic_param_ids(
+            &ctx.arena,
+            function.return_type,
+            &mut declared_param_ids,
+        );
+
+        let ambient_ids: Vec<crate::types::TypeParameterId> = if callee_is_declaration {
+            Vec::new()
+        } else {
+            declared_param_ids
+                .iter()
+                .copied()
+                .filter(|&id| ctx.namespace.is_type_param_in_scope(id))
+                .collect()
+        };
+        let own_ids: Vec<crate::types::TypeParameterId> = declared_param_ids
+            .iter()
+            .copied()
+            .filter(|id| !ambient_ids.contains(id))
+            .collect();
+
+        if !explicit_type_args.is_empty() {
+            let required_type_args = function
+                .type_params
+                .iter()
+                .rposition(|parameter| parameter.default.is_none())
+                .map_or(0, |index| index + 1);
+            if explicit_type_args.len() < required_type_args
+                || explicit_type_args.len() > function.type_params.len()
+                || explicit_type_args.len() > own_ids.len()
+            {
+                return Fit::WrongTypeArguments;
+            }
+        }
+
+        let bindings: Vec<(crate::types::TypeParameterId, TypeId)> = own_ids
+            .iter()
+            .zip(explicit_type_args.iter())
+            .map(|(&id, &explicit)| (id, explicit))
+            .collect();
+        let mut locked: Vec<crate::types::TypeParameterId> =
+            bindings.iter().map(|(id, _)| *id).collect();
+        let mut bindings = bindings;
+        for &id in &ambient_ids {
+            if let Some(node) = ctx.namespace.type_param_node(id) {
+                bindings.push((id, node));
+                locked.push(id);
+            }
+        }
+
+        let mut inference = GenericInferenceSession::new(bindings, locked);
+        let mut argument_types = initial_argument_types.to_vec();
+        for (index, argument_type) in argument_types.iter().enumerate() {
+            let Some(argument_type) = argument_type else {
+                continue;
+            };
+            if let Some(parameter_type) =
+                GenericSolver::expected_param_type(&ctx.arena, &function.params, index)
+            {
+                inference.infer_argument(
+                    &mut ctx.arena,
+                    parameter_type,
+                    *argument_type,
+                    &mut ctx.relation_cache,
+                );
+            }
+        }
+
+        // Contextually type each callback against this candidate's preliminary bindings.
+        // This both avoids treating an untyped callback as a wildcard and lets callback
+        // return values contribute candidates to generic return parameters. The final
+        // selected-signature pass checks the callback again and owns visible diagnostics.
+        let mut contextual_bindings = inference
+            .clone()
+            .finish(&mut ctx.arena, &mut ctx.relation_cache);
+        for parameter in &function.type_params {
+            if ambient_ids.contains(&parameter.id)
+                || contextual_bindings
+                    .iter()
+                    .any(|(id, _)| *id == parameter.id)
+            {
+                continue;
+            }
+            let fallback = parameter
+                .default
+                .or(parameter.constraint)
+                .unwrap_or_else(|| ctx.arena.unknown());
+            let fallback = GenericSolver::substitute_bound_type_params(
+                &mut ctx.arena,
+                fallback,
+                &contextual_bindings,
+            );
+            if !GenericSolver::contains_type_param(&ctx.arena, fallback) {
+                contextual_bindings.push((parameter.id, fallback));
+            }
+        }
+
+        for (index, argument) in arguments.iter().enumerate() {
+            let Some(expression) = argument.as_expression() else {
+                continue;
+            };
+            if !is_candidate_typed(expression) {
+                continue;
+            }
+            let is_callback = matches!(
+                expression,
+                Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
+            );
+            let Some(parameter_type) =
+                GenericSolver::expected_param_type(&ctx.arena, &function.params, index)
+            else {
+                continue;
+            };
+            let contextual_type = GenericSolver::substitute_bound_type_params(
+                &mut ctx.arena,
+                parameter_type,
+                &contextual_bindings,
+            );
+            let prior_context = ctx.contextual.replace(contextual_type);
+            let inferred = infer_expression_type(expression, scoping, ctx);
+            ctx.contextual = prior_context;
+            argument_types[index] = Some(inferred);
+            // A callback is evidence of the strength the main call path gives it; a literal
+            // is an ordinary argument that was only typed late, so it counts as one.
+            let priority = if is_callback {
+                InferencePriority::Contextual
+            } else {
+                InferencePriority::Normal
+            };
+            inference.infer_argument_with_priority(
+                &mut ctx.arena,
+                parameter_type,
+                inferred,
+                priority,
+                &mut ctx.relation_cache,
+            );
+        }
+
+        let mut bindings = inference.finish(&mut ctx.arena, &mut ctx.relation_cache);
+
+        // Apply defaults in declaration order, so a later default can refer to an earlier
+        // inferred or defaulted parameter (`<T, U = T>`).
+        for parameter in &function.type_params {
+            if ambient_ids.contains(&parameter.id)
+                || bindings.iter().any(|(id, _)| *id == parameter.id)
+            {
+                continue;
+            }
+            if let Some(default) = parameter.default {
+                let default =
+                    GenericSolver::substitute_bound_type_params(&mut ctx.arena, default, &bindings);
+                bindings.push((parameter.id, default));
+            }
+        }
+
+        // Constraints are part of applicability. A generic overload whose inferred T
+        // violates `T extends C` must not mask a later overload that accepts the input.
+        let mut constraints = Vec::new();
+        for parameter in &function.type_params {
+            if let Some(constraint) = parameter.constraint
+                && !constraints.iter().any(|(id, _, _)| *id == parameter.id)
+            {
+                constraints.push((parameter.id, parameter.name.clone(), constraint));
+            }
+        }
+        for parameter in &function.params {
+            GenericSolver::collect_generic_param_constraints(
+                &ctx.arena,
+                parameter.type_id,
+                &mut constraints,
+            );
+        }
+        GenericSolver::collect_generic_param_constraints(
+            &ctx.arena,
+            function.return_type,
+            &mut constraints,
+        );
+
+        for (id, _, raw_constraint) in &constraints {
+            if ambient_ids.contains(id) {
+                continue;
+            }
+            let Some(&(_, inferred)) = bindings.iter().find(|(bound_id, _)| bound_id == id) else {
+                continue;
+            };
+            let inferred =
+                GenericSolver::substitute_bound_type_params(&mut ctx.arena, inferred, &bindings);
+            let constraint = GenericSolver::substitute_bound_type_params(
+                &mut ctx.arena,
+                *raw_constraint,
+                &bindings,
+            );
+            if GenericSolver::contains_type_param(&ctx.arena, inferred)
+                || GenericSolver::contains_type_param(&ctx.arena, constraint)
+                || crate::subtyping::is_subtype(&ctx.arena, inferred, constraint)
+            {
+                continue;
+            }
+
+            // Associate a failed inferred constraint with the argument that supplied the
+            // parameter, giving TS2769 a useful branch rather than a generic wildcard fit.
+            for index in 0..argument_types.len() {
+                let Some(argument_type) = argument_types[index] else {
+                    continue;
+                };
+                if let Some(parameter_type) =
+                    GenericSolver::expected_param_type(&ctx.arena, &function.params, index)
+                {
+                    let mut parameter_ids = Vec::new();
+                    GenericSolver::ordered_generic_param_ids(
+                        &ctx.arena,
+                        parameter_type,
+                        &mut parameter_ids,
+                    );
+                    if parameter_ids.contains(id) {
+                        return Fit::WrongArgument {
+                            index,
+                            parameter: constraint,
+                            argument: argument_type,
+                        };
+                    }
+                }
+            }
+            return Fit::WrongTypeArguments;
+        }
+
+        for (index, argument_type) in argument_types.iter().enumerate() {
+            let Some(argument_type) = argument_type else {
+                continue;
+            };
+            let Some(parameter_type) =
+                GenericSolver::expected_param_type(&ctx.arena, &function.params, index)
+            else {
+                continue;
+            };
+            let expected =
+                GenericSolver::substitute_type_params(&mut ctx.arena, parameter_type, &bindings);
+            if !crate::subtyping::is_subtype(&ctx.arena, *argument_type, expected) {
+                return Fit::WrongArgument {
+                    index,
+                    parameter: expected,
+                    argument: *argument_type,
+                };
+            }
+        }
+
+        Fit::Fits
+    })();
+    ctx.diagnostics.truncate(diagnostics_before);
+    result
+}
+
+/// Whether an overload candidate types this argument for itself: a function, or an object or
+/// array literal, whose type depends on what the candidate expects there.
+fn is_candidate_typed(expr: &Expression) -> bool {
+    matches!(
+        expr,
+        Expression::ArrowFunctionExpression(_)
+            | Expression::FunctionExpression(_)
+            | Expression::ObjectExpression(_)
+            | Expression::ArrayExpression(_)
+    )
 }
 
 /// Whether an expression holds a function whose parameters need a contextual type, the way
@@ -501,7 +814,21 @@ fn check_callable(
         explicit_type_args,
     } = site;
 
-    let callee_type = match pick_callable_member(callee_type, arguments, span, scoping, ctx) {
+    // A value of a constrained type parameter (`fn: T` with `T extends (...a: any[]) => R`)
+    // is called through its constraint.
+    let callee_type = match ctx.arena.get(callee_type) {
+        Type::GenericParameter(_, _, Some(constraint)) => *constraint,
+        _ => callee_type,
+    };
+    let callee_type = match pick_callable_member(
+        callee_type,
+        arguments,
+        span,
+        explicit_type_args,
+        callee_is_declaration,
+        scoping,
+        ctx,
+    ) {
         PickedCallable::Member(member) => member,
         // The call was reported as a whole (tsc's TS2769, or one arity message over every
         // overload). The arguments are still looked at for their own mistakes, once.

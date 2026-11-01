@@ -1,7 +1,9 @@
 mod context;
 mod declare;
+mod duplicates;
 mod exports;
 mod expressions;
+mod implicit_any;
 mod imports;
 mod narrow;
 mod parse;
@@ -184,6 +186,8 @@ fn bodies_phase<'ast>(
         return;
     }
     unresolved_names::report_unresolved_type_names(program, scoping, ctx);
+    implicit_any::report_implicit_any(program, ctx);
+    duplicates::report_duplicate_declarations(program, ctx);
     tuple_grammar::report_tuple_grammar_errors(program, ctx);
     unreachable_code::check_unreachable_code(program, semantic, ctx);
 }
@@ -199,6 +203,13 @@ fn publish(ctx: &mut CheckContext<'_, '_>) -> (Vec<Diagnostic>, CheckMetrics) {
     }
 
     for (name, span) in ctx.namespace.take_implicit_any_params() {
+        // The declaration pass may have reported this parameter already.
+        if ctx.diagnostics.iter().any(|d| {
+            d.code == crate::diagnostic_codes::DiagnosticCode::ImplicitAnyParameter
+                && d.start == span.start
+        }) {
+            continue;
+        }
         ctx.error(
             crate::diagnostic_messages::messages::parameter_implicitly_any(&name),
             span,

@@ -754,6 +754,47 @@ impl<'a> TypeNamespace<'a> {
     // The declaration itself when it is generic, so a reference can bind one
     // argument per *declared* parameter, in declaration order, instead of
     // guessing the order from whichever parameters the resolved body mentions.
+    // The type of `member` on a global interface the program declares itself
+    // (`interface Array<T> { split: ... }`), with the interface's type parameters
+    // bound to `args`. The default library is not parsed, so this only ever finds
+    // user augmentations of the built-in types.
+    pub fn augmentation_member(
+        &mut self,
+        interface: &str,
+        member: &str,
+        args: &[TypeId],
+        arena: &mut TypeArena,
+    ) -> Option<TypeId> {
+        if !matches!(
+            self.entries.get(interface).map(|e| &e.kind),
+            Some(DeclKind::Interface(_))
+        ) {
+            return None;
+        }
+        let Resolution::Resolved(id) = self.resolve(interface, arena) else {
+            return None;
+        };
+        let Type::Object(object) = arena.get(id) else {
+            return None;
+        };
+        let found = object
+            .properties
+            .iter()
+            .find(|p| &*p.name == member)?
+            .type_id;
+        let Some(decl) = self.declared_type_param_decl(interface) else {
+            return Some(found);
+        };
+        let mut bindings: Bindings = Vec::with_capacity(decl.params.len());
+        for (index, param) in decl.params.iter().enumerate() {
+            let parameter_id =
+                TypeParameterId::with_file(self.file_id, param.span().start, index as u32);
+            let bound = args.get(index).copied().unwrap_or_else(|| arena.any());
+            bindings.push((parameter_id, bound));
+        }
+        Some(substitute_type_params(arena, found, &bindings))
+    }
+
     pub fn declared_type_param_decl(
         &self,
         name: &str,
@@ -1533,6 +1574,18 @@ impl<'a> TypeNamespace<'a> {
         let mut properties: Vec<PropertyEntry> = Vec::new();
 
         if let Some(heritage) = &class.heritage {
+            // A parent this checker cannot see (a library class such as `Array<T>`, an
+            // expression, a name that does not resolve) leaves the instance shape
+            // incomplete, so the class stays unresolved instead of being half a class.
+            let Expression::Identifier(parent_name) = &heritage.expression else {
+                return None;
+            };
+            if !matches!(
+                self.resolve(&parent_name.name, arena),
+                Resolution::Resolved(_)
+            ) {
+                return None;
+            }
             if let Expression::Identifier(parent_name) = &heritage.expression {
                 if let Resolution::Resolved(parent_type) = self.resolve(&parent_name.name, arena) {
                     // `extends Animal<string>`: the parent's own declared type
@@ -1579,25 +1632,26 @@ impl<'a> TypeNamespace<'a> {
                 // declares but that structurally does not exist here, which is a
                 // worse failure mode than an honest "this class isn't supported."
                 ClassElement::PropertyDefinition(prop) if !prop.r#static => {
-                    let PropertyKey::StaticIdentifier(key) = &prop.key else {
-                        return None;
+                    let name = static_member_name(&prop.key)?;
+                    // A field with no annotation takes the widened type of a literal
+                    // initializer, and is `any` otherwise (an uninitialized one is also
+                    // reported as an implicit any). Dropping the whole class for it hid
+                    // every error that involved the class.
+                    let type_id = match &prop.type_annotation {
+                        Some(annotation) => resolve_type_annotation(annotation, self, arena)?,
+                        None => match &prop.value {
+                            Some(Expression::NumericLiteral(_)) => arena.number(),
+                            Some(Expression::StringLiteral(_)) => arena.string(),
+                            Some(Expression::BooleanLiteral(_)) => arena.boolean(),
+                            _ => arena.any(),
+                        },
                     };
-                    let annotation = prop.type_annotation.as_ref()?;
-                    let type_id = resolve_type_annotation(annotation, self, arena)?;
-                    upsert_property(
-                        &mut properties,
-                        key.name.to_string(),
-                        type_id,
-                        prop.optional,
-                        false,
-                    );
+                    upsert_property(&mut properties, name, type_id, prop.optional, false);
                 }
                 ClassElement::MethodDefinition(method)
                     if !method.r#static && method.kind == MethodDefinitionKind::Method =>
                 {
-                    let PropertyKey::StaticIdentifier(key) = &method.key else {
-                        return None;
-                    };
+                    let name = static_member_name(&method.key)?;
                     let method_scope = self.push_type_params(arena, &method.value);
                     let return_type = method
                         .value
@@ -1616,8 +1670,12 @@ impl<'a> TypeNamespace<'a> {
                         arena,
                     );
                     self.pop_type_params(method_scope);
-                    let Some(return_type) = return_type else {
-                        return None;
+                    // Without a return annotation the type is `any` until a body pass
+                    // could infer it; the method stays callable and its arity is checked.
+                    let return_type = match (return_type, &method.value.return_type) {
+                        (Some(return_type), _) => return_type,
+                        (None, None) => arena.any(),
+                        (None, Some(_)) => return None,
                     };
                     let method_type = arena.alloc(Type::Function(crate::types::FunctionType {
                         params,
@@ -1625,13 +1683,7 @@ impl<'a> TypeNamespace<'a> {
                         type_params,
                         is_untyped,
                     }));
-                    upsert_property(
-                        &mut properties,
-                        key.name.to_string(),
-                        method_type,
-                        false,
-                        true,
-                    );
+                    upsert_property(&mut properties, name, method_type, false, true);
                 }
 
                 // Problem: `get total(): number { ... }` was dropped without a word, so
@@ -1647,42 +1699,34 @@ impl<'a> TypeNamespace<'a> {
                 ClassElement::MethodDefinition(method)
                     if !method.r#static && method.kind == MethodDefinitionKind::Get =>
                 {
-                    let PropertyKey::StaticIdentifier(key) = &method.key else {
-                        return None;
+                    let name = static_member_name(&method.key)?;
+                    let type_id = match &method.value.return_type {
+                        Some(rt) => resolve_type_annotation(rt, self, arena)?,
+                        None => arena.any(),
                     };
-                    let type_id = method
-                        .value
-                        .return_type
-                        .as_ref()
-                        .and_then(|rt| resolve_type_annotation(rt, self, arena))?;
-                    upsert_property(&mut properties, key.name.to_string(), type_id, false, false);
+                    upsert_property(&mut properties, name, type_id, false, false);
                 }
                 ClassElement::MethodDefinition(method)
                     if !method.r#static && method.kind == MethodDefinitionKind::Set =>
                 {
-                    let PropertyKey::StaticIdentifier(key) = &method.key else {
-                        return None;
-                    };
+                    let name = static_member_name(&method.key)?;
+                    let key_name = name.clone();
                     let has_getter = class.body.body.iter().any(|other| {
                         matches!(
                             other,
                             ClassElement::MethodDefinition(getter)
                                 if !getter.r#static
                                     && getter.kind == MethodDefinitionKind::Get
-                                    && matches!(&getter.key, PropertyKey::StaticIdentifier(k) if k.name == key.name)
+                                    && static_member_name(&getter.key).as_deref() == Some(key_name.as_str())
                         )
                     });
                     if !has_getter {
                         let param = method.value.params.items.first()?;
-                        let annotation = param.type_annotation.as_ref()?;
-                        let type_id = resolve_type_annotation(annotation, self, arena)?;
-                        upsert_property(
-                            &mut properties,
-                            key.name.to_string(),
-                            type_id,
-                            false,
-                            false,
-                        );
+                        let type_id = match &param.type_annotation {
+                            Some(annotation) => resolve_type_annotation(annotation, self, arena)?,
+                            None => arena.any(),
+                        };
+                        upsert_property(&mut properties, name, type_id, false, false);
                     }
                 }
 
@@ -1700,8 +1744,10 @@ impl<'a> TypeNamespace<'a> {
                             continue;
                         }
                         let name = crate::type_annotation::binding_name(&param.pattern)?;
-                        let annotation = param.type_annotation.as_ref()?;
-                        let type_id = resolve_type_annotation(annotation, self, arena)?;
+                        let type_id = match &param.type_annotation {
+                            Some(annotation) => resolve_type_annotation(annotation, self, arena)?,
+                            None => arena.any(),
+                        };
                         upsert_property(
                             &mut properties,
                             name.to_string(),
@@ -1745,5 +1791,16 @@ fn upsert_property(
 impl Default for TypeNamespace<'_> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// The name of a class member written as an identifier, a string or a number; a computed
+// key has no name this checker can use.
+fn static_member_name(key: &PropertyKey<'_>) -> Option<String> {
+    match key {
+        PropertyKey::StaticIdentifier(id) => Some(id.name.to_string()),
+        PropertyKey::StringLiteral(lit) => Some(lit.value.to_string()),
+        PropertyKey::NumericLiteral(lit) => Some(lit.value.to_string()),
+        _ => None,
     }
 }

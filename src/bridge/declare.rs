@@ -268,6 +268,7 @@ fn declare_values<'ast>(
     ctx: &mut CheckContext<'ast, '_>,
     ambient: bool,
 ) {
+    let overload_sets = overload_sets(items);
     for (item, _) in items.iter().copied() {
         match item {
             TopLevelItem::Variable(decl) => {
@@ -288,7 +289,13 @@ fn declare_values<'ast>(
                     }
                 }
             }
-            TopLevelItem::Function(func) => declare_function(func, ctx),
+            TopLevelItem::Function(func) => {
+                // A signature in an overload set is declared with the set, by the first of
+                // them; any other function is declared on its own.
+                if declare_overload_set(func, &overload_sets, ctx).is_none() {
+                    declare_function(func, ctx);
+                }
+            }
             TopLevelItem::Class(class) => declare_class_constructor(class, items, ctx),
             TopLevelItem::ExternalModule(module) => {
                 if let Some(body) = &module.body {
@@ -496,6 +503,87 @@ fn namespace_properties(
     Some(properties)
 }
 
+// Signatures of one name written more than once, none of them with a body: `declare
+// function f(x: string): string; declare function f(x: number): number;`.
+//
+// Problem: each declaration replaced the one before, so only the last signature was ever
+// known and a call the first one accepts was checked against the last.
+// Picked: the signatures are one value, an intersection in the order they were written,
+// which is how a call already picks among several signatures (see check_callable).
+// Cost: a name with an implementation next to its overload signatures is left as it was,
+// the implementation's own type, since that signature is not part of what a caller sees
+// and the body pass reads it. Only signature-only sets are merged.
+struct OverloadSet<'a, 'ast> {
+    symbol_id: oxc_semantic::SymbolId,
+    signatures: Vec<&'a Function<'ast>>,
+}
+
+fn overload_sets<'a, 'ast>(items: &[(TopLevelItem<'ast>, bool)]) -> Vec<OverloadSet<'a, 'ast>>
+where
+    'ast: 'a,
+{
+    let mut sets: Vec<OverloadSet<'a, 'ast>> = Vec::new();
+    let mut implemented: Vec<oxc_semantic::SymbolId> = Vec::new();
+    for (item, _) in items.iter().copied() {
+        let TopLevelItem::Function(func) = item else {
+            continue;
+        };
+        let Some(symbol_id) = func.id.as_ref().and_then(|id| id.symbol_id.get()) else {
+            continue;
+        };
+        if func.body.is_some() {
+            implemented.push(symbol_id);
+            continue;
+        }
+        match sets.iter_mut().find(|set| set.symbol_id == symbol_id) {
+            Some(set) => set.signatures.push(func),
+            None => sets.push(OverloadSet {
+                symbol_id,
+                signatures: vec![func],
+            }),
+        }
+    }
+    sets.retain(|set| set.signatures.len() > 1 && !implemented.contains(&set.symbol_id));
+    sets
+}
+
+// Declares the whole overload set when `func` is one of its signatures. Returns whether it
+// belongs to one; only the first signature of a set does the declaring.
+fn declare_overload_set(
+    func: &Function<'_>,
+    sets: &[OverloadSet<'_, '_>],
+    ctx: &mut CheckContext<'_, '_>,
+) -> Option<()> {
+    let symbol_id = func.id.as_ref().and_then(|id| id.symbol_id.get())?;
+    let set = sets.iter().find(|set| set.symbol_id == symbol_id)?;
+    if !std::ptr::eq(set.signatures[0], func) {
+        return Some(());
+    }
+    let mut members = Vec::with_capacity(set.signatures.len());
+    for signature in &set.signatures {
+        // A signature that cannot be resolved leaves the name as the last one declared it,
+        // as before: a set with a hole in it would reject calls that are fine.
+        match resolve_function_type(signature, ctx) {
+            Some(member) => members.push(member),
+            None => {
+                for signature in &set.signatures {
+                    declare_function(signature, ctx);
+                }
+                return Some(());
+            }
+        }
+    }
+    match ctx.arena.alloc_intersection(members) {
+        Ok(set_type) => ctx.symbols.declare(symbol_id, set_type),
+        Err(_) => {
+            for signature in &set.signatures {
+                declare_function(signature, ctx);
+            }
+        }
+    }
+    Some(())
+}
+
 // Registers a function's signature under its symbol. Shared by the top-level pass
 // and by check_function_declaration / hoist_function_declarations, which call it
 // for a function declared inside another body: the same signature rules apply
@@ -519,7 +607,33 @@ pub(super) fn declare_function(func: &Function<'_>, ctx: &mut CheckContext<'_, '
     // Picked: a named one is declared with the same `any` placeholder as a sync function; the
     // body pass replaces it with a Promise of what the body returns.
     // Cost: until that replacement, a call to it is unchecked, as for a sync function.
-    if let Some(function_type) = resolve_function_signature(func, ctx, true) {
+    let Some(function_type) = resolve_function_signature(func, ctx, true) else {
+        return;
+    };
+    // Problem: `function f(a: string): number; function f(a: any): any {}` was typed by the last
+    // declaration, the implementation, so a call saw its signature and none of the overloads: a
+    // wrong argument count was reported where tsc picks the overload that fits, and a result was
+    // `any` where tsc gives the overload's type.
+    // Picked: every declaration without a body is an overload signature. A callee with more than
+    // one is the intersection of them in the order written, which a call already resolves by
+    // taking the first member that accepts it. The implementation is not callable by others, so it
+    // is kept aside for the body check and does not replace the overloads.
+    // Cost: an implementation signature that does not fit its overloads is not reported (TS2394).
+    record_type_predicate(func, symbol_id, ctx);
+    if func.body.is_none() {
+        let overloads = ctx.overload_signatures.entry(symbol_id).or_default();
+        overloads.push(function_type);
+        let all = overloads.clone();
+        let callee = if all.len() == 1 {
+            function_type
+        } else {
+            ctx.arena.alloc_intersection(all).unwrap_or(function_type)
+        };
+        ctx.symbols.declare(symbol_id, callee);
+    } else if ctx.overload_signatures.contains_key(&symbol_id) {
+        ctx.implementation_signatures
+            .insert(symbol_id, function_type);
+    } else {
         ctx.symbols.declare(symbol_id, function_type);
     }
 }
@@ -536,13 +650,94 @@ pub(super) fn resolve_function_type(
 
 // `async_placeholder` gives an unannotated `async function` the `any` placeholder a sync one
 // gets. Only a named declaration with a body pass to replace it asks for that.
+// `function f(x): x is T` and `asserts x [is T]`: remember which parameter the predicate is
+// about and the type it claims, for the narrowing a call to `f` does.
+fn record_type_predicate(
+    func: &Function<'_>,
+    symbol_id: oxc_semantic::SymbolId,
+    ctx: &mut CheckContext<'_, '_>,
+) {
+    use oxc_ast::ast::{TSType, TSTypePredicateName};
+    let Some(annotation) = &func.return_type else {
+        return;
+    };
+    let TSType::TSTypePredicate(predicate) = &annotation.type_annotation else {
+        return;
+    };
+    let TSTypePredicateName::Identifier(name) = &predicate.parameter_name else {
+        return;
+    };
+    let Some(param_index) = func.params.items.iter().position(|param| {
+        matches!(&param.pattern, oxc_ast::ast::BindingPattern::BindingIdentifier(id) if id.name == name.name)
+    }) else {
+        return;
+    };
+    let scope = ctx.namespace.push_type_params(&mut ctx.arena, func);
+    let type_id = match &predicate.type_annotation {
+        Some(annotation) => {
+            let resolved = resolve_type_annotation(annotation, &mut ctx.namespace, &mut ctx.arena);
+            if resolved.is_none() {
+                ctx.namespace.pop_type_params(scope);
+                return;
+            }
+            resolved
+        }
+        None => None,
+    };
+    ctx.namespace.pop_type_params(scope);
+    ctx.type_predicates.insert(
+        symbol_id,
+        super::context::TypePredicate {
+            param_index,
+            type_id,
+            asserts: predicate.asserts,
+        },
+    );
+}
+
+fn resolve_overload_params_lenient(
+    params: &oxc_ast::ast::FormalParameters<'_>,
+    ctx: &mut CheckContext<'_, '_>,
+) -> Option<Vec<crate::types::Param>> {
+    let mut out = Vec::new();
+    for param in &params.items {
+        let type_id = match &param.type_annotation {
+            Some(a) => resolve_type_annotation(a, &mut ctx.namespace, &mut ctx.arena)?,
+            None => ctx.arena.any(),
+        };
+        out.push(crate::types::Param {
+            type_id,
+            optional: param.optional || param.initializer.is_some(),
+            rest: false,
+            name: None,
+        });
+    }
+    if let Some(rest) = &params.rest {
+        let type_id = match &rest.type_annotation {
+            Some(a) => resolve_type_annotation(a, &mut ctx.namespace, &mut ctx.arena)?,
+            None => ctx.arena.any(),
+        };
+        out.push(crate::types::Param {
+            type_id,
+            optional: false,
+            rest: true,
+            name: None,
+        });
+    }
+    Some(out)
+}
+
 fn resolve_function_signature(
     func: &Function<'_>,
     ctx: &mut CheckContext<'_, '_>,
     async_placeholder: bool,
 ) -> Option<crate::arena::TypeId> {
     let scope = ctx.namespace.push_type_params(&mut ctx.arena, func);
-    let params = resolve_function_params(&func.params, &mut ctx.namespace, &mut ctx.arena);
+    let mut params = resolve_function_params(&func.params, &mut ctx.namespace, &mut ctx.arena);
+    if params.is_none() && func.body.is_none() {
+        // An overload signature may leave a parameter unannotated; tsc types it `any`.
+        params = resolve_overload_params_lenient(&func.params, ctx);
+    }
     let return_type = match &func.return_type {
         Some(rt) => resolve_type_annotation(rt, &mut ctx.namespace, &mut ctx.arena),
         // Without a return annotation this is only a placeholder. The body pass replaces

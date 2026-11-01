@@ -22,6 +22,20 @@ use super::narrow::{JumpFrame, NarrowState, WriteMap};
 // unit of parallelism is one independent CheckContext per file, which is how a layer of
 // the module graph runs, rather than fine-grained locking inside one file's check.
 // See docs/architecture.md for the fuller rationale.
+pub struct DestructuredGroup {
+    pub source: TypeId,
+    pub members: Vec<(oxc_semantic::SymbolId, String)>,
+}
+
+#[derive(Clone, Copy)]
+pub struct TypePredicate {
+    // Which parameter the predicate is about.
+    pub param_index: usize,
+    // The `T` of `x is T`; none for a bare `asserts x`.
+    pub type_id: Option<TypeId>,
+    pub asserts: bool,
+}
+
 pub struct CheckContext<'ast, 'src> {
     pub arena: TypeArena,
     pub namespace: TypeNamespace<'ast>,
@@ -158,6 +172,17 @@ pub struct CheckContext<'ast, 'src> {
     // The instance types of imported classes, as the importer made them: what a class's
     // constructor returns until a merged interface changes the type bound to its name.
     pub class_instances: std::collections::HashSet<TypeId>,
+    // The overload signatures of a function, in the order written: `function f(a: string): number;
+    // function f(a: number): string; function f(a: any): any {}` has two, and callers see only
+    // them. The implementation's own signature is kept apart, because the body is checked against
+    // it and it is not part of what a caller can call.
+    // What a function that returns `x is T` or `asserts x [is T]` says about its argument.
+    pub type_predicates: std::collections::HashMap<oxc_semantic::SymbolId, TypePredicate>,
+    // `const { kind, a } = x` where `x` is a union: narrowing `kind` narrows `a` too.
+    pub destructured_groups: Vec<DestructuredGroup>,
+    pub destructured_index: std::collections::HashMap<oxc_semantic::SymbolId, (usize, String)>,
+    pub overload_signatures: std::collections::HashMap<oxc_semantic::SymbolId, Vec<TypeId>>,
+    pub implementation_signatures: std::collections::HashMap<oxc_semantic::SymbolId, TypeId>,
     // The imported bindings that are functions, by symbol, with the declarations they were
     // bound to. A call to one inside a return expression is noted in `return_reads`.
     pub imported_function_symbols: FxHashMap<SymbolId, Vec<DeclKey>>,
@@ -396,6 +421,11 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             importer: Importer::new(),
             imported_names: FxHashMap::default(),
             class_instances: std::collections::HashSet::new(),
+            type_predicates: std::collections::HashMap::new(),
+            destructured_groups: Vec::new(),
+            destructured_index: std::collections::HashMap::new(),
+            overload_signatures: std::collections::HashMap::new(),
+            implementation_signatures: std::collections::HashMap::new(),
             imported_function_symbols: FxHashMap::default(),
             ambient_depth: 0,
             global_values: FxHashMap::default(),
