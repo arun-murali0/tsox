@@ -1692,15 +1692,12 @@ dependencies = [
 name = "tsox"
 version = "0.1.0"
 dependencies = [
- "bumpalo",
  "console_error_panic_hook",
  "criterion",
  "dhat",
  "iai-callgrind",
  "mimalloc",
  "oxc_allocator",
- "oxc_ast",
- "oxc_ast_visit",
  "oxc_cfg",
  "oxc_parser",
  "oxc_resolver",
@@ -1708,16 +1705,108 @@ dependencies = [
  "oxc_span",
  "proc-macro2",
  "rayon",
- "salsa",
  "serde",
  "serde-wasm-bindgen",
- "smallvec",
- "thiserror",
  "tracing",
  "tracing-subscriber",
+ "tsox-base",
+ "tsox-checker",
+ "tsox-db",
+ "tsox-project",
+ "tsox-types",
  "wasm-bindgen",
  "xxhash-rust",
  "zmij",
+]
+
+[[package]]
+name = "tsox-base"
+version = "0.1.0"
+dependencies = [
+ "bumpalo",
+ "serde",
+ "thiserror",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "tsox-checker"
+version = "0.1.0"
+dependencies = [
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_ast_visit",
+ "oxc_cfg",
+ "oxc_parser",
+ "oxc_semantic",
+ "oxc_span",
+ "thiserror",
+ "tracing",
+ "tsox-base",
+ "tsox-types",
+]
+
+[[package]]
+name = "tsox-cli"
+version = "0.1.0"
+dependencies = [
+ "tsox",
+]
+
+[[package]]
+name = "tsox-db"
+version = "0.1.0"
+dependencies = [
+ "salsa",
+ "tsox-base",
+ "tsox-checker",
+ "tsox-project",
+ "tsox-types",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "tsox-project"
+version = "0.1.0"
+dependencies = [
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_ast_visit",
+ "oxc_parser",
+ "oxc_resolver",
+ "oxc_span",
+ "rayon",
+ "thiserror",
+ "tsox-base",
+ "tsox-checker",
+ "tsox-types",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "tsox-types"
+version = "0.1.0"
+dependencies = [
+ "oxc_ast",
+ "oxc_ast_visit",
+ "oxc_semantic",
+ "oxc_span",
+ "smallvec",
+ "tsox-base",
+]
+
+[[package]]
+name = "tsox-wasm"
+version = "0.1.0"
+dependencies = [
+ "tsox",
+]
+
+[[package]]
+name = "tsox-xtask"
+version = "0.1.0"
+dependencies = [
+ "tsox",
 ]
 
 [[package]]

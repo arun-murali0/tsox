@@ -22,7 +22,7 @@ Every one is off by default. A default build, the WASM build and the binary that
 
 ## 3. Petgraph: removed (E2)
 
-`ModuleTopology` and `ModuleGraph::topology()` were a petgraph snapshot of the module graph. Nothing in `check_project` or the CLI ever read it, and the scheduler orders by `ModuleGraph::sccs` and `unit_dependencies`, so E2 removed the view and the `petgraph` dependency rather than keep a second representation with no production job. The graph's own iterative Tarjan (`src/scc.rs`) is the single implementation; `the_components_come_dependencies_first` in `tests/module_resolution.rs` asserts the component order LLD 4.1 asks for.
+`ModuleTopology` and `ModuleGraph::topology()` were a petgraph snapshot of the module graph. Nothing in `check_project` or the CLI ever read it, and the scheduler orders by `ModuleGraph::sccs` and `unit_dependencies`, so E2 removed the view and the `petgraph` dependency rather than keep a second representation with no production job. The graph's own iterative Tarjan (`crates/tsox-project/src/scc.rs`) is the single implementation; `the_components_come_dependencies_first` in `tests/module_resolution.rs` asserts the component order LLD 4.1 asks for.
 
 ## 4. Salsa: the shape from the LLD, and nothing more
 

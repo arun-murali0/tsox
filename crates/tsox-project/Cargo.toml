@@ -1,0 +1,34 @@
+[package]
+name = "tsox-project"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The module graph, project configuration and parallel driver of tsox."
+
+[lints]
+workspace = true
+
+[dependencies]
+tsox-base = { workspace = true }
+tsox-types = { workspace = true }
+tsox-checker = { workspace = true }
+oxc_allocator = { workspace = true }
+oxc_ast = { workspace = true }
+oxc_ast_visit = { workspace = true }
+oxc_parser = { workspace = true }
+oxc_resolver = { workspace = true }
+oxc_span = { workspace = true }
+rayon = { workspace = true }
+thiserror = { workspace = true }
+xxhash-rust = { workspace = true }
+
+[features]
+# The hooks the query layer needs from the driver (check one unit, the memo). The Salsa
+# dependency itself lives in tsox-db; this only switches the hooks on.
+incremental = []
+
+[dev-dependencies]
+# The determinism tests in the driver vary the hash seed (see tsox-base's `test-hash-seed`).
+tsox-base = { workspace = true, features = ["test-hash-seed"] }

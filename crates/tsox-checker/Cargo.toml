@@ -1,0 +1,24 @@
+[package]
+name = "tsox-checker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The single-file checker and the unit of work it runs in."
+
+[lints]
+workspace = true
+
+[dependencies]
+tsox-base = { workspace = true }
+tsox-types = { workspace = true }
+oxc_allocator = { workspace = true }
+oxc_ast = { workspace = true }
+oxc_ast_visit = { workspace = true }
+oxc_cfg = { workspace = true }
+oxc_parser = { workspace = true }
+oxc_semantic = { workspace = true }
+oxc_span = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

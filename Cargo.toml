@@ -21,32 +21,34 @@ exclude = [
 name = "tsox"
 crate-type = ["cdylib", "rlib"]
 
-[lints.clippy]
-collapsible_if = "allow"
+[lints]
+workspace = true
 
 [dependencies]
-oxc_allocator = "=0.151.0"
-oxc_ast = "=0.151.0"
-oxc_ast_visit = "=0.151.0"
-oxc_span = "=0.151.0"
-oxc_parser = "=0.151.0"
-thiserror = "2"
-oxc_semantic = { version = "=0.151.0", features = ["cfg"] }
-oxc_cfg      = "=0.151.0"
-tracing = "0.1"
+tsox-base = { workspace = true }
+tsox-types = { workspace = true }
+tsox-checker = { workspace = true }
+tsox-project = { workspace = true, optional = true }
+tsox-db = { workspace = true, optional = true }
+# Only the example that dumps a control flow graph reads Oxc directly.
+oxc_allocator = { workspace = true }
+oxc_cfg = { workspace = true }
+oxc_parser = { workspace = true }
+oxc_semantic = { workspace = true }
+oxc_span = { workspace = true }
+tracing = { workspace = true }
+xxhash-rust = { workspace = true }
 wasm-bindgen = { version = "0.2", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
+serde = { workspace = true, optional = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 dhat = { version = "0.3", optional = true }
-smallvec = "1.16"
-oxc_resolver = { version = "=11.24.3", optional = true }
-rayon = { version = "1.10", optional = true }
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
-salsa = { version = "=0.28.5", optional = true }
-bumpalo = { version = "=3.20.3", optional = true }
-proc-macro2 = "1.0.107"
-zmij = "1.0.23"
+# Kept by tests and benches that build a pool or a resolver of their own.
+oxc_resolver = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+# Held at these versions; nothing in the workspace names them directly.
+proc-macro2 = { workspace = true }
+zmij = { workspace = true }
 
 # The wasm build keeps the platform allocator, so mimalloc is not even resolved for it.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -111,22 +113,23 @@ wasm = [
     "dep:serde",
     "dep:serde-wasm-bindgen",
     "dep:console_error_panic_hook",
+    "tsox-base/wasm",
 ]
 dhat-heap = ["dep:dhat"]
 
 # Project-level module resolution and the module graph. On by default since the checker
 # is cross-file now. It reads the filesystem through oxc_resolver, so single-file,
 # in-memory and wasm callers build with --no-default-features.
-module-resolution = ["dep:oxc_resolver", "dep:rayon"]
+module-resolution = ["dep:oxc_resolver", "dep:rayon", "dep:tsox-project"]
 
 # Salsa inputs and memoized queries over project files. Off by default, so a normal build does not
 # compile Salsa: the default CLI uses the full driver, and `--incremental` / `--watch` need this
 # feature (without it they say so and stop). CI builds with --all-features, which includes it. See
 # docs/architecture/foundation-dependencies.md.
-incremental = ["dep:salsa", "module-resolution"]
+incremental = ["dep:tsox-db", "module-resolution", "tsox-project/incremental"]
 
 # Worker-local bump allocation for scratch data that does not outlive a job.
-scratchpad = ["dep:bumpalo"]
+scratchpad = ["tsox-base/scratchpad"]
 
 # mimalloc as the global allocator of the tsox binary. Off by default so the binary
 # CI builds and compares against tsc does not change; release builds opt in.
@@ -166,3 +169,39 @@ opt-level = "s"
 
 [workspace]
 resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/arun-murali0/tsox"
+
+[workspace.lints.clippy]
+collapsible_if = "allow"
+
+[workspace.dependencies]
+oxc_allocator = "=0.151.0"
+oxc_ast = "=0.151.0"
+oxc_ast_visit = "=0.151.0"
+oxc_span = "=0.151.0"
+oxc_parser = "=0.151.0"
+oxc_semantic = { version = "=0.151.0", features = ["cfg"] }
+oxc_cfg = "=0.151.0"
+oxc_resolver = "=11.24.3"
+thiserror = "2"
+tracing = "0.1"
+smallvec = "1.16"
+rayon = "1.10"
+salsa = "=0.28.5"
+bumpalo = "=3.20.3"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+serde = { version = "1", features = ["derive"] }
+proc-macro2 = "1.0.107"
+zmij = "1.0.23"
+tsox-base = { path = "crates/tsox-base" }
+tsox-types = { path = "crates/tsox-types" }
+tsox-checker = { path = "crates/tsox-checker" }
+tsox-project = { path = "crates/tsox-project" }
+tsox-db = { path = "crates/tsox-db" }

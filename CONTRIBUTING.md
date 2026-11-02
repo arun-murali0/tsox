@@ -15,15 +15,15 @@
 ./scripts/ci.sh
 ```
 
-The script formats the workspace, then runs compilation, Clippy with warnings denied, and the full test suite. The local pre-push hook uses the same sequence.
+The script formats the workspace, checks the crate layering (`scripts/check-layering.py`), then runs compilation and the full workspace test suite. The local pre-push hook uses the same sequence. Use `cargo test --workspace --all-features`, not a bare `cargo test`: the root package alone skips the unit tests that live in `crates/`.
 
 ## Code organization
 
-Keep parser and Oxc-specific logic inside `src/bridge/`. Keep the semantic core independent from AST ownership details. Centralize compatibility rules in the subtype layer and keep generic algorithms in the semantic layer.
+Keep parser and Oxc-specific logic inside `crates/tsox-checker/src/bridge/`. Keep the semantic core independent from AST ownership details. Centralize compatibility rules in the subtype layer and keep generic algorithms in the semantic layer.
 
 Use feature-oriented modules when a feature has a distinct reason to change. Do not split files merely to satisfy a line-count target.
 
-The dependency direction should remain:
+Crates depend only downwards: `tsox-base < tsox-types < tsox-checker < tsox-project < tsox-db < tsox` (see `docs/architecture/workspace.md`). Put new code in the lowest crate that can hold it. Within the checker, the dependency direction should remain:
 
 ```text
 Oxc AST → bridge feature → semantic service

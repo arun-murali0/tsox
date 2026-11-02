@@ -1,13 +1,13 @@
 # The type arena: design and case study
 
-This document explains how the type arena in `src/arena.rs` is built, why it is built
+This document explains how the type arena in `crates/tsox-types/src/arena.rs` is built, why it is built
 that way, how it changed over time, and what each change measurably did. It is written
 as a case study, so it includes the changes that did not help and the estimates that
 turned out wrong, because those decided what we did next.
 
-Related files: `src/arena.rs`, `src/types.rs`, `src/subtyping.rs`,
-`src/semantic/queries.rs`, `src/semantic/generics.rs`, `src/namespace.rs`,
-`src/type_annotation.rs`.
+Related files: `crates/tsox-types/src/arena.rs`, `crates/tsox-types/src/types.rs`, `crates/tsox-types/src/subtyping.rs`,
+`crates/tsox-types/src/semantic/queries.rs`, `crates/tsox-types/src/semantic/generics.rs`, `crates/tsox-types/src/namespace.rs`,
+`crates/tsox-types/src/type_annotation.rs`.
 
 ## 1. What the arena is for
 

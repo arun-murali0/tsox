@@ -353,7 +353,7 @@ These are regression-tested in `tests/module_resolution.rs`. They are about find
 
 - [x] Core type errors (assignability, arity, constraints)
 - [~] Error recovery without cascades (`Error` type)
-- [~] Related information / error chains: a not-assignable error prints tsc's chain of reasons (`src/explain.rs`)
+- [~] Related information / error chains: a not-assignable error prints tsc's chain of reasons (`crates/tsox-types/src/explain.rs`)
 - [~] Exact `tsc` error codes / messages (wording matches for the strict fixture set)
 - [ ] Suppression (`@ts-ignore` / `@ts-expect-error`)
 - [ ] Suggestion diagnostics

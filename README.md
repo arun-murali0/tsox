@@ -106,67 +106,34 @@ These names are deliberately descriptive so a contributor can infer the purpose 
 
 ## Repository structure
 
+Cargo workspace. Each crate depends only on the ones above it in this list (enforced by
+`scripts/check-layering.py`); the dependency rule and the reasons are in
+[docs/architecture/workspace.md](docs/architecture/workspace.md).
+
 ```text
+crates/
+├── tsox-base/             # no tsox dependencies
+│   └── src/               # keys, stable_hash, diagnostics (+ codes, view), file_id, fxhash,
+│                          # line_index, project, check_options, error, source_depth,
+│                          # stack_guard, reference_directives, lib_global_types, scratchpad
+├── tsox-types/            # the type system: arena, types, subtyping, namespace
+│   └── src/               # symbol_map, type_annotation, type_display, explain, portable,
+│                          # stable_walk, diagnostic_messages, semantic/ (generics, queries, solver)
+├── tsox-checker/          # the single-file checker
+│   └── src/               # unit.rs (a file as a unit of work: UnitContext, UnitOutput, Worker)
+│                          # bridge/ (parse, declare, imports, exports, narrow, expressions/,
+│                          #          statements/, and the whole-file passes)
+├── tsox-project/          # many files: module_resolution/ (graph, config, discovery, resolver,
+│   └── src/               # check, schedule, partial), scc.rs. `module-resolution` feature
+└── tsox-db/               # Salsa query layer: incremental.rs, incremental/project.rs
+    └── src/               # `incremental` feature
+
 src/
-├── arena.rs
-├── types.rs
-├── subtyping.rs
-├── namespace.rs
-├── symbol_map.rs
-├── type_annotation.rs
-├── type_display.rs
-├── explain.rs             # the chain of reasons under a not-assignable error
-├── lib_global_types.rs    # generated list of tsc's global type names
-├── keys.rs                # ModuleKey, DeclKey, SigHash, NodeHash
-├── stable_hash.rs         # canonical node encoding and Merkle hash
-├── stable_walk.rs         # the arena walk that feeds stable_hash
-├── portable.rs            # declarations as arena-free data, the importer, ImportSource
-├── unit.rs                # a file as a unit of work: UnitContext, UnitOutput, Worker
-├── diagnostics.rs
-├── diagnostic_codes.rs
-├── diagnostic_messages.rs
-├── diagnostic_view.rs
-├── fxhash.rs
-├── line_index.rs
-├── project.rs
-├── module_resolution/     # opt-in `module-resolution` feature
-├── incremental.rs         # Salsa input and first query (`incremental`)
-├── scratchpad.rs          # bump scratch for one worker (`scratchpad`)
-├── error.rs
-├── wasm.rs
-├── semantic/
-│   ├── mod.rs
-│   ├── generics.rs
-│   └── queries.rs
-└── bridge/
-    ├── context.rs
-    ├── declare.rs
-    ├── imports.rs
-    ├── exports.rs
-    ├── narrow.rs
-    ├── parse.rs
-    ├── unresolved_names.rs
-    ├── unreachable_code.rs
-    ├── expressions/
-    │   ├── mod.rs
-    │   ├── core.rs
-    │   ├── assignment.rs
-    │   ├── binary.rs
-    │   ├── calls.rs
-    │   ├── elaborate.rs
-    │   ├── excess.rs
-    │   ├── functions.rs
-    │   ├── logical.rs
-    │   ├── members.rs
-    │   └── objects.rs
-    └── statements/
-        ├── mod.rs
-        ├── functions.rs
-        ├── classes.rs
-        ├── control_flow.rs
-        ├── variables.rs
-        ├── patterns.rs
-        └── support.rs
+├── lib.rs                 # the `tsox` facade: re-exports the public API of the crates above
+└── wasm.rs                # the wasm front end (`wasm` feature)
+
+bin/                       # tsox (CLI), harness, compare-tsc: they stay in the root package
+                           # because the integration tests use CARGO_BIN_EXE_*
 
 tests/                     # one integration test per milestone or feature (42 files)
 ├── foundation.rs
@@ -301,7 +268,7 @@ Start with the [documentation index](docs/README.md), then inspect the relevant 
 | Module Resolution | `tests/module_resolution.rs` (feature `module-resolution`) | `tests/module-resolution-fixtures/` | [Module Resolution](docs/architecture/module-resolution.md) |
 | Intersection Types | `tests/intersection_types.rs`, `tests/intersection_overloads.rs` | `tests/fixtures/intersection-types/`, `intersection-calls/`, `intersection-edges/` | [Intersection Types](docs/architecture/intersections.md) |
 | Cross-File Types | `tests/unit_exports.rs`, `tests/unit_imports.rs`, `tests/project_imports.rs`, `tests/import_diagnostics.rs` | sources inline in the tests | [Cross-File Types](docs/architecture/cross-file-types.md) |
-| Architecture Foundation | unit tests in `src/incremental.rs`, `src/scratchpad.rs` | none | [Architecture Foundation](docs/architecture/foundation-dependencies.md) |
+| Architecture Foundation | unit tests in `crates/tsox-db/src/incremental.rs`, `crates/tsox-base/src/scratchpad.rs` | none | [Architecture Foundation](docs/architecture/foundation-dependencies.md) |
 | Generics | `tests/generics_tier1.rs`, `tests/generics_tier2.rs`, `tests/generic_classes.rs`, `tests/recursive_types.rs`, `tests/builtin_generics.rs`, `tests/interface_methods.rs` | `tests/fixtures/generics-tier1/`, `generics-tier2/`, `generic-classes/`, `recursive-types/`, `builtin-generics/`, `interface-methods/` | [Generics](docs/architecture/generics.md) |
 
 
