@@ -1,0 +1,20 @@
+[package]
+name = "tsox-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The tsox browser/wasm front end. Empty scaffold: move src/wasm.rs here."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The only tsox dependency a front end needs: the facade. Do not depend on the layer crates
+# directly or on another front end (scripts/check-layering.py).
+tsox = { path = "../..", default-features = false }
+
+[lib]
+crate-type = ["cdylib", "rlib"]

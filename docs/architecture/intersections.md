@@ -6,7 +6,7 @@
 
 An intersection touches four things at once: interning (a node whose identity is a list), unresolved declarations (a `Ref` reads as an empty object until its members are resolved), generics (substituting a type parameter can make an intersection reducible), and the stable hash planned for stage 2. The rules were fixed first, in LLD 1.13 and decisions 10 to 12, and checked against tsc 5.9.3 (the comparison tooling has since moved to 6.0.3; the probe has not been repeated there). This milestone is the code that follows them.
 
-There are 25 unit tests in `src/arena.rs` (one per construction rule and for the lazy reduction), 10 in `src/subtyping.rs` (relations), and 17 fixtures in `tests/fixtures/intersection-types/` with `tests/intersection_types.rs`. The later work on calls and edge cases adds `tests/intersection_overloads.rs` with the fixtures in `intersection-calls/` (7) and `intersection-edges/` (5). Each fixture was run through tsc first, and each reports what tsc reports, with the same code and the same message.
+There are 25 unit tests in `crates/tsox-types/src/arena.rs` (one per construction rule and for the lazy reduction), 10 in `crates/tsox-types/src/subtyping.rs` (relations), and 17 fixtures in `tests/fixtures/intersection-types/` with `tests/intersection_types.rs`. The later work on calls and edge cases adds `tests/intersection_overloads.rs` with the fixtures in `intersection-calls/` (7) and `intersection-edges/` (5). Each fixture was run through tsc first, and each reports what tsc reports, with the same code and the same message.
 
 ## 2. Two levels, and only the first is identity
 
@@ -49,7 +49,7 @@ Distribution has one subtlety that came from the existing union. `alloc_union` s
 ## 7. Gaps that were closed after this milestone
 These were listed as not done when the milestone landed, and the commit that closed them is `d3662d7`:
 - **TS2590.** A distribution into too many members is reported with its own code (`TSR1701`, mapped to TS2590) instead of becoming the error type silently.
-- **Names in alias bodies.** One pass over every type reference reports each unknown name once, in alias bodies, interface members, return types, class properties, type arguments and union and intersection members. Library names come from `src/lib_global_types.rs`, generated from tsc by `scripts/ts-diag-tool/dump-global-types.js`.
+- **Names in alias bodies.** One pass over every type reference reports each unknown name once, in alias bodies, interface members, return types, class properties, type arguments and union and intersection members. Library names come from `crates/tsox-base/src/lib_global_types.rs`, generated from tsc by `scripts/ts-diag-tool/dump-global-types.js`.
 - **Overload errors.** The three-way rule in section 4.
 - **Parenthesized types.** A parenthesized type annotation such as `(string | null)[]` resolves (commit `21641e3`); the earlier note that `(() => void) & A` could not resolve came from there being no parenthesized type support at all.
 

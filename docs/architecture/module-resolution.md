@@ -14,7 +14,7 @@ There are 26 integration tests in `tests/module_resolution.rs`, 10 unit tests ne
 
 ```text
 cargo build                               -> single-file checker, as before
-cargo build --features module-resolution  -> adds src/module_resolution/
+cargo build --features module-resolution  -> adds crates/tsox-project/src/module_resolution/
 ```
 
 The feature pulls in `oxc_resolver`, `rayon` and `xxhash-rust`. It is off by default because everything in it reads the filesystem, and the in-memory checker, the benchmarks and the WASM build neither have a filesystem nor want the dependencies. `ProjectFiles` and `FileId` stay in the always-built core, so the seam the project layer attaches to is available either way.

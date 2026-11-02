@@ -1,0 +1,19 @@
+[package]
+name = "tsox-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The type arena, the type relations and the generic solver behind tsox."
+
+[lints]
+workspace = true
+
+[dependencies]
+tsox-base = { workspace = true }
+oxc_ast = { workspace = true }
+oxc_ast_visit = { workspace = true }
+oxc_span = { workspace = true }
+oxc_semantic = { workspace = true }
+smallvec = { workspace = true }

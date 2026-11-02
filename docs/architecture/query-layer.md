@@ -2,7 +2,7 @@
 
 The design this implements is in [`e7-system-design-plan.txt`](e7-system-design-plan.txt) (kept as
 written) and LLD 6.2 to 6.7. This note says what was built, where it differs from the plan, and
-what was measured. Code: `src/incremental.rs` (inputs, handles) and `src/incremental/project.rs`
+what was measured. Code: `crates/tsox-db/src/incremental.rs` (inputs, handles) and `crates/tsox-db/src/incremental/project.rs`
 (queries and the driver). Behind the `incremental` feature, which turns on `module-resolution`.
 
 ## Shape
@@ -60,7 +60,7 @@ uses `IncrementalProject` directly, with `set_buffer` for unsaved text. The full
 `tests/incremental_project.rs` (16 tests) takes each row of the LLD 6.5 matrix, asserts which units
 ran, and compares the report with a cold `check_project` on the same files; a run of 40 random
 edits does the same after every edit. The Salsa behaviors it relies on are pinned in
-`src/incremental.rs` (early cutoff, reuse, thread handles, cancellation).
+`crates/tsox-db/src/incremental.rs` (early cutoff, reuse, thread handles, cancellation).
 
 | LLD 6.5 row | Test | Units that ran |
 |---|---|---|

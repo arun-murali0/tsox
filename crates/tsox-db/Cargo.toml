@@ -1,0 +1,19 @@
+[package]
+name = "tsox-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Salsa inputs and memoized queries over a tsox project."
+
+[lints]
+workspace = true
+
+[dependencies]
+tsox-base = { workspace = true }
+tsox-types = { workspace = true }
+tsox-checker = { workspace = true }
+tsox-project = { workspace = true, features = ["incremental"] }
+salsa = { workspace = true }
+xxhash-rust = { workspace = true }

@@ -65,7 +65,7 @@ tsox should interact with these through a narrow bridge.
 
 ### Bridge owns AST-facing behavior
 
-`src/bridge/` translates Oxc structures into semantic operations.
+`crates/tsox-checker/src/bridge/` translates Oxc structures into semantic operations.
 
 Expression and statement modules are organized by feature:
 

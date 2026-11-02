@@ -1,53 +1,26 @@
-mod arena;
-mod bridge;
-mod check_options;
-mod diagnostic_codes;
-mod diagnostic_messages;
-mod diagnostic_view;
-mod diagnostics;
-mod error;
-mod explain;
-mod fxhash;
-#[cfg(feature = "incremental")]
-mod incremental;
-mod keys;
-mod lib_global_types;
-mod line_index;
-#[cfg(feature = "module-resolution")]
-mod module_resolution;
-mod namespace;
-#[allow(dead_code)]
-mod portable;
-mod project;
-mod reference_directives;
-#[cfg(feature = "module-resolution")]
-mod scc;
 #[cfg(feature = "scratchpad")]
-mod scratchpad;
-mod semantic;
-mod source_depth;
-#[allow(dead_code)]
-mod stable_hash;
-#[allow(dead_code)]
-mod stable_walk;
-mod stack_guard;
-mod subtyping;
-mod symbol_map;
-mod type_annotation;
-mod type_display;
-mod types;
-mod unit;
+use tsox_base::scratchpad;
+use tsox_base::{
+    diagnostic_codes, diagnostic_view, diagnostics, error, keys, line_index, project, stable_hash,
+    stack_guard,
+};
+use tsox_checker::{bridge, unit};
+#[cfg(feature = "incremental")]
+use tsox_db::incremental;
+#[cfg(feature = "module-resolution")]
+use tsox_project::module_resolution;
+use tsox_types::{arena, namespace, portable, semantic, types};
 
 #[cfg(feature = "wasm")]
 mod wasm;
 #[cfg(feature = "wasm")]
 pub use wasm::TsoxChecker;
 
-pub use check_options::CheckOptions;
 pub use diagnostic_codes::DiagnosticCode;
 pub use diagnostic_view::{DiagnosticView, Position, Range};
 pub use diagnostics::{Diagnostic, Severity};
 pub use error::CheckerError;
+pub use tsox_base::check_options::CheckOptions;
 
 pub use keys::{
     CycleKey, DeclKey, DeclKind, ENC_VERSION, ModuleKey, NodeHash, SigHash, TypeParamKey,
