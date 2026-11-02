@@ -14,13 +14,19 @@ else
   cargo fmt --all
 fi
 
+# The crates only depend downwards (base < types < checker < project < db < tsox). Reads
+# `cargo metadata`, so it needs no build.
+echo "==> layering"
+python3 scripts/check-layering.py
+
 # The module-resolution feature is on by default, so every other step builds with it. A
 # public item exported without its gate only fails to build here.
-echo "==> cargo check --no-default-features"
-cargo check --locked --no-default-features
+echo "==> cargo check --workspace --no-default-features"
+cargo check --locked --workspace --no-default-features
 
-# --locked: a stale Cargo.lock fails instead of being rewritten quietly.
-echo "==> cargo test --features module-resolution"
-cargo test --locked --all-features
+# --locked: a stale Cargo.lock fails instead of being rewritten quietly. --workspace: the
+# root package alone would skip the unit tests that live in the member crates.
+echo "==> cargo test --workspace --all-features"
+cargo test --locked --workspace --all-features
 
 echo "==> CI PASSED"

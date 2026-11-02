@@ -1,0 +1,29 @@
+[package]
+name = "tsox-base"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Identities, hashing, diagnostics and small helpers shared by the tsox crates."
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+xxhash-rust = { workspace = true }
+bumpalo = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[features]
+# Worker-local bump allocation for scratch data that does not outlive a job.
+scratchpad = ["dep:bumpalo"]
+
+# Serialize and Deserialize on the diagnostic types, for the wasm front end.
+wasm = ["dep:serde"]
+
+# Exposes `fxhash::TEST_HASH_SEED` outside this crate's own tests, so a dependent's tests can
+# change hash iteration order and check that results do not depend on it. Never enabled by a
+# normal build: only from a dev-dependency.
+test-hash-seed = []

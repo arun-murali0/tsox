@@ -30,7 +30,7 @@ so the type system can evolve without repeatedly changing the project driver.
 | E4: Scheduler and pipeline | Complete for its exit condition (phases 1, 2 and 3a done); the single parse (3b) is deferred to E7 | None for E4. Whether to parse once is decided with the E7 ownership design (section 3, E4, and section 8) | `tests/scheduler.rs` on random graphs; `random_projects_give_the_same_report_whatever_the_timing` for the real checker; `tests/source_once.rs` for read-once |
 | E5: Project configuration and resolution | Complete for its exit condition, including NodeNext module format from `package.json` `type`; `typeRoots`/`types` (E6), automatic graph updates on a config change (E7) are open. The checker reads `noUncheckedIndexedAccess`, `allowUnreachableCode` and `useUnknownInCatchVariables` from the tsconfig (`CheckOptions`, `tests/check_options.rs`); a key left out keeps the old fixed behavior | See "Not done" in section 3, E5 | `tests/tsconfig_resolution.rs`, `tests/project_config.rs`, `tests/cli_project.rs` |
 | E6: Library and ambient declarations | Done for slices 1, 3, 4 and 5 and for what slice 2 lists as done; open: real generic library shapes through the provider (needs generic inference, with the advanced types work), `Record`/`Promise<T>` assignability, tuple, `Map`, `Set` and `ReadonlyArray` members, a generic interface merged across files, a dotted `typeof import("x").A.b` | See the progress notes under E6 | `tests/project_globals.rs` (1), `tests/library_members.rs` (2), `tests/module_augmentation.rs` (3), `tests/import_types.rs`, `tests/async_functions.rs` (4), `tests/type_roots.rs`, `tests/reference_directives.rs` (5) |
-| E7: Query layer | Implemented behind `incremental` (`IncrementalProject`); see `docs/architecture/query-layer.md` | Cold check is about 1.9 times the full driver on 1,000 files; a file added early in path order moves ids and reruns the units that see them; the global-declaration second pass is not memoized; no LSP layer or debouncing | `tests/incremental_project.rs` (29: one per LLD 6.5 row, buffers, cancellation, ambient providers, and random content, graph and provider edits against a cold run); the Salsa spike in `src/incremental.rs` (8) |
+| E7: Query layer | Implemented behind `incremental` (`IncrementalProject`); see `docs/architecture/query-layer.md` | Cold check is about 1.9 times the full driver on 1,000 files; a file added early in path order moves ids and reruns the units that see them; the global-declaration second pass is not memoized; no LSP layer or debouncing | `tests/incremental_project.rs` (29: one per LLD 6.5 row, buffers, cancellation, ambient providers, and random content, graph and provider edits against a cold run); the Salsa spike in `crates/tsox-db/src/incremental.rs` (8) |
 | E8: Limits, safety, measurement | Partially implemented | Budgets, recursion protection, memory checks, metrics | Adversarial-input suite; metrics from LLD 9.5 |
 
 **E0 evidence.** The whole corpus (10,083 files) and the 8 known crashers ran one file per
@@ -194,7 +194,7 @@ partially produced result appearing complete.
 dependencies complete. Independent units can overlap, output remains deterministic, and E0
 remains green. The `scc` random-graph generator can be reused.
 
-**Status.** Phase 1 is in: `src/module_resolution/schedule.rs` runs units from a dependency count,
+**Status.** Phase 1 is in: `crates/tsox-project/src/module_resolution/schedule.rs` runs units from a dependency count,
 a unit reads only the results of the units it waits for, outcomes come back indexed by unit, a
 panic is recorded and its dependents still run, the cancel token is checked as a unit starts,
 and units that wait on each other are refused before anything runs. `tests/scheduler.rs` holds
@@ -480,7 +480,7 @@ at 0.28.5 behind the `incremental` feature, one input and one demonstration quer
 The real checking pipeline is not connected to a complete incremental query graph.
 
 **Baseline (measured, before any E7 code).** Salsa 0.28.5 behaviors the design may rely on are
-pinned by tests in `src/incremental.rs` (`cargo test --features incremental --lib incremental`, 8
+pinned by tests in `crates/tsox-db/src/incremental.rs` (`cargo test --features incremental --lib incremental`, 8
 pass): (1) early cutoff: a query whose result did not change does not rerun its dependents, even
 though the input changed; (2) editing one file reruns only the queries that read it; (3) a database
 clone is the per-thread handle, and one query runs once across 8 threads; (4) a write cancels a
@@ -543,11 +543,11 @@ now guarded; what remains is described below.
 
 **Done (merged).** A thread declares its stack size, and the
 recursive walks check the remaining stack by address before going deeper
-(`src/stack_guard.rs`). It covers `infer_expression_type`, `TypeNamespace::resolve`,
+(`crates/tsox-base/src/stack_guard.rs`). It covers `infer_expression_type`, `TypeNamespace::resolve`,
 `resolve_ts_type` and the stable hasher. Past the budget a file gets one `TSR9102` and the
 rest is left unchecked, or an export is marked incomplete, never wrong. Graph discovery and the
 CLI's flat mode now run on a 64 MB stack, the size the workers have. `tests/depth_guard.rs` runs
-generated nested input through the real binary. Separately, `src/source_depth.rs` counts open
+generated nested input through the real binary. Separately, `crates/tsox-base/src/source_depth.rs` counts open
 `(`, `[` and `{` in one pass over the bytes and refuses a file nested past 4,000 before it is
 parsed (reported as not checked); the cut-off notice `TSR9102` is a warning, not an error. On
 the latest release build every bracketed shape tried, from parentheses to nested classes, is
@@ -558,7 +558,7 @@ refused at 10,000 and at 100,000 levels with no abort *(verified)*.
 - Statement recursion: `check_statement` now has the stack guard. Not yet re-run on a release
   build at 100,000 levels *(not verified)*.
 - The three parser shapes (ternary chain, arrow chain, nested `Array<...>`) are now counted by
-  `src/source_depth.rs` and refused before the parse, like bracket nesting. `tests/depth_guard.rs`
+  `crates/tsox-base/src/source_depth.rs` and refused before the parse, like bracket nesting. `tests/depth_guard.rs`
   covers them through the real binary in a debug build; the 100,000-level run on a release binary
   is not done. The count is still not a parse, so a regular expression holding a quote or backtick
   can skew it for a line.

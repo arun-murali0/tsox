@@ -26,6 +26,8 @@ struct Options {
     // Check through the query layer (`IncrementalProject`): slower on a first run, much faster
     // on every later one. `--watch` implies it.
     incremental: bool,
+    // Read only by the query-layer driver, which exists in a build with `incremental`.
+    #[cfg_attr(not(feature = "incremental"), allow(dead_code))]
     watch: bool,
 }
 
