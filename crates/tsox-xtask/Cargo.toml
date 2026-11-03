@@ -5,14 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Development tools (harness, compare-tsc). Empty scaffold: move bin/harness.rs and bin/compare-tsc.rs here."
+description = "Development tools: the real-project harness and the tsc conformance comparison."
 publish = false
 
 [lints]
 workspace = true
 
-[dependencies]
-# The only tsox dependency a front end needs: the facade. Do not depend on the layer crates
-# directly or on another front end (scripts/check-layering.py).
-tsox = { path = "../..", default-features = false }
+# Two binaries, found in src/bin/: `harness` (compares tsox with tsc and tsgo on a real
+# project; see scripts/harness.sh) and `compare-tsc` (in-process, errors-only comparison on
+# tests/tsc-conformance). Both find the repository root from this crate's location.
 
+[dependencies]
+# compare-tsc runs the checker in process; the harness only starts the `tsox` binary.
+tsox = { path = "../..", default-features = false }
+xxhash-rust = { workspace = true }

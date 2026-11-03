@@ -1932,7 +1932,13 @@ fn tsox_only_report(
 }
 
 fn run(args: &Args) -> Result<u8, String> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // The repository root: this crate is crates/tsox-xtask, two levels down. `ancestors` keeps the
+    // path exactly as `CARGO_MANIFEST_DIR` spells it, which `strip_prefix` on tool output relies on.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .ok_or("cannot find the repository root from CARGO_MANIFEST_DIR")?
+        .to_path_buf();
     let started_at = now_secs();
     let out_dir = args.out.clone().unwrap_or_else(|| {
         root.join(".harness")

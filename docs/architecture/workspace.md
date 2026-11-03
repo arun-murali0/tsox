@@ -14,8 +14,10 @@ it moves code and adds boundaries, and changes no behavior. `cargo test --worksp
 | `tsox-checker` | The single-file checker: `bridge/` (parse, bind, declare, imports, exports, narrowing, statements, expressions, whole-file passes) and `unit` (a file as a unit of work: `UnitContext`, `UnitOutput`, `Worker`) | base, types | oxc parser, allocator, cfg, semantic; tracing |
 | `tsox-project` | Many files: `module_resolution/` (graph, config, discovery, resolver, check, schedule, partial results), `scc`. Feature `incremental` switches on the hooks the query layer needs | base, types, checker | oxc_resolver, rayon |
 | `tsox-db` | The Salsa query layer over the project driver (`incremental`, `incremental/project.rs`) | base, types, checker, project | salsa |
-| `tsox-cli`, `tsox-wasm`, `tsox-xtask` | **Empty scaffolds**, ready to receive the CLI (`bin/tsox.rs`), the wasm front end (`src/wasm.rs`) and the tools (`bin/harness.rs`, `bin/compare-tsc.rs`). Each carries a comment saying what has to move with it | `tsox` (facade only) | none yet |
-| `tsox` (root) | The facade (`src/lib.rs` re-exports the public API), the wasm front end (`src/wasm.rs`), the binaries in `bin/`, and the integration tests in `tests/` | all | the CLI and wasm dependencies |
+| `tsox-cli` | The `tsox` command line: `src/main.rs` and its integration tests in `tests/` (`cli_project`, `corpus_aborts`, `depth_guard`, `determinism`, `partial_reasons`, `recursion_guards`). The binary is still named `tsox`, so `target/release/tsox` and `cargo build --bin tsox` are unchanged | `tsox` (facade only) | mimalloc (optional) |
+| `tsox-wasm` | The browser front end: `TsoxChecker`, a wasm-bindgen `cdylib` (`src/lib.rs`) | `tsox` (facade only, with its `wasm` feature) | wasm-bindgen, serde, serde-wasm-bindgen, console_error_panic_hook |
+| `tsox-xtask` | The development tools: the `harness` and `compare-tsc` binaries (`src/bin/`) and `harness_launcher` | `tsox` (facade only) | xxhash-rust |
+| `tsox` (root) | The facade: `src/lib.rs` re-exports the public API. Also the library's integration tests in `tests/`, the benches and the examples | base, types, checker, project, db | oxc crates, tracing |
 
 ## The rule
 
@@ -25,7 +27,7 @@ A crate depends only on crates above it in the table. The order is
 tsox-base < tsox-types < tsox-checker < tsox-project < tsox-db < tsox < tsox-cli | tsox-wasm | tsox-xtask
 ```
 
-The three on the right share a layer: each depends on the `tsox` facade and none on another.
+The three on the right are the front ends. They share a layer: each depends on the `tsox` facade and none on another.
 
 Dev-dependencies count. `scripts/check-layering.py` reads `cargo metadata`, fails on any
 dependency that is not strictly downward, and fails when a crate has no layer. It runs first in
@@ -55,35 +57,55 @@ Features live on the crate whose code they gate, and the root package forwards t
 | `module-resolution` (default) | `tsox` | Pulls in `tsox-project`, `oxc_resolver`, `rayon`; the CLI's project mode |
 | `incremental` | `tsox` | Pulls in `tsox-db` and `tsox-project/incremental`; `--incremental`, `--watch` |
 | `scratchpad` | `tsox-base`, forwarded by `tsox` | Bump scratch for one worker |
-| `wasm` | `tsox` | `TsoxChecker`; serde on the diagnostic types via `tsox-base/wasm` |
+| `wasm` | `tsox` | Serialize/Deserialize on the diagnostic types, via `tsox-base/wasm`. `tsox-wasm` turns it on |
+| `module-resolution` (default), `incremental` | `tsox-cli` | The binary's own gates. Each one switches on the `tsox` feature of the same name, so the CLI code and its tests keep their `cfg(feature = ...)` |
+| `mimalloc` | `tsox-cli` | mimalloc as the binary's global allocator: `cargo build --release -p tsox-cli --features mimalloc` |
 | `test-hash-seed` | `tsox-base` | Exposes `fxhash::TEST_HASH_SEED` outside this crate's own tests. Only from a dev-dependency (`tsox-project` does) so its determinism tests can vary hash order |
 
 `cfg(test)` is true only for the crate being tested. Anything a dependent crate's tests need
 from a lower crate has to be a feature, not `cfg(test)`; the split first broke exactly this
 (`TEST_HASH_SEED`, now fixed).
 
-## What stays in the root package, and why
+## The front-end crates
 
-- **`bin/` (the `tsox` CLI, `harness`, `compare-tsc`).** Seven integration test files start
-  `tsox` and `harness` with `env!("CARGO_BIN_EXE_<name>")`, which Cargo sets only for binaries
-  of the same package. Moving a binary to its own crate means moving those tests with it or
-  rewriting how they find the binary; neither is a gain for a layering rule, which the
-  binaries already follow.
-- **`src/wasm.rs`.** The documented wasm build (`cargo build --profile wasm-release --lib
-  --target wasm32-unknown-unknown --features wasm`) produces `tsox.wasm` from the root package.
-  A separate `tsox-wasm` crate would change that artifact and the bundle layout.
-- **`tests/`.** The integration tests exercise the whole stack through the facade. Tests of one
-  layer alone live in that crate's `src/` as unit tests.
+The CLI, the wasm front end and the tools used to live in the root package. They moved out so
+the root is only the facade, and each front end depends on nothing but that facade.
+
+- **Tests move with the binary they start.** Cargo sets `CARGO_BIN_EXE_<name>` only for the
+  package that defines the binary, so the six CLI test files moved to `crates/tsox-cli/tests/`
+  and `harness_launcher` to `crates/tsox-xtask/tests/`. Their test names are unchanged.
+- **The repository root.** `harness` and `compare-tsc` read `.harness/` and `tests/` from the
+  repository root, and `corpus_aborts` reads `tests/typescript-testcases/`. Each finds the root
+  with `Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2)`: the crates sit two levels
+  down, and `ancestors` keeps the path as `CARGO_MANIFEST_DIR` spells it, which `strip_prefix`
+  on tool output relies on (a `../..` join would not).
+- **`default-members`.** A workspace with a root package selects only that package by default.
+  `default-members = [".", "crates/tsox-cli", "crates/tsox-xtask"]` keeps `cargo build`,
+  `cargo build --release --bin tsox` and `cargo run --bin harness` working unchanged, which
+  CI, `scripts/harness.sh` and `scripts/compare-local.sh` use. `tsox-wasm` is left out: it
+  builds for a wasm target.
+- **The wasm artifact is renamed.** The build now selects the crate, and its output is
+  `tsox_wasm.wasm` (it was `tsox.wasm`):
+  `cargo build --profile wasm-release -p tsox-wasm --target wasm32-unknown-unknown`, then
+  `wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/wasm-release/tsox_wasm.wasm`.
+  A consumer that imports `tsox.js` from the bundle needs the new name.
+- **The root library is an `rlib` only.** It was a `cdylib` too, for the wasm build; that
+  artifact now comes from `tsox-wasm`.
+- **`tests/` at the root** still holds the integration tests that go through the facade, and
+  the shared fixtures and corpora the front-end tests also read.
 
 ## Commands
 
 ```text
-cargo build                                   # CLI with module resolution
+cargo build                                   # the tsox CLI, harness and compare-tsc
+cargo build --release -p tsox-cli --features mimalloc   # release CLI with mimalloc
+cargo build --profile wasm-release -p tsox-wasm --target wasm32-unknown-unknown
 cargo test --workspace --all-features         # every crate's tests and the integration tests
 cargo check --workspace --no-default-features # every crate without the optional layers
 python3 scripts/check-layering.py             # the dependency rule
 bash scripts/ci.sh                            # the branch gate: fmt, layering, check, test
 ```
 
-`--workspace` matters: `cargo test` at the root runs only the root package, which would skip
-the unit tests that now live in the member crates.
+`--workspace` matters: a bare `cargo test` runs only the default members (the root, `tsox-cli`
+and `tsox-xtask`), which would skip the unit tests in `tsox-base`, `tsox-types`, `tsox-checker`,
+`tsox-project` and `tsox-db`.

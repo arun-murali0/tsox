@@ -100,7 +100,7 @@ questions rather than being three ways to do the same thing:
 
 ```text
 scripts/compare-local.sh   -> "did this change disagree with tsc on our own fixtures?"
-bin/compare-tsc.rs         -> "does tsox agree with tsc on a small, curated set?"
+crates/tsox-xtask/src/bin/compare-tsc.rs         -> "does tsox agree with tsc on a small, curated set?"
 scripts/harness.sh         -> "how does tsox perform/compare on a real project?"
 ```
 
@@ -125,7 +125,7 @@ more serious kind), or `MIXED`.
 ./scripts/compare-local.sh path/to/one_file.ts
 ```
 
-**`bin/compare-tsc.rs`** is the in-process, errors-only sibling. Instead of
+**`crates/tsox-xtask/src/bin/compare-tsc.rs`** is the in-process, errors-only sibling. Instead of
 shelling out to a `tsox` binary, it calls `TypeChecker::check_source`
 directly and only shells out to `tsc` for the other half of the comparison.
 It's scoped to `tests/tsc-conformance/`, a small, deliberately curated

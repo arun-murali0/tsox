@@ -125,15 +125,15 @@ crates/
 │                          #          statements/, and the whole-file passes)
 ├── tsox-project/          # many files: module_resolution/ (graph, config, discovery, resolver,
 │   └── src/               # check, schedule, partial), scc.rs. `module-resolution` feature
-└── tsox-db/               # Salsa query layer: incremental.rs, incremental/project.rs
-    └── src/               # `incremental` feature
+├── tsox-db/               # Salsa query layer: incremental.rs, incremental/project.rs
+│   └── src/               # `incremental` feature
+├── tsox-cli/              # the `tsox` command line (binary `tsox`) and its integration tests
+├── tsox-wasm/             # the browser front end (wasm-bindgen): `TsoxChecker`
+└── tsox-xtask/            # the `harness` and `compare-tsc` binaries
 
 src/
-├── lib.rs                 # the `tsox` facade: re-exports the public API of the crates above
-└── wasm.rs                # the wasm front end (`wasm` feature)
-
-bin/                       # tsox (CLI), harness, compare-tsc: they stay in the root package
-                           # because the integration tests use CARGO_BIN_EXE_*
+└── lib.rs                 # the `tsox` facade: re-exports the public API of the crates above
+                           # (the front ends on the last three lines depend only on this)
 
 tests/                     # one integration test per milestone or feature (42 files)
 ├── foundation.rs
@@ -189,7 +189,7 @@ scripts/
 
 benches/                 # Criterion and IAI benchmarks
 examples/                # Small usage and profiling examples
-bin/                     # CLI target
+crates/                  # the workspace crates, including the CLI (see Repository structure)
 checklist.md             # full TypeScript type-system surface, item-by-item status
 BUILD.md                 # current build order, derived from checklist.md
 ```
@@ -291,7 +291,7 @@ Each milestone document explains the semantic rule, implementation choice, and p
 
 ## Compatibility harness
 
-`scripts/harness.sh` compares tsox with `tsc` and `tsgo` on one real project and writes a report you can check by hand. The program is `bin/harness.rs`.
+`scripts/harness.sh` compares tsox with `tsc` and `tsgo` on one real project and writes a report you can check by hand. The program is `crates/tsox-xtask/src/bin/harness.rs`.
 
 It measures:
 

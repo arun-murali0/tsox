@@ -24,8 +24,9 @@ python3 scripts/check-layering.py
 echo "==> cargo check --workspace --no-default-features"
 cargo check --locked --workspace --no-default-features
 
-# --locked: a stale Cargo.lock fails instead of being rewritten quietly. --workspace: the
-# root package alone would skip the unit tests that live in the member crates.
+# --locked: a stale Cargo.lock fails instead of being rewritten quietly. --workspace: a bare
+# `cargo test` runs only the default members (the root, tsox-cli, tsox-xtask) and would skip the
+# unit tests in the layer crates and the wasm crate.
 echo "==> cargo test --workspace --all-features"
 cargo test --locked --workspace --all-features
 

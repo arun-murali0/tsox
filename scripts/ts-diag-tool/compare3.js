@@ -629,7 +629,7 @@ if (htmlPath) {
   <h2>Files (${fileReports.length} shown${onlyDiffer ? ", --only-differ" : ""} of ${files.length} total, ${filesAllAgree} fully agree)</h2>
   ${fileRowsHtml || "<p class=dim>No files to show (try without --only-differ).</p>"}
 
-  <footer>Diagnostic agreement is a regression signal, not a proof of semantic equivalence. See bin/compare-tsc.rs's module doc comment for this project's flag-set policy.</footer>
+  <footer>Diagnostic agreement is a regression signal, not a proof of semantic equivalence. See crates/tsox-xtask/src/bin/compare-tsc.rs's module doc comment for this project's flag-set policy.</footer>
 </body>
 </html>`;
 

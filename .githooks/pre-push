@@ -11,4 +11,4 @@ if ! cargo fmt --all -- --check; then
   exit 1
 fi
 
-cargo test --locked --all-features
+cargo test --locked --workspace --all-features

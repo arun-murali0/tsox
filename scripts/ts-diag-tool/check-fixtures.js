@@ -251,7 +251,7 @@ function defaultCachePath() {
 // files for every file. Against tsox, which now checks a project through its module
 // graph in one process, that makes tsc look slower and heavier than it is.
 // Picked: one Program over every root file of a directory, so imports resolve across files
-// and the lib is parsed once. Roots are chosen the way bin/tsox.rs chooses its entries
+// and the lib is parsed once. Roots are chosen the way crates/tsox-cli/src/main.rs chooses its entries
 // (.ts/.tsx, no .d.ts, no node_modules/dist/build/out/coverage, no dot directories), so
 // both sides check the same files. Only diagnostics in those files are kept; a package's
 // declaration file is read and never reported, as in tsox.

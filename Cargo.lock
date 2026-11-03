@@ -1692,11 +1692,9 @@ dependencies = [
 name = "tsox"
 version = "0.1.0"
 dependencies = [
- "console_error_panic_hook",
  "criterion",
  "dhat",
  "iai-callgrind",
- "mimalloc",
  "oxc_allocator",
  "oxc_cfg",
  "oxc_parser",
@@ -1705,8 +1703,6 @@ dependencies = [
  "oxc_span",
  "proc-macro2",
  "rayon",
- "serde",
- "serde-wasm-bindgen",
  "tracing",
  "tracing-subscriber",
  "tsox-base",
@@ -1714,8 +1710,6 @@ dependencies = [
  "tsox-db",
  "tsox-project",
  "tsox-types",
- "wasm-bindgen",
- "xxhash-rust",
  "zmij",
 ]
 
@@ -1750,6 +1744,7 @@ dependencies = [
 name = "tsox-cli"
 version = "0.1.0"
 dependencies = [
+ "mimalloc",
  "tsox",
 ]
 
@@ -1799,7 +1794,11 @@ dependencies = [
 name = "tsox-wasm"
 version = "0.1.0"
 dependencies = [
+ "console_error_panic_hook",
+ "serde",
+ "serde-wasm-bindgen",
  "tsox",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1807,6 +1806,7 @@ name = "tsox-xtask"
 version = "0.1.0"
 dependencies = [
  "tsox",
+ "xxhash-rust",
 ]
 
 [[package]]

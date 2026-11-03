@@ -21,8 +21,14 @@ use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 
+// The corpus is shared with the root package's tests, so it stays in the repository's tests/
+// directory: this crate is crates/tsox-cli, two levels below the repository root.
 fn corpus() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/typescript-testcases")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("repository root")
+        .join("tests/typescript-testcases")
 }
 
 fn ts_files(dir: &Path) -> Vec<PathBuf> {

@@ -11,11 +11,6 @@ use tsox_db::incremental;
 use tsox_project::module_resolution;
 use tsox_types::{arena, namespace, portable, semantic, types};
 
-#[cfg(feature = "wasm")]
-mod wasm;
-#[cfg(feature = "wasm")]
-pub use wasm::TsoxChecker;
-
 pub use diagnostic_codes::DiagnosticCode;
 pub use diagnostic_view::{DiagnosticView, Position, Range};
 pub use diagnostics::{Diagnostic, Severity};

@@ -467,7 +467,7 @@ const normalizePath = (f) => path.relative(process.cwd(), path.resolve(f));
 // tsox's own CLI line shape: `file:line:col: severity: CODE message`.
 // Only error-severity lines are kept -- tsox's warnings are all
 // "not yet checked" implementation-status markers with no tsc equivalent
-// (see bin/compare-tsc.rs's module doc comment), so comparing them is noise.
+// (see crates/tsox-xtask/src/bin/compare-tsc.rs's module doc comment), so comparing them is noise.
 const TSOX_LINE = /^(.+):(\d+):(\d+): (error|warning): (\S+) (.+)$/;
 
 function parseTsox(raw) {
@@ -1176,5 +1176,5 @@ log(
   `${c.dim}Note: divergence here is often intentional -- see the module doc comment${c.reset}`,
 );
 log(
-  `${c.dim}in bin/compare-tsc.rs for which fixtures are meant to diverge from tsc.${c.reset}`,
+  `${c.dim}in crates/tsox-xtask/src/bin/compare-tsc.rs for which fixtures are meant to diverge from tsc.${c.reset}`,
 );
