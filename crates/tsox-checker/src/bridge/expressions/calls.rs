@@ -1346,7 +1346,32 @@ fn check_callable(
         }
     }
 
-    GenericSolver::substitute_type_params(&mut ctx.arena, function_type.return_type, &bindings)
+    let result =
+        GenericSolver::substitute_type_params(&mut ctx.arena, function_type.return_type, &bindings);
+    // A constructor's result is the class body with its parameters substituted. Keep it as
+    // an application of the class, as an annotation `Vec2<number>` is, so it prints that
+    // way and is related to one through the class's variance instead of body by body.
+    if is_new && let Some(parameters) = ctx.arena.decl_params(function_type.return_type) {
+        let arguments: Option<Vec<TypeId>> = parameters
+            .iter()
+            .map(|parameter| {
+                bindings
+                    .iter()
+                    .find(|(id, _)| id == parameter)
+                    .map(|&(_, bound)| bound)
+            })
+            .collect();
+        if let Some(arguments) = arguments
+            && let Some(application) = ctx.arena.application_of_declaration(
+                function_type.return_type,
+                arguments,
+                result,
+            )
+        {
+            return application;
+        }
+    }
+    result
 }
 
 fn is_array_literal(expr: &Expression) -> bool {

@@ -1355,9 +1355,11 @@ fn substitute_impl(
 // `rewritten` does not outlive the call. A declaration's Ref can be resolved by
 // TypeArena::resolve_ref between two calls, which would make a longer-lived rewrite
 // stale.
-// How deep one substitution may go before it is cut (see `Substitution::rewrite`). Real types are a
-// few dozen levels deep; tsc stops an instantiation at 100.
-const MAX_INSTANTIATION_DEPTH: usize = 2_000;
+// Maximum structural depth of one substitution walk (see `Substitution::rewrite`).
+// TypeScript 6.0.3 cuts ordinary recursive type instantiation at 100. This walk's
+// `open` stack is not exactly the same counter, but using the same bound prevents a
+// single deeply nested generic shape from consuming an unbounded call stack.
+const MAX_INSTANTIATION_DEPTH: usize = 100;
 
 struct Substitution<'b> {
     bindings: &'b [(crate::types::TypeParameterId, TypeId)],
@@ -1438,7 +1440,10 @@ impl Substitution<'_> {
         // error type, which does not cascade into a mismatch. The unit says so once (TSR9102).
         // A count, not only the stack, so the cut point is the same in a debug and a release
         // build and on any thread.
-        if self.open.len() >= MAX_INSTANTIATION_DEPTH || crate::stack_guard::exhausted() {
+        if self.open.len() >= MAX_INSTANTIATION_DEPTH
+            || crate::stack_guard::exhausted()
+            || !crate::stack_guard::count_instantiation()
+        {
             crate::stack_guard::note_cut();
             return arena.error();
         }
@@ -2204,6 +2209,38 @@ mod tests {
             .find(|p| &*p.name == name)
             .map(|p| p.type_id)
             .unwrap_or_else(|| panic!("no property {name}"))
+    }
+
+    #[test]
+    fn substitution_stops_at_the_instantiation_depth_limit() {
+        // This is deliberately a deep *generic* shape, not merely a deep concrete type:
+        // every array layer contains T and therefore participates in substitution.
+        let _ = crate::stack_guard::take_cut();
+        let mut arena = TypeArena::new();
+        let id = TypeParameterId::new(70, 0);
+        let mut ty = arena.alloc(Type::GenericParameter(id, "T".into(), None));
+        let number = arena.number();
+
+        for _ in 0..MAX_INSTANTIATION_DEPTH {
+            ty = arena.alloc(Type::Array(ty));
+        }
+
+        let rewritten = substitute_bound_type_params(&mut arena, ty, &[(id, number)]);
+        assert!(
+            crate::stack_guard::take_cut(),
+            "substitution must record that the depth budget was reached"
+        );
+
+        // The outer shape remains useful, while the point beyond the budget is the
+        // error type. Walk iteratively so the test itself does not recurse.
+        let mut current = rewritten;
+        for _ in 0..MAX_INSTANTIATION_DEPTH {
+            let Type::Array(element) = arena.get(current) else {
+                panic!("expected the array shape to be retained up to the depth limit");
+            };
+            current = *element;
+        }
+        assert_eq!(current, arena.error());
     }
 
     // `Box<T> { value: T; next: Box<T> | null }` bound at T = number. The self

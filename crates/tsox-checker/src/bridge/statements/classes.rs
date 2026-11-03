@@ -174,6 +174,13 @@ pub(super) fn check_class_declaration(
                     continue;
                 };
 
+                // The method's own `<B>` list, active for its body the way a function
+                // declaration's is. Its signature already holds B (resolved with the class);
+                // without the scope a call whose result is B read B as unbound and gave
+                // `unknown`.
+                let method_type_params = ctx
+                    .namespace
+                    .push_type_params(&mut ctx.arena, &method.value);
                 bind_params(&method.value.params, &method_type.params, scoping, ctx);
                 let return_scope = ctx.enter_function_return_scope(
                     Some(method_type.return_type),
@@ -186,6 +193,7 @@ pub(super) fn check_class_declaration(
                 }
                 ctx.narrow = outer_narrow;
                 ctx.leave_return_scope(return_scope);
+                ctx.namespace.pop_type_params(method_type_params);
             }
 
             // A static method lives on the class itself, not on instances, so it
@@ -198,6 +206,9 @@ pub(super) fn check_class_declaration(
                     continue;
                 };
 
+                let method_type_params = ctx
+                    .namespace
+                    .push_type_params(&mut ctx.arena, &method.value);
                 let (params, _is_untyped) = match resolve_function_params(
                     &method.value.params,
                     &mut ctx.namespace,
@@ -231,6 +242,7 @@ pub(super) fn check_class_declaration(
                 ctx.narrow = outer_narrow;
                 ctx.current_class_instance = outer_class_instance_for_this;
                 ctx.leave_return_scope(return_scope);
+                ctx.namespace.pop_type_params(method_type_params);
             }
 
             ClassElement::MethodDefinition(method) if method.r#static => {

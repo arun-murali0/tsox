@@ -68,6 +68,15 @@ fn is_subtype_uncached(
     seen: &mut PairStack,
     binders: &[(TypeParameterId, TypeParameterId)],
 ) -> bool {
+    // Two applications of the same generic declaration are related through their
+    // arguments, by how the declaration uses each parameter, instead of by expanding both
+    // bodies. A declaration whose use cannot be read reliably is left to the structural
+    // rules below (see variance.rs).
+    if let Some(related) = crate::variance::relate_by_variance(arena, sub, sup, &mut |a, b| {
+        is_subtype_inner(arena, a, b, seen, binders)
+    }) {
+        return related;
+    }
     match (arena.get(sub), arena.get(sup)) {
         (_, Type::Unknown) => true,
 

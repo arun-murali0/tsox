@@ -42,7 +42,19 @@ pub struct TooComplex;
 pub const BUILTIN_GENERICS: [&str; 2] = ["Promise", "Record"];
 
 const MAX_INTERSECTION_DISTRIBUTION: usize = 100_000;
-const MAX_RECURSIVE_APP_INSTANTIATIONS: usize = 256;
+// Bound nested re-instantiation of recursive generic applications. TypeScript 6.0.3
+// limits ordinary recursive type instantiation to 100 levels. This is the closest
+// corresponding guard here: it counts simultaneously active App re-instantiations,
+// not every type node visited by the checker.
+// How many re-instantiations of one declaration may be open inside each other. A
+// declaration that applies itself to a bigger argument at every level
+// (`Sequence<{ key: K; items: T[] }>` inside `Sequence<T>`) has no finite expansion, and
+// building it level by level to the overall limit is what made such inputs not finish.
+// tsc avoids that by expanding lazily; this checker expands eagerly, so it stops the same
+// declaration nesting itself this deep (compare tsc's isDeeplyNestedType, which uses 3)
+// and the type below that point reads as the error type, which does not cascade.
+const MAX_SAME_DECLARATION_NESTING: usize = 5;
+const MAX_RECURSIVE_APP_INSTANTIATIONS: usize = 100;
 
 #[derive(Clone, Copy)]
 enum DeclState {
@@ -238,6 +250,17 @@ pub struct TypeArena {
     // distributive. Known where the application is made, and for an imported one from
     // the declaration it was exported from.
     app_conditionals: FxHashMap<DeclSlot, bool>,
+    // The declared type parameters of a generic declaration, keyed by its base (the same
+    // id `app_bases` holds), in declaration order. Variance is computed from these.
+    decl_params: FxHashMap<TypeId, Vec<TypeParameterId>>,
+    // The name a generic declaration prints under, for an application made from it later.
+    decl_names: FxHashMap<TypeId, String>,
+    // Per generic declaration: how each parameter is used (see variance.rs). `None` means
+    // the analysis could not give a reliable answer and relations must stay structural.
+    // Only ever filled for a declaration whose body is resolved, so a stored answer never
+    // goes stale: a resolved body is not rewritten.
+    variance_cache: RefCell<FxHashMap<TypeId, Option<std::rc::Rc<[crate::variance::Variance]>>>>,
+    variance_active: RefCell<Vec<TypeId>>,
     // The name slots of enums: the enum type and each member read off it print under the
     // enum's name even though they stand for literals, unlike an alias of a primitive.
     enum_name_slots: Vec<DeclSlot>,
@@ -274,6 +297,10 @@ impl TypeArena {
             app_bases: FxHashMap::default(),
             body_origins: FxHashMap::default(),
             app_conditionals: FxHashMap::default(),
+            decl_params: FxHashMap::default(),
+            decl_names: FxHashMap::default(),
+            variance_cache: RefCell::new(FxHashMap::default()),
+            variance_active: RefCell::new(Vec::new()),
             enum_name_slots: Vec::new(),
             enum_types: Vec::new(),
             empty_object: Type::Object(ObjectType::new(Vec::new())),
@@ -406,6 +433,12 @@ impl TypeArena {
             .iter()
             .any(|active| active.base == base && active.bindings.as_slice() == bindings)
             || self.active_app_instantiations.len() >= MAX_RECURSIVE_APP_INSTANTIATIONS
+            || self
+                .active_app_instantiations
+                .iter()
+                .filter(|active| active.base == base)
+                .count()
+                >= MAX_SAME_DECLARATION_NESTING
         {
             return false;
         }
@@ -874,6 +907,94 @@ impl TypeArena {
     // (interface, class, type-literal alias) or a Named (alias). None for any other id,
     // including a Ref that has no body yet. Exporting needs the slot, to tell the unit's
     // resolver which declaration it is, and the body, which is what gets exported.
+    pub fn set_decl_params(&mut self, base: TypeId, parameters: Vec<TypeParameterId>) {
+        self.decl_params.insert(base, parameters);
+    }
+
+    pub fn set_decl_name(&mut self, base: TypeId, name: &str) {
+        self.decl_names
+            .entry(base)
+            .or_insert_with(|| name.to_owned());
+    }
+
+    /// An application of the generic declaration `base` to `args`, whose expanded shape is
+    /// `body`. Used where a result is built by substitution (a constructor call) so that it
+    /// is still recognisably `Name<args>`: it prints that way and relates through variance.
+    /// `None` when `base` is not a declaration whose parameters and name are known.
+    pub fn application_of_declaration(
+        &mut self,
+        base: TypeId,
+        args: Vec<TypeId>,
+        body: TypeId,
+    ) -> Option<TypeId> {
+        if body == base || self.decl_params.get(&base)?.len() != args.len() {
+            return None;
+        }
+        let name = self.decl_names.get(&base)?.clone();
+        let slot = self.alloc_name(name);
+        self.set_app_base(slot, base);
+        Some(self.alloc_app(slot, args, body))
+    }
+
+    pub fn decl_params(&self, base: TypeId) -> Option<&[TypeParameterId]> {
+        self.decl_params.get(&base).map(Vec::as_slice)
+    }
+
+    /// The declaration an application was made from, for an ordinary application and for a
+    /// deferred recursive one alike.
+    pub fn app_base_of(&self, application: TypeId) -> Option<TypeId> {
+        if let Some(template) = self.app_templates.get(&application) {
+            return Some(template.base);
+        }
+        match self.types.get(application.0 as usize) {
+            Some(Type::App(slot, _, _)) => self.app_bases.get(slot).copied(),
+            _ => None,
+        }
+    }
+
+    /// The body of a declaration `Ref` once it is resolved; `None` while it is still being
+    /// resolved or if it failed.
+    pub fn declared_body(&self, id: TypeId) -> Option<TypeId> {
+        match self.types.get(id.0 as usize) {
+            Some(Type::Ref(slot)) => match self.decls[slot.0 as usize].state {
+                DeclState::Resolved(body) => Some(body),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn variance_cached(
+        &self,
+        base: TypeId,
+    ) -> Option<Option<std::rc::Rc<[crate::variance::Variance]>>> {
+        self.variance_cache.borrow().get(&base).cloned()
+    }
+
+    pub fn variance_store(
+        &self,
+        base: TypeId,
+        value: Option<std::rc::Rc<[crate::variance::Variance]>>,
+    ) {
+        self.variance_cache.borrow_mut().insert(base, value);
+    }
+
+    pub fn variance_enter(&self, base: TypeId) -> bool {
+        let mut active = self.variance_active.borrow_mut();
+        if active.contains(&base) {
+            return false;
+        }
+        active.push(base);
+        true
+    }
+
+    pub fn variance_leave(&self, base: TypeId) {
+        let mut active = self.variance_active.borrow_mut();
+        if let Some(index) = active.iter().rposition(|b| *b == base) {
+            active.remove(index);
+        }
+    }
+
     pub fn set_app_base(&mut self, application: DeclSlot, base: TypeId) {
         self.app_bases.insert(application, base);
     }
@@ -1347,6 +1468,10 @@ impl TypeArena {
         self.decls.clear();
         self.app_templates.clear();
         self.active_app_instantiations.clear();
+        self.decl_params.clear();
+        self.decl_names.clear();
+        self.variance_cache.get_mut().clear();
+        self.variance_active.get_mut().clear();
         self.enum_types.clear();
         self.builtin_slots.clear();
         self.interned.clear();
@@ -1443,6 +1568,34 @@ impl Default for TypeArena {
 mod tests {
     use super::*;
     use crate::types::{FunctionType, ObjectType, Param, PropertyEntry, TypeParameterId};
+
+    #[test]
+    fn recursive_app_reinstantiation_is_bounded_at_one_hundred_levels() {
+        let mut arena = TypeArena::new();
+        let parameter = TypeParameterId::new(0, 0);
+        let bindings = [(parameter, arena.number())];
+        let mut bases = Vec::new();
+
+        for _ in 0..MAX_RECURSIVE_APP_INSTANTIATIONS {
+            let base = arena.alloc_ref();
+            assert!(arena.begin_app_instantiation(base, &bindings));
+            bases.push(base);
+        }
+
+        let overflow = arena.alloc_ref();
+        assert!(
+            !arena.begin_app_instantiation(overflow, &bindings),
+            "the next nested application must hit the recursion budget"
+        );
+
+        for base in bases.into_iter().rev() {
+            arena.end_app_instantiation(base, &bindings);
+        }
+
+        // A completed stack must not poison later independent instantiations.
+        assert!(arena.begin_app_instantiation(overflow, &bindings));
+        arena.end_app_instantiation(overflow, &bindings);
+    }
 
     fn property(name: &str, type_id: TypeId, optional: bool) -> PropertyEntry {
         PropertyEntry {
