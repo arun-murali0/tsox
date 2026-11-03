@@ -32,6 +32,8 @@ pub const MAX_BRACKET_DEPTH: usize = 4_000;
 thread_local! {
     // Set when a walk that has nowhere to report stopped at a limit (see `note_cut`).
     static CUT: Cell<bool> = const { Cell::new(false) };
+    // Substitution steps taken since the last `reset_instantiations`.
+    static INSTANTIATIONS: Cell<u64> = const { Cell::new(0) };
     // The lowest address this thread may reach before `exhausted()` says so. Zero means
     // the thread has not set a budget and is not checked.
     static FLOOR: Cell<usize> = const { Cell::new(0) };
@@ -182,5 +184,45 @@ mod tests {
     fn on_big_stack_raises_a_panic_again() {
         let caught = std::panic::catch_unwind(|| on_big_stack(|| panic!("boom")));
         assert!(caught.is_err());
+    }
+}
+
+/// TypeScript stops a statement or expression that has instantiated this many types
+/// (`instantiationCount` in checker.go) and reports TS2589.
+pub const MAX_INSTANTIATIONS: u64 = 5_000_000;
+
+/// Starts a new budget, at the top of each statement the checker visits.
+pub fn reset_instantiations() {
+    INSTANTIATIONS.with(|count| count.set(0));
+}
+
+/// Counts one substitution step. False once the budget is spent, after which the caller
+/// returns the error type and `note_cut` records it.
+pub fn count_instantiation() -> bool {
+    INSTANTIATIONS.with(|count| {
+        let next = count.get() + 1;
+        count.set(next);
+        next <= MAX_INSTANTIATIONS
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn instantiations_taken() -> u64 {
+    INSTANTIATIONS.with(Cell::get)
+}
+
+#[cfg(test)]
+mod instantiation_budget_tests {
+    use super::*;
+
+    #[test]
+    fn budget_runs_out_after_the_limit_and_reset_restores_it() {
+        reset_instantiations();
+        INSTANTIATIONS.with(|count| count.set(MAX_INSTANTIATIONS - 1));
+        assert!(count_instantiation());
+        assert!(!count_instantiation());
+        reset_instantiations();
+        assert_eq!(instantiations_taken(), 0);
+        assert!(count_instantiation());
     }
 }

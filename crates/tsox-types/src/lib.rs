@@ -26,3 +26,4 @@ pub mod symbol_map;
 pub mod type_annotation;
 pub mod type_display;
 pub mod types;
+pub mod variance;

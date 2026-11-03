@@ -19,4 +19,5 @@ use tsox_types::{
 };
 
 pub mod bridge;
+pub mod flow;
 pub mod unit;

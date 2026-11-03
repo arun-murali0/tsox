@@ -9,7 +9,7 @@ it moves code and adds boundaries, and changes no behavior. `cargo test --worksp
 
 | Crate | Owns | Depends on (tsox) | External |
 |---|---|---|---|
-| `tsox-base` | Identities and hashing (`keys`, `stable_hash`, `fxhash`), diagnostics and their codes, `FileId`, `LineIndex`, check options, the project-wide small helpers (`stack_guard`, `source_depth`, `reference_directives`), the generated list of tsc's global type names, the `scratchpad` | none | thiserror, xxhash-rust; serde (`wasm`), bumpalo (`scratchpad`) |
+| `tsox-base` | Identities and hashing (`keys`, `stable_hash`, `fxhash`), diagnostics and their codes, `FileId`, `LineIndex`, check options, the project-wide small helpers (`stack_guard`, `source_depth`, `reference_directives`), the generated list of tsc's global type names, the vendored TypeScript lib files (`lib/`, data only), the `scratchpad` | none | thiserror, xxhash-rust; serde (`wasm`), bumpalo (`scratchpad`) |
 | `tsox-types` | The type system: `TypeArena` and `Type`, `subtyping`, generics inference (`semantic/`), `namespace`, `type_annotation`, `type_display`, `explain`, and `portable` (declarations as arena-free data, `ImportSource`) | base | oxc_ast, oxc_ast_visit, oxc_span, oxc_semantic, smallvec |
 | `tsox-checker` | The single-file checker: `bridge/` (parse, bind, declare, imports, exports, narrowing, statements, expressions, whole-file passes) and `unit` (a file as a unit of work: `UnitContext`, `UnitOutput`, `Worker`) | base, types | oxc parser, allocator, cfg, semantic; tracing |
 | `tsox-project` | Many files: `module_resolution/` (graph, config, discovery, resolver, check, schedule, partial results), `scc`. Feature `incremental` switches on the hooks the query layer needs | base, types, checker | oxc_resolver, rayon |

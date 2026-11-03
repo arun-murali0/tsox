@@ -29,6 +29,7 @@ use context::CheckContext;
 pub use exports::ExportTable;
 pub use exports::IncompleteReason;
 
+pub(crate) use parse::analyze;
 pub use parse::parse;
 
 pub fn parse_and_bind_only(source: &str, file_name: &str) -> Result<(), CheckerError> {
