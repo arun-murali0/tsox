@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Compare tsox with tsc and tsgo on a real project: speed, memory, diagnostics.
-# The program is bin/harness.rs; this script only builds the two binaries it needs and runs it.
+# The program is crates/tsox-xtask/src/bin/harness.rs; this script only builds the two binaries it needs and runs it.
 #
 #   ./scripts/harness.sh                       Zustand (cloned under .harness/zustand)
 #   ./scripts/harness.sh /path/to/project      your own project (needs a tsconfig.json)

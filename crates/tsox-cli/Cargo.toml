@@ -5,14 +5,39 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The tsox command line. Empty scaffold: move bin/tsox.rs here."
+description = "The tsox command line."
 publish = false
 
 [lints]
 workspace = true
 
+# The binary keeps its name, so `target/release/tsox` and `cargo build --bin tsox` are
+# unchanged for the scripts and CI that use them. Its docs are off because the `tsox` library
+# has the same name and the two would collide in `cargo doc`.
+[[bin]]
+name = "tsox"
+path = "src/main.rs"
+doc = false
+
 [dependencies]
-# The only tsox dependency a front end needs: the facade. Do not depend on the layer crates
-# directly or on another front end (scripts/check-layering.py).
+# The facade is the only tsox crate a front end depends on (scripts/check-layering.py).
 tsox = { path = "../..", default-features = false }
 
+# The platform allocator stays on wasm32, so mimalloc is not even resolved for it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mimalloc = { version = "=0.1.52", optional = true }
+
+[features]
+default = ["module-resolution"]
+
+# Project mode (`--project`, tsconfig discovery, the module graph). The binary's code and its
+# tests are gated on this name, so it is a feature of this crate that turns on the library's.
+module-resolution = ["tsox/module-resolution"]
+
+# `--incremental` and `--watch` (the Salsa query layer). Without it they say so and stop.
+incremental = ["module-resolution", "tsox/incremental"]
+
+# mimalloc as the global allocator of this binary. Off by default so the binary CI builds and
+# compares against tsc does not change; release builds opt in with
+# `cargo build --release -p tsox-cli --features mimalloc`.
+mimalloc = ["dep:mimalloc"]

@@ -1362,11 +1362,9 @@ fn check_callable(
             })
             .collect();
         if let Some(arguments) = arguments
-            && let Some(application) = ctx.arena.application_of_declaration(
-                function_type.return_type,
-                arguments,
-                result,
-            )
+            && let Some(application) =
+                ctx.arena
+                    .application_of_declaration(function_type.return_type, arguments, result)
         {
             return application;
         }

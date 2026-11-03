@@ -193,7 +193,12 @@ fn run() -> Result<bool, String> {
     };
 
     let style = Style::detect();
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // The repository root: this crate is crates/tsox-xtask, two levels down. `ancestors` keeps the
+    // path exactly as `CARGO_MANIFEST_DIR` spells it, which `strip_prefix` on tool output relies on.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .ok_or("cannot find the repository root from CARGO_MANIFEST_DIR")?;
     let expected_version = read_reference_version(&root.join(REFERENCE_FILE))?;
     let tsc_bin = options.tsc_bin.clone();
     verify_tsc_version(&tsc_bin, &expected_version)?;

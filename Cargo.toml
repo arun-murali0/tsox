@@ -19,7 +19,6 @@ exclude = [
 
 [lib]
 name = "tsox"
-crate-type = ["cdylib", "rlib"]
 
 [lints]
 workspace = true
@@ -37,11 +36,6 @@ oxc_parser = { workspace = true }
 oxc_semantic = { workspace = true }
 oxc_span = { workspace = true }
 tracing = { workspace = true }
-xxhash-rust = { workspace = true }
-wasm-bindgen = { version = "0.2", optional = true }
-serde = { workspace = true, optional = true }
-serde-wasm-bindgen = { version = "0.6", optional = true }
-console_error_panic_hook = { version = "0.1", optional = true }
 dhat = { version = "0.3", optional = true }
 # Kept by tests and benches that build a pool or a resolver of their own.
 oxc_resolver = { workspace = true, optional = true }
@@ -50,26 +44,11 @@ rayon = { workspace = true, optional = true }
 proc-macro2 = { workspace = true }
 zmij = { workspace = true }
 
-# The wasm build keeps the platform allocator, so mimalloc is not even resolved for it.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-mimalloc = { version = "=0.1.52", optional = true }
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 criterion = "0.8.2"
 iai-callgrind = "0.16.1"
-
-[[bin]]
-name = "tsox"
-path = "bin/tsox.rs"
-
-[[bin]]
-name = "compare-tsc"
-path = "bin/compare-tsc.rs"
-
-[[bin]]
-name = "harness"
-path = "bin/harness.rs"
 
 [[bench]]
 name = "checker_benchmark"
@@ -108,13 +87,9 @@ required-features = ["incremental"]
 
 [features]
 default = ["module-resolution"]
-wasm = [
-    "dep:wasm-bindgen",
-    "dep:serde",
-    "dep:serde-wasm-bindgen",
-    "dep:console_error_panic_hook",
-    "tsox-base/wasm",
-]
+# Serialize and Deserialize on the diagnostic types. The wasm front end is the tsox-wasm
+# crate; it turns this on through its dependency on this one.
+wasm = ["tsox-base/wasm"]
 dhat-heap = ["dep:dhat"]
 
 # Project-level module resolution and the module graph. On by default since the checker
@@ -131,9 +106,7 @@ incremental = ["dep:tsox-db", "module-resolution", "tsox-project/incremental"]
 # Worker-local bump allocation for scratch data that does not outlive a job.
 scratchpad = ["tsox-base/scratchpad"]
 
-# mimalloc as the global allocator of the tsox binary. Off by default so the binary
-# CI builds and compares against tsc does not change; release builds opt in.
-mimalloc = ["dep:mimalloc"]
+# (The `mimalloc` allocator feature belongs to the binary now: `-p tsox-cli --features mimalloc`.)
 
 # Native build: what `cargo build --release` and the criterion / iai-callgrind
 # benches (cargo's bench profile inherits release) measure. Speed matters here and
@@ -154,8 +127,8 @@ codegen-units = 1
 # carry. A separate profile (rather than an override in release) is what lets the
 # two builds differ. wasm-pack always passes --release, so it cannot select this;
 # build with cargo and run wasm-bindgen on the result:
-#   cargo build --profile wasm-release --lib --target wasm32-unknown-unknown --features wasm
-#   wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/wasm-release/tsox.wasm
+#   cargo build --profile wasm-release -p tsox-wasm --target wasm32-unknown-unknown
+#   wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/wasm-release/tsox_wasm.wasm
 # Release speed with symbols kept, for heap and CPU profilers that need to name frames.
 #   cargo run --profile profiling --features dhat-heap --example dhat_heap
 # Add module-resolution to the features to include the multi-file project workloads.
@@ -170,6 +143,10 @@ opt-level = "s"
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# What a bare `cargo build`, `cargo test` or `cargo build --bin tsox` selects: this package and
+# the two front ends that carry the binaries (`tsox`, `harness`, `compare-tsc`). The wasm
+# crate is not here; it needs a wasm target (see the wasm-release profile below).
+default-members = [".", "crates/tsox-cli", "crates/tsox-xtask"]
 
 [workspace.package]
 version = "0.1.0"

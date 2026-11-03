@@ -15,7 +15,7 @@ set -o pipefail
 # old awk-based line parser. ts.Diagnostic gives code/category/message as
 # real structured fields -- see scripts/ts-diag-tool/check-fixtures.js.
 #
-# Unlike bin/compare-tsc.rs (which is in-process, errors-only, and scoped to
+# Unlike crates/tsox-xtask/src/bin/compare-tsc.rs (which is in-process, errors-only, and scoped to
 # the small dedicated tests/tsc-conformance/ set), this script:
 #   - defaults to every .ts file under tests/fixtures/ -- the real, full
 #     feature-tier suite, not a curated subset

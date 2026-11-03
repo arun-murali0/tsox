@@ -124,7 +124,7 @@ This separation makes semantic algorithms reusable by future tooling and typed-I
 | `incremental.rs` | Opt-in Salsa input (`SourceFile`) and first query; unchanged saves start no revision |
 | `scratchpad.rs` | Opt-in bump scratch for one worker; accepts only `Copy` values |
 | `module_resolution/` | Opt-in project layer: resolver wrapper, import discovery, module graph with cycles and layers, parallel project check that passes each layer's exports to the next, change detection |
-| `wasm.rs` | WASM-facing adaptation |
+| `crates/tsox-wasm` | WASM-facing adaptation (the wasm-bindgen front end, its own crate) |
 
 ## Feature modules
 
@@ -183,7 +183,7 @@ reports (an argument arity mismatch, say), the number is not meant to imply
 parity with a specific `TS####` code. Keeping the identifier space separate means
 tsox's diagnostic catalog can grow, split, or renumber without silently
 claiming compatibility it hasn't earned. The compatibility harnesses
-(`bin/compare-tsc.rs`, `scripts/compare-local.sh`) compare by line presence, not
+(`crates/tsox-xtask/src/bin/compare-tsc.rs`, `scripts/compare-local.sh`) compare by line presence, not
 by code equality, precisely because of this.
 
 **Message construction is centralized so one diagnostic kind has one source of

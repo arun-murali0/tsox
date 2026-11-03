@@ -15,7 +15,7 @@
 ./scripts/ci.sh
 ```
 
-The script formats the workspace, checks the crate layering (`scripts/check-layering.py`), then runs compilation and the full workspace test suite. The local pre-push hook uses the same sequence. Use `cargo test --workspace --all-features`, not a bare `cargo test`: the root package alone skips the unit tests that live in `crates/`.
+The script formats the workspace, checks the crate layering (`scripts/check-layering.py`), then runs compilation and the full workspace test suite. The local pre-push hook uses the same sequence. Use `cargo test --workspace --all-features`, not a bare `cargo test`: that runs only the default members (the root, `tsox-cli`, `tsox-xtask`) and skips the unit tests in the layer crates.
 
 ## Code organization
 

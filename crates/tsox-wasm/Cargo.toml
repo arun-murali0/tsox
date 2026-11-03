@@ -5,16 +5,22 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The tsox browser/wasm front end. Empty scaffold: move src/wasm.rs here."
+description = "The tsox browser front end (wasm-bindgen)."
 publish = false
 
 [lints]
 workspace = true
 
-[dependencies]
-# The only tsox dependency a front end needs: the facade. Do not depend on the layer crates
-# directly or on another front end (scripts/check-layering.py).
-tsox = { path = "../..", default-features = false }
-
+# Build (see the wasm-release profile in the root Cargo.toml):
+#   cargo build --profile wasm-release -p tsox-wasm --target wasm32-unknown-unknown
+#   wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/wasm-release/tsox_wasm.wasm
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# `wasm` turns on serde for the diagnostic types, which the front end serializes.
+tsox = { path = "../..", default-features = false, features = ["wasm"] }
+wasm-bindgen = "0.2"
+serde = { workspace = true }
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"

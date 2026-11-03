@@ -628,7 +628,10 @@ fn resolve_named_reference(
     // while the declaration is still resolving, substituting its placeholder sees
     // only an empty object and loses the arguments. Allocate a distinct pending
     // App/Ref pair and finish it when the generic declaration's body is available.
-    arena.set_decl_params(base, bindings.iter().map(|(parameter, _)| *parameter).collect());
+    arena.set_decl_params(
+        base,
+        bindings.iter().map(|(parameter, _)| *parameter).collect(),
+    );
     arena.set_decl_name(base, name);
     let changes_parameters = bindings.iter().any(|(parameter, argument)| {
         !matches!(arena.get(*argument), Type::GenericParameter(argument_id, _, _) if argument_id == parameter)

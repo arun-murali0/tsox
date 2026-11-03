@@ -59,7 +59,11 @@ impl Pol {
             Variance::Independent => None,
             Variance::Covariant => Some(self),
             Variance::Contravariant => Some(self.flip()),
-            Variance::Bivariant => Some(if self == Self::Inv { Self::Inv } else { Self::Bi }),
+            Variance::Bivariant => Some(if self == Self::Inv {
+                Self::Inv
+            } else {
+                Self::Bi
+            }),
             Variance::Invariant => Some(Self::Inv),
         }
     }

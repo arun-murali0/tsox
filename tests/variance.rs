@@ -70,8 +70,14 @@ fn self_application_with_a_changed_argument_is_covariant_here() {
 #[test]
 fn variance_composes_through_another_declaration() {
     let decl = "interface Sink<T> { put: (x: T) => void }\ninterface Holder<T> { sink: Sink<T> }";
-    assert_eq!(assign(decl, &format!("Holder<{WIDE}>"), "Holder<number>"), 0);
-    assert_eq!(assign(decl, "Holder<number>", &format!("Holder<{WIDE}>")), 1);
+    assert_eq!(
+        assign(decl, &format!("Holder<{WIDE}>"), "Holder<number>"),
+        0
+    );
+    assert_eq!(
+        assign(decl, "Holder<number>", &format!("Holder<{WIDE}>")),
+        1
+    );
 }
 
 #[test]
