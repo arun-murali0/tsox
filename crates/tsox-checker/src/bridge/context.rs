@@ -116,6 +116,11 @@ pub struct CheckContext<'ast, 'src> {
     // very next function expression checked is known to have no contextual
     // `this`, so its body should run with implicit_this set. Consumed on entry.
     pub next_function_has_no_this: bool,
+    // The type the call or `new` expression being checked is expected to produce, handed
+    // from infer_expression_type to check_callable (which reads it before any argument is
+    // inferred, since an argument's own call would overwrite it). Used as low-priority
+    // evidence for type parameters that only the return type mentions.
+    pub call_return_context: Option<TypeId>,
     // The declared type the very next expression is being checked against, handed down by
     // a caller that has one (an annotated variable, a return type, a parameter). Only an
     // object or array literal reads it, to keep a literal property whose declared type is
@@ -408,6 +413,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             current_class_instance: None,
             implicit_this: false,
             next_function_has_no_this: false,
+            call_return_context: None,
             contextual: None,
             conditional_arms: std::collections::HashMap::new(),
             jump_frames: Vec::new(),
@@ -482,6 +488,23 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
     // and hands back the error type, so the caller carries on with an unknown type. It is a
     // warning, like the other "not checked" notices, because the code is fine and has no tsc
     // counterpart: an error would fail the run and show up as an extra error in a compare.
+    /// Records a value's declared type and makes it nameable from a type position, so
+    /// `typeof name` in an annotation reads it (see type_annotation::typeof_value_name).
+    /// The first declaration of a name wins: the declare pass runs over the top level
+    /// before any body is walked, so a local of the same name never replaces the file's.
+    pub fn declare_value(
+        &mut self,
+        symbol_id: oxc_semantic::SymbolId,
+        name: &str,
+        type_id: TypeId,
+    ) {
+        self.symbols.declare(symbol_id, type_id);
+        let query = crate::type_annotation::typeof_value_name(name);
+        if !self.namespace.contains(&query) {
+            self.namespace.insert_resolved(&query, type_id);
+        }
+    }
+
     pub fn nesting_too_deep(&mut self, span: Span) -> TypeId {
         if !self.nesting_reported {
             self.nesting_reported = true;

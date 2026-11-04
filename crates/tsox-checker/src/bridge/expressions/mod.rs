@@ -103,9 +103,15 @@ pub fn infer_expression_type(
             infer_binary_expression_type(bin.operator, left, right, bin.span(), ctx)
         }
 
-        Expression::CallExpression(call) => infer_call_expression_type(call, scoping, ctx),
+        Expression::CallExpression(call) => {
+            ctx.call_return_context = expected;
+            infer_call_expression_type(call, scoping, ctx)
+        }
 
-        Expression::NewExpression(new_expr) => infer_new_expression_type(new_expr, scoping, ctx),
+        Expression::NewExpression(new_expr) => {
+            ctx.call_return_context = expected;
+            infer_new_expression_type(new_expr, scoping, ctx)
+        }
 
         // `user.address` narrowed by an earlier `user.address !== null` reads as that
         // narrowed type; every other access is typed from its object as before.

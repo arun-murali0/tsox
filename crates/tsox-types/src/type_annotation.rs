@@ -326,6 +326,17 @@ pub fn resolve_ts_type(
             }
         }
         TSType::TSTypeQuery(query) => {
+            // `typeof name`: the declared type of a value of this file, bound under
+            // typeof_value_name when the value was declared.
+            if let TSTypeQueryExprName::IdentifierReference(identifier) = &query.expr_name {
+                if query.type_arguments.is_some() {
+                    return None;
+                }
+                return match namespace.resolve(&typeof_value_name(&identifier.name), arena) {
+                    Resolution::Resolved(type_id) => Some(type_id),
+                    Resolution::Circular | Resolution::NotFound => None,
+                };
+            }
             let TSTypeQueryExprName::TSImportType(import) = &query.expr_name else {
                 return None;
             };
@@ -1214,6 +1225,12 @@ fn dotted_type_name(name: &TSTypeName) -> Option<String> {
         )),
         _ => None,
     }
+}
+
+/// The name `typeof value` is bound under in the namespace, for a value declared in the
+/// file.
+pub fn typeof_value_name(value: &str) -> String {
+    format!("typeof {value}")
 }
 
 /// The name `typeof import("specifier")` is bound under in the namespace.

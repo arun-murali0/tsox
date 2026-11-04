@@ -137,6 +137,31 @@ fn collect_conditional_infer_candidates(
         return;
     }
 
+    // Inferring from a union takes each member in turn (tsc infers from every
+    // constituent of a union source), which is how `(A | B) extends (k: infer I) => void`
+    // sees both functions. A pattern that is itself an infer parameter takes the union
+    // whole, and a pattern union is matched below as one.
+    if let Type::Union(members) = arena.get(actual).clone()
+        && !matches!(
+            arena.get(pattern),
+            Type::Union(_) | Type::GenericParameter(..)
+        )
+    {
+        for member in members {
+            collect_conditional_infer_candidates(
+                arena,
+                pattern,
+                member,
+                infer_params,
+                locked,
+                variance,
+                out,
+                seen,
+            );
+        }
+        return;
+    }
+
     match arena.get(pattern).clone() {
         Type::GenericParameter(id, _, _) if infer_params.contains(&id) && !locked.contains(&id) => {
             let candidate = out
@@ -179,6 +204,34 @@ fn collect_conditional_infer_candidates(
                 );
             }
         }
+        Type::Tuple(pattern_elements) => {
+            // `[infer H, ...]`: the elements before a rest element are matched by
+            // position. A rest element, and anything after it, stands for a variable
+            // number of elements and gives nothing to match by position.
+            if let Type::Tuple(actual_elements) = arena.get(actual).clone() {
+                for (index, pattern_element) in pattern_elements.iter().enumerate() {
+                    if pattern_element.rest {
+                        break;
+                    }
+                    let Some(actual_element) = actual_elements.get(index) else {
+                        break;
+                    };
+                    if actual_element.rest {
+                        break;
+                    }
+                    collect_conditional_infer_candidates(
+                        arena,
+                        pattern_element.type_id,
+                        actual_element.type_id,
+                        infer_params,
+                        locked,
+                        variance,
+                        out,
+                        seen,
+                    );
+                }
+            }
+        }
         Type::Object(pattern_object) => {
             if let Type::Object(actual_object) = arena.get(actual).clone() {
                 for property in pattern_object.properties.iter() {
@@ -209,10 +262,30 @@ fn collect_conditional_infer_candidates(
                         nested_locked.push(parameter.id);
                     }
                 }
-                let count = pattern_function
-                    .params
-                    .len()
-                    .max(actual_function.params.len());
+                // `(...args: infer P)`: the rest parameter stands for every parameter of the
+                // other signature from its position on, so P is the tuple of those.
+                let tuple_rest = rest_parameter_standing_for_tuple(arena, &pattern_function.params);
+                if let Some(rest) = tuple_rest {
+                    let rest_type = pattern_function.params[rest].type_id;
+                    let remaining =
+                        remaining_parameters_as_tuple(arena, &actual_function.params, rest);
+                    collect_conditional_infer_candidates(
+                        arena,
+                        rest_type,
+                        remaining,
+                        infer_params,
+                        &nested_locked,
+                        variance.reversed(),
+                        out,
+                        seen,
+                    );
+                }
+                let count = tuple_rest.unwrap_or(
+                    pattern_function
+                        .params
+                        .len()
+                        .max(actual_function.params.len()),
+                );
                 for position in 0..count {
                     if let (Some(pattern_param), Some(actual_param)) = (
                         crate::subtyping::param_type_at(arena, &pattern_function.params, position),

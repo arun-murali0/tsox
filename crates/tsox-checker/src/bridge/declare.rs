@@ -285,7 +285,7 @@ fn declare_values<'ast>(
                     if let Some(type_id) =
                         resolve_type_annotation(annotation, &mut ctx.namespace, &mut ctx.arena)
                     {
-                        ctx.symbols.declare(symbol_id, type_id);
+                        ctx.declare_value(symbol_id, &id.name, type_id);
                     }
                 }
             }
@@ -629,12 +629,12 @@ pub(super) fn declare_function(func: &Function<'_>, ctx: &mut CheckContext<'_, '
         } else {
             ctx.arena.alloc_intersection(all).unwrap_or(function_type)
         };
-        ctx.symbols.declare(symbol_id, callee);
+        ctx.declare_value(symbol_id, &name.name, callee);
     } else if ctx.overload_signatures.contains_key(&symbol_id) {
         ctx.implementation_signatures
             .insert(symbol_id, function_type);
     } else {
-        ctx.symbols.declare(symbol_id, function_type);
+        ctx.declare_value(symbol_id, &name.name, function_type);
     }
 }
 
@@ -800,7 +800,7 @@ fn declare_class_constructor<'a>(
                 type_params: constructor_type_params,
                 is_untyped: constructor_is_untyped,
             }));
-    ctx.symbols.declare(symbol_id, constructor_type);
+    ctx.declare_value(symbol_id, &name.name, constructor_type);
 }
 
 // The parameters `new C(...)` takes. A class with a constructor takes that one's. A class
@@ -879,7 +879,7 @@ fn declare_enum(decl: &oxc_ast::ast::TSEnumDeclaration, ctx: &mut CheckContext<'
     let (type_position, value_type) = ctx.arena.build_enum(&decl.id.name, members);
     ctx.namespace
         .insert_enum(&decl.id.name, type_position, decl.id.span);
-    ctx.symbols.declare(symbol_id, value_type);
+    ctx.declare_value(symbol_id, &decl.id.name, value_type);
 }
 
 fn resolve_enum_members(
