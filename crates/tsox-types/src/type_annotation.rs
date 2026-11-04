@@ -372,6 +372,11 @@ pub fn resolve_ts_type(
             // Only consulted when the namespace doesn't already claim the name,
             // so an unusual user-defined `interface Array { ... }` is never
             // shadowed by this.
+            if !namespace.contains(id.name)
+                && let Some(alias) = crate::prelude::alias(id.name)
+            {
+                namespace.insert_type_alias(id.name, alias.body, alias.type_parameters, alias.span);
+            }
             if !namespace.contains(id.name) {
                 if let Some(builtin) = resolve_builtin_generic(id.name, reference, namespace, arena)
                 {
@@ -406,6 +411,16 @@ pub fn resolve_ts_type(
         // `keyof T` for a type whose property names are all known. A type that is
         // still generic (`keyof T` with T a parameter), or has index signatures,
         // is not reduced here and stays unresolved as before.
+        // `readonly T[]` and `readonly [A, B]` are the array or tuple itself: this checker
+        // has no readonly arrays, only the same shape.
+        TSType::TSTypeOperatorType(operator)
+            if operator.operator == TSTypeOperatorOperator::Readonly
+                && matches!(operator.type_annotation, TSType::TSArrayType(_)) =>
+        {
+            // A readonly tuple is left unresolved: reading one as a plain tuple would
+            // check `const` type parameters (`lit<const T>(...)`), which are not modelled.
+            resolve_ts_type(&operator.type_annotation, namespace, arena)
+        }
         TSType::TSTypeOperatorType(operator)
             if operator.operator == TSTypeOperatorOperator::Keyof =>
         {

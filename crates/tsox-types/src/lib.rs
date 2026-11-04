@@ -18,6 +18,7 @@ pub mod explain;
 pub mod namespace;
 #[allow(dead_code)]
 pub mod portable;
+pub mod prelude;
 pub mod semantic;
 #[allow(dead_code)]
 pub mod stable_walk;
