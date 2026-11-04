@@ -16,6 +16,7 @@ pub use diagnostic_view::{DiagnosticView, Position, Range};
 pub use diagnostics::{Diagnostic, Severity};
 pub use error::CheckerError;
 pub use tsox_base::check_options::CheckOptions;
+pub use tsox_base::compiler_options::{EffectiveCompilerOptions, ScriptTarget};
 
 pub use keys::{
     CycleKey, DeclKey, DeclKind, ENC_VERSION, ModuleKey, NodeHash, SigHash, TypeParamKey,

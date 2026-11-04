@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use super::resolver::ModuleResolver;
+use tsox_base::check_options::CheckOptions;
+use tsox_base::compiler_options::{EffectiveCompilerOptions, ScriptTarget};
 
 // A project's `tsconfig.json` as the engine reads it: the file and everything it extends,
 // merged the way TypeScript merges them, and the list of files it selects.
@@ -471,25 +473,65 @@ impl ProjectConfig {
         self.compiler_options.get(name)
     }
 
-    /// The compiler options the checker itself reads (see `CheckOptions`), as the effective
-    /// configuration sets them. A key the configuration leaves out keeps the checker's
-    /// default, so an empty tsconfig checks as before.
-    pub fn check_options(&self) -> crate::CheckOptions {
+    /// The normalized compiler options for this project after applying TypeScript's defaults
+    /// and the effective values inherited through `extends`.
+    pub fn effective_compiler_options(&self) -> EffectiveCompilerOptions {
         let flag = |name: &str| match self.compiler_option(name) {
             Some(Json::Bool(value)) => Some(*value),
             _ => None,
         };
-        let mut options = crate::CheckOptions::default();
-        if let Some(value) = flag("noUncheckedIndexedAccess") {
-            options.no_unchecked_indexed_access = value;
+        let strict = flag("strict").unwrap_or(false);
+        let strict_flag = |name: &str| flag(name).unwrap_or(strict);
+
+        let check = CheckOptions {
+            strict,
+            no_implicit_any: strict_flag("noImplicitAny"),
+            no_implicit_this: strict_flag("noImplicitThis"),
+            strict_null_checks: strict_flag("strictNullChecks"),
+            strict_function_types: strict_flag("strictFunctionTypes"),
+            strict_bind_call_apply: strict_flag("strictBindCallApply"),
+            strict_property_initialization: strict_flag("strictPropertyInitialization"),
+            always_strict: strict_flag("alwaysStrict"),
+            strict_builtin_iterator_return: strict_flag("strictBuiltinIteratorReturn"),
+            no_unchecked_indexed_access: flag("noUncheckedIndexedAccess").unwrap_or(false),
+            allow_unreachable_code: flag("allowUnreachableCode").unwrap_or(true),
+            use_unknown_in_catch_variables: flag("useUnknownInCatchVariables").unwrap_or(strict),
+            exact_optional_property_types: flag("exactOptionalPropertyTypes").unwrap_or(false),
+            no_property_access_from_index_signature: flag("noPropertyAccessFromIndexSignature")
+                .unwrap_or(false),
+            no_implicit_override: flag("noImplicitOverride").unwrap_or(false),
+            no_implicit_returns: flag("noImplicitReturns").unwrap_or(false),
+            no_fallthrough_cases_in_switch: flag("noFallthroughCasesInSwitch").unwrap_or(false),
+        };
+
+        let target = self
+            .compiler_option("target")
+            .and_then(Json::as_str)
+            .map(ScriptTarget::parse)
+            .unwrap_or_default();
+        let lib = self
+            .compiler_option("lib")
+            .and_then(Json::as_strings)
+            .map(|names| {
+                names
+                    .into_iter()
+                    .map(|name| name.to_ascii_lowercase())
+                    .collect()
+            });
+
+        EffectiveCompilerOptions {
+            check,
+            target,
+            lib,
+            no_lib: flag("noLib").unwrap_or(false),
+            skip_lib_check: flag("skipLibCheck").unwrap_or(false),
         }
-        if let Some(value) = flag("allowUnreachableCode") {
-            options.allow_unreachable_code = value;
-        }
-        if let Some(value) = flag("useUnknownInCatchVariables") {
-            options.use_unknown_in_catch_variables = value;
-        }
-        options
+    }
+
+    /// The options the per-file checker consumes. A configured project starts from TypeScript's
+    /// defaults, not tsox's stricter no-tsconfig comparison-harness defaults.
+    pub fn check_options(&self) -> CheckOptions {
+        self.effective_compiler_options().check
     }
 
     /// The files the project selects, sorted, as absolute paths.

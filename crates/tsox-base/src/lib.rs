@@ -10,6 +10,7 @@
 // that line now, where before only review did.
 
 pub mod check_options;
+pub mod compiler_options;
 pub mod diagnostic_codes;
 pub mod diagnostic_view;
 pub mod diagnostics;

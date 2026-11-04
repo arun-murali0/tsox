@@ -1214,7 +1214,7 @@ pub fn check_unit_isolated(
 pub fn unit_environment(graph: &ModuleGraph) -> String {
     format!(
         "{:?}|{}|{:?}|{}",
-        graph.check_options(),
+        graph.compiler_options(),
         bare_specifiers_are_reportable(graph, false),
         graph.root(),
         graph.type_entries_loaded(),

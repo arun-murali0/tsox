@@ -11,9 +11,8 @@ use tsox::{
 // Problem: the checker had one fixed behavior, so a tsconfig that turned off
 // `noUncheckedIndexedAccess` or turned on `allowUnreachableCode` or
 // `useUnknownInCatchVariables` changed nothing.
-// Picked: `CheckOptions` carries the three keys the checker reads. The default is the old
-// fixed behavior, so an empty tsconfig (what the comparison harness writes) is unchanged,
-// and only a key the tsconfig sets explicitly overrides it.
+// Picked: direct/single-file checks retain the comparison-harness profile, while an actual
+// tsconfig starts from TypeScript defaults and derives strict sub-options from `strict`.
 // Now: the tests below pin the default, each override, and the path from a tsconfig.
 
 const INDEXED: &str = "const xs: number[] = [1];\nconst n: number = xs[0];\n";
@@ -33,11 +32,31 @@ fn count(source: &str, options: CheckOptions) -> usize {
 }
 
 #[test]
-fn the_default_keeps_the_fixed_behavior() {
+fn the_direct_check_default_keeps_the_comparison_harness_profile() {
     let defaults = CheckOptions::default();
     assert_eq!(count(INDEXED, defaults), 1, "xs[0] is number | undefined");
     assert_eq!(count(UNREACHABLE, defaults), 1, "dead code is reported");
-    assert_eq!(count(CATCH, defaults), 0, "a catch variable is any");
+    assert_eq!(
+        count(CATCH, defaults),
+        0,
+        "the compatibility profile keeps catch as any"
+    );
+}
+
+#[test]
+fn explicit_typescript_defaults_do_not_enable_harness_extras() {
+    let defaults = CheckOptions::typescript_defaults();
+    assert_eq!(
+        count(INDEXED, defaults),
+        0,
+        "noUncheckedIndexedAccess defaults to false"
+    );
+    assert_eq!(
+        count(UNREACHABLE, defaults),
+        0,
+        "omitted allowUnreachableCode suppresses diagnostics"
+    );
+    assert_eq!(count(CATCH, defaults), 0, "strict defaults to false");
 }
 
 #[test]
@@ -109,17 +128,92 @@ impl Project {
 }
 
 #[test]
-fn an_empty_tsconfig_checks_as_before() {
-    assert_eq!(Project::new("empty", "{}", INDEXED).errors(), 1);
-    assert_eq!(Project::new("empty-dead", "{}", UNREACHABLE).errors(), 1);
+fn an_empty_tsconfig_uses_typescript_compiler_defaults() {
+    assert_eq!(Project::new("empty", "{}", INDEXED).errors(), 0);
+    assert_eq!(Project::new("empty-dead", "{}", UNREACHABLE).errors(), 0);
+    assert_eq!(Project::new("empty-catch", "{}", CATCH).errors(), 0);
+}
+
+#[test]
+fn strict_derives_its_sub_options_and_explicit_values_win() {
+    let strict = r#"{"compilerOptions":{"strict":true}}"#;
+    assert_eq!(Project::new("strict-catch", strict, CATCH).errors(), 1);
+
+    let overridden = r#"{"compilerOptions":{"strict":true,"useUnknownInCatchVariables":false}}"#;
+    assert_eq!(
+        Project::new("strict-catch-override", overridden, CATCH).errors(),
+        0
+    );
+}
+
+#[test]
+fn strict_derives_the_individual_strict_flags_but_explicit_values_win() {
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("effective-strict-options");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let config_path = root.join("tsconfig.json");
+    fs::write(
+        &config_path,
+        r#"{"compilerOptions":{"strict":true,"strictNullChecks":false,"noImplicitAny":false,"exactOptionalPropertyTypes":true}}"#,
+    )
+    .unwrap();
+
+    let config = ProjectConfig::load(config_path).unwrap();
+    let options = config.effective_compiler_options().check;
+    assert!(options.strict);
+    assert!(
+        !options.strict_null_checks,
+        "explicit false overrides strict"
+    );
+    assert!(!options.no_implicit_any, "explicit false overrides strict");
+    assert!(options.no_implicit_this);
+    assert!(options.strict_function_types);
+    assert!(options.strict_bind_call_apply);
+    assert!(options.strict_property_initialization);
+    assert!(options.always_strict);
+    assert!(options.strict_builtin_iterator_return);
+    assert!(options.use_unknown_in_catch_variables);
+    assert!(options.exact_optional_property_types);
+    assert!(!options.no_unchecked_indexed_access);
+    assert!(options.allow_unreachable_code);
+}
+
+#[test]
+fn target_libraries_and_library_check_flags_are_preserved_in_effective_options() {
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("effective-options-shape");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let config_path = root.join("tsconfig.json");
+    fs::write(
+        &config_path,
+        r#"{"compilerOptions":{"target":"ES2022","lib":["ES2022","DOM"],"noLib":true,"skipLibCheck":true}}"#,
+    )
+    .unwrap();
+
+    let config = ProjectConfig::load(config_path).unwrap();
+    let options = config.effective_compiler_options();
+    assert_eq!(options.target, tsox::ScriptTarget::Es2022);
+    assert_eq!(
+        options.lib,
+        Some(vec!["es2022".to_owned(), "dom".to_owned()])
+    );
+    assert!(options.no_lib);
+    assert!(options.skip_lib_check);
 }
 
 #[test]
 fn a_tsconfig_key_reaches_the_checker() {
     let off = r#"{"compilerOptions":{"noUncheckedIndexedAccess":false}}"#;
     assert_eq!(Project::new("indexed-off", off, INDEXED).errors(), 0);
+    let on = r#"{"compilerOptions":{"noUncheckedIndexedAccess":true}}"#;
+    assert_eq!(Project::new("indexed-on", on, INDEXED).errors(), 1);
     let allow = r#"{"compilerOptions":{"allowUnreachableCode":true}}"#;
     assert_eq!(Project::new("dead-allowed", allow, UNREACHABLE).errors(), 0);
+    let disallow = r#"{"compilerOptions":{"allowUnreachableCode":false}}"#;
+    assert_eq!(
+        Project::new("dead-reported", disallow, UNREACHABLE).errors(),
+        1
+    );
     let unknown = r#"{"compilerOptions":{"useUnknownInCatchVariables":true}}"#;
     assert_eq!(Project::new("catch-unknown", unknown, CATCH).errors(), 1);
 }
@@ -129,8 +223,8 @@ fn an_extended_config_key_applies() {
     let project = Project::new("extends", r#"{"extends":"./base.json"}"#, INDEXED);
     fs::write(
         project.root.join("base.json"),
-        r#"{"compilerOptions":{"noUncheckedIndexedAccess":false}}"#,
+        r#"{"compilerOptions":{"noUncheckedIndexedAccess":true}}"#,
     )
     .unwrap();
-    assert_eq!(project.errors(), 0);
+    assert_eq!(project.errors(), 1);
 }

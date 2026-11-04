@@ -374,15 +374,15 @@ fn a_config_change_rebuilds_and_applies_the_option() {
     let before = assert_same_as_cold(&mut project, &dir);
     assert_eq!(
         before.diagnostic_count(),
-        1,
-        "noUncheckedIndexedAccess is on by default"
+        0,
+        "noUncheckedIndexedAccess is off unless the tsconfig turns it on"
     );
     dir.write(
         "tsconfig.json",
-        r#"{ "compilerOptions": { "strict": true, "noUncheckedIndexedAccess": false, "module": "esnext", "moduleResolution": "bundler" }, "include": ["*.ts"] }"#,
+        r#"{ "compilerOptions": { "strict": true, "noUncheckedIndexedAccess": true, "module": "esnext", "moduleResolution": "bundler" }, "include": ["*.ts"] }"#,
     );
     let after = assert_same_as_cold(&mut project, &dir);
-    assert_eq!(after.diagnostic_count(), 0);
+    assert_eq!(after.diagnostic_count(), 1);
     assert_eq!(project.epoch(), 1);
 }
 

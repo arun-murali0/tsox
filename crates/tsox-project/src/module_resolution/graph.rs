@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::project::ProjectFiles;
 use crate::types::FileId;
+use tsox_base::compiler_options::EffectiveCompilerOptions;
 
 use super::config::ProjectConfig;
 use super::discovery::{ModuleRequest, ModuleRequestKind, scan_module_requests};
@@ -85,8 +86,9 @@ struct ConfigInput {
     // `typeRoots` is set; it holds back a missing-package report unless the type entries are
     // loaded (`with_type_entries_loaded`).
     type_roots_set: bool,
-    // The compiler options the checker reads, taken from the configuration when attached.
-    options: crate::CheckOptions,
+    // The effective compiler environment. All fields are part of the project's semantic
+    // identity, including options not yet consumed by the checker (for example `lib`).
+    options: EffectiveCompilerOptions,
 }
 
 impl ModuleGraph {
@@ -384,17 +386,23 @@ impl ModuleGraph {
             files,
             hides_bare_specifiers,
             type_roots_set: has("typeRoots"),
-            options: config.check_options(),
+            options: config.effective_compiler_options(),
         });
         self
     }
 
-    /// The compiler options the checker reads, as the attached configuration sets them; the
-    /// defaults when none was attached.
+    /// The effective compiler environment for this graph. A graph without an attached
+    /// tsconfig keeps the historical comparison-harness defaults for compatibility.
+    pub fn compiler_options(&self) -> EffectiveCompilerOptions {
+        self.config.as_ref().map_or_else(
+            EffectiveCompilerOptions::comparison_harness_defaults,
+            |config| config.options.clone(),
+        )
+    }
+
+    /// The compiler options consumed by the current checker passes.
     pub fn check_options(&self) -> crate::CheckOptions {
-        self.config
-            .as_ref()
-            .map_or_else(crate::CheckOptions::default, |config| config.options)
+        self.compiler_options().check
     }
 
     /// Whether any config file recorded by `with_config` has changed or gone since. False
