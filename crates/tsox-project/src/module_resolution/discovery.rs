@@ -19,6 +19,7 @@ pub enum ModuleRequestKind {
     DynamicImport,
     ImportEquals,
     ModuleAugmentation,
+    LibraryReference,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,8 +55,9 @@ pub struct ModuleScan {
 // comments may precede or sit between them; the first statement ends the block, as in
 // TypeScript) becomes a type-only side-effect edge. A `path` is a file relative to this one; a
 // `types` names a package, resolved like any bare specifier, which falls back to `@types`.
-// Cost: a directive that names nothing is an unresolved edge; the checker reports it (TS2688 for
-// `types`, TS6053 for `path`, see bridge::imports).
+// A `lib` reference is resolved against the bundled TypeScript declarations rather than the
+// package resolver; `noLib` removes those edges entirely. A directive that names no file remains
+// an unresolved edge; the checker reports `types` and `path` failures (see bridge::imports).
 fn reference_directives(source: &str) -> Vec<ModuleRequest> {
     crate::reference_directives::scan(source)
         .into_iter()
@@ -63,7 +65,15 @@ fn reference_directives(source: &str) -> Vec<ModuleRequest> {
             specifier: directive.specifier,
             is_type: true,
             is_import: true,
-            kind: ModuleRequestKind::SideEffectImport,
+            kind: match directive.kind {
+                tsox_base::reference_directives::DirectiveKind::Lib => {
+                    ModuleRequestKind::LibraryReference
+                }
+                tsox_base::reference_directives::DirectiveKind::Path
+                | tsox_base::reference_directives::DirectiveKind::Types => {
+                    ModuleRequestKind::SideEffectImport
+                }
+            },
             start: u32::try_from(directive.start).unwrap_or(u32::MAX),
         })
         .collect()
@@ -316,10 +326,18 @@ mod tests {
     }
 
     #[test]
-    fn lib_and_no_default_lib_directives_name_nothing_to_read() {
+    fn lib_directives_become_library_reference_edges() {
         let source = "/// <reference lib=\"es2020\" />\n/// <reference no-default-lib=\"true\" />\n\
                       /// <amd-module name=\"x\" />\nexport {};\n";
-        assert_eq!(directive_specifiers(source), Vec::<String>::new());
+        let scan = scan_module_requests(source, "a.d.ts");
+        assert_eq!(
+            scan.requests
+                .iter()
+                .filter(|request| request.kind == super::ModuleRequestKind::LibraryReference)
+                .map(|request| request.specifier.as_str())
+                .collect::<Vec<_>>(),
+            ["es2020"]
+        );
     }
 
     #[test]

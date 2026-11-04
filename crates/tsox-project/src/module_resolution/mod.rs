@@ -16,6 +16,9 @@ mod resolver;
 mod schedule;
 
 pub use tsox_base::compiler_options::{EffectiveCompilerOptions, ScriptTarget};
+pub use tsox_base::standard_lib::{
+    StandardLibraryError, StandardLibraryFile, StandardLibrarySet, TYPESCRIPT_LIB_VERSION,
+};
 
 pub use check::{
     FileOutcome, FileReport, ProjectReport, check_project, check_project_bounded,

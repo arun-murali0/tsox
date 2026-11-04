@@ -25,31 +25,46 @@ pub fn resolve_identifier_type(
         if ident.name == "undefined" {
             return ctx.arena.undefined();
         }
+        // Oxc leaves a value read of an `import type` name without a symbol. The name is
+        // declared and has a value side, but the import erased it: TS1361, not 2304/2693.
+        if ctx.type_only_value_names.contains(ident.name.as_str()) {
+            ctx.error(
+                crate::diagnostic_messages::messages::import_type_only_value(&ident.name),
+                ident.span(),
+            );
+            return ctx.arena.error();
+        }
         if let Some(&global_type) = ctx.global_values.get(ident.name.as_str()) {
             return global_type;
         }
-        // Problem: a name the language provides without any declaration in the file
-        // (`Error`, `console`, `Math`) is unresolved to oxc's scope analysis, so a
-        // body that throws `new Error(...)` or logs reported "Cannot find name".
-        // That was hidden while try/throw bodies were skipped and showed as soon as
-        // they were checked.
-        // Picked: these ambient globals read as `any`. This checker has no lib
-        // declarations yet, so any is the honest answer: nothing is checked about
-        // them, and nothing false is reported.
-        // Cost: `Math.foo()` and `new Error(1, 2, 3)` are not caught.
-        if is_ambient_global(&ident.name) {
+        // Standalone checks have no project library providers, so retain the historical
+        // ambient-global fallback below for compatibility. Configured projects instead
+        // obtain these names from the selected standard-library declarations.
+        // Keep the legacy `any` fallback for standalone checks, which have no project
+        // library provider. In a configured project, selected .d.ts declarations are the
+        // source of truth: an unselected global such as `document` under `lib: ["ES5"]`
+        // must stay unresolved instead of silently becoming `any`.
+        let use_legacy_ambient_fallback = ctx
+            .imports
+            .is_none_or(|source| !source.requires_registered_global_values());
+        if use_legacy_ambient_fallback && is_ambient_global(&ident.name) {
             return ctx.arena.any();
         }
         // A project global whose declaration could not be carried over: it exists, but its
         // type is not known.
-        if ctx.namespace.is_unmodelled_global(&ident.name) {
+        if ctx.namespace.is_unmodelled_global(&ident.name)
+            && !ctx.namespace.is_unmodelled_type_only(&ident.name)
+        {
             return ctx.arena.any();
         }
         // Problem: `Iterator` or a user's own `interface I {}` used as a value read as "Cannot
         // find name", where tsc says the name only refers to a type (TS2693).
         // Picked: a name this checker knows as a type, or one of the library types that have
         // no value, gets TS2693.
-        let message = if ctx.namespace.contains(&ident.name) || is_library_type_only(&ident.name) {
+        let message = if ctx.namespace.contains(&ident.name)
+            || ctx.namespace.is_unmodelled_type_only(&ident.name)
+            || is_library_type_only(&ident.name)
+        {
             crate::diagnostic_messages::messages::type_used_as_value(&ident.name)
         } else {
             crate::diagnostic_messages::messages::unresolved_identifier(&ident.name)
@@ -57,6 +72,27 @@ pub fn resolve_identifier_type(
         ctx.error(message, ident.span());
         return ctx.arena.error();
     };
+
+    // Declarations occupy separate type and value spaces. An interface/alias has
+    // no value-space side (TS2693); a class/enum/function/variable imported with
+    // `import type` has a value side in its module but no local runtime binding
+    // (TS1361). Resolve that distinction by SymbolId, not by spelling.
+    if let Some(spaces) = ctx.symbol_capabilities.get(&symbol_id).copied() {
+        if spaces.has_value && !spaces.value_available {
+            ctx.error(
+                crate::diagnostic_messages::messages::import_type_only_value(&ident.name),
+                ident.span(),
+            );
+            return ctx.arena.error();
+        }
+        if spaces.has_type && !spaces.has_value {
+            ctx.error(
+                crate::diagnostic_messages::messages::type_used_as_value(&ident.name),
+                ident.span(),
+            );
+            return ctx.arena.error();
+        }
+    }
 
     if let Some(narrowed) = ctx.narrow.get(symbol_id) {
         return narrowed;
@@ -107,8 +143,10 @@ fn is_library_type_only(name: &str) -> bool {
     )
 }
 
-// Stopgap until lib declarations are loaded (E6 in BUILD.md): the names tsc's default lib
-// provides as values (ECMAScript built-ins and the common DOM globals). Each reads as `any`.
+// Legacy fallback for standalone checks, which have no project library providers. A
+// configured project must resolve these names from the selected `.d.ts` declarations or
+// report them as unresolved; otherwise an unselected DOM/runtime global would silently be
+// accepted as `any`.
 fn is_ambient_global(name: &str) -> bool {
     matches!(
         name,

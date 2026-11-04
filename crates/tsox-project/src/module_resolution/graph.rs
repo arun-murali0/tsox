@@ -184,6 +184,11 @@ impl ModuleGraph {
                 failed = scan.parse_failed;
                 declares_ambient = scan.declares_ambient_modules;
                 for request in scan.requests {
+                    // TypeScript's `noLib` disables the `lib` compiler option and explicit
+                    // triple-slash library references alike.
+                    if request.kind == ModuleRequestKind::LibraryReference && resolver.no_lib() {
+                        continue;
+                    }
                     let target = resolve_request(resolver, &path, &request)
                         .map(|resolved| files.intern(resolved));
                     file_edges.push(ModuleEdge {
@@ -453,6 +458,13 @@ impl ModuleGraph {
         self.type_entries_loaded
     }
 
+    /// Whether this graph has an effective project configuration attached. This differs
+    /// from `tsconfig_applied`: a caller can attach a config after building the graph with a
+    /// resolver that did not itself read it.
+    pub fn has_config(&self) -> bool {
+        self.config.is_some()
+    }
+
     /// Whether the resolver that built this graph applied a `tsconfig.json`.
     pub fn tsconfig_applied(&self) -> bool {
         self.tsconfig_applied
@@ -571,20 +583,22 @@ impl ModuleGraph {
             .is_some_and(|path| is_typescript(path) && !in_node_modules(path))
     }
 
-    /// A declaration file inside `node_modules`: checked so that what it exports can be
-    /// imported, but never reported on, since checking someone else's package is not this
-    /// project's job.
+    /// A declaration file supplied by a dependency or by the bundled TypeScript standard
+    /// library: checked so that its declarations can be imported, but never reported as one
+    /// of this project's own source files.
     pub fn is_dependency_declaration(&self, id: FileId) -> bool {
         self.files.path(id).is_some_and(|path| {
-            in_node_modules(path)
-                && path
-                    .file_name()
+            let is_declaration =
+                path.file_name()
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| {
                         name.ends_with(".d.ts")
                             || name.ends_with(".d.mts")
                             || name.ends_with(".d.cts")
-                    })
+                    });
+            is_declaration
+                && (in_node_modules(path)
+                    || path.starts_with(tsox_base::standard_lib::library_directory()))
         })
     }
 
@@ -659,6 +673,9 @@ fn resolve_request(
     from: &Path,
     request: &ModuleRequest,
 ) -> Option<PathBuf> {
+    if request.kind == ModuleRequestKind::LibraryReference {
+        return tsox_base::standard_lib::resolve_library_reference(&request.specifier).ok();
+    }
     let mode = resolve_mode(resolver, from, request.kind);
     if request.is_type {
         return resolver

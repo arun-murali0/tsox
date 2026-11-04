@@ -27,3 +27,4 @@ pub mod scratchpad;
 pub mod source_depth;
 pub mod stable_hash;
 pub mod stack_guard;
+pub mod standard_lib;

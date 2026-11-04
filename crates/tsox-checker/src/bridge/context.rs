@@ -36,6 +36,18 @@ pub struct TypePredicate {
     pub asserts: bool,
 }
 
+/// The symbol-space capabilities of one lexical binding. `has_type` and
+/// `has_value` describe what the declaration contributes; `value_available`
+/// distinguishes a real runtime binding from a value side erased by `import type`.
+/// This distinguishes a type-only interface/alias (TS2693) from a class imported
+/// with `import type` (both sides exist, but the value side was erased, TS1361).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SymbolCapabilities {
+    pub has_type: bool,
+    pub has_value: bool,
+    pub value_available: bool,
+}
+
 pub struct CheckContext<'ast, 'src> {
     pub arena: TypeArena,
     pub namespace: TypeNamespace<'ast>,
@@ -202,6 +214,16 @@ pub struct CheckContext<'ast, 'src> {
     /// These are consulted only when Oxc has no lexical symbol for the identifier, so a
     /// local declaration still shadows a UMD global normally.
     pub global_values: FxHashMap<String, TypeId>,
+
+    /// Separate type/value-space capabilities for lexical symbols, both local and
+    /// imported. Kept by SymbolId rather than spelling so shadowing and aliases stay correct.
+    pub symbol_capabilities: FxHashMap<SymbolId, SymbolCapabilities>,
+
+    /// Local names imported with `import type` whose declaration has a value side (a class,
+    /// enum, function, variable, or a whole `import type * as ns`). Oxc does not bind a
+    /// value-position reference to a type-only import, so such a reference arrives without a
+    /// symbol; this is how it is told apart from a name that is simply undeclared (TS1361).
+    pub type_only_value_names: std::collections::HashSet<String>,
 }
 
 const CANCEL_CHECK_INTERVAL: u32 = 32;
@@ -435,6 +457,8 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             imported_function_symbols: FxHashMap::default(),
             ambient_depth: 0,
             global_values: FxHashMap::default(),
+            symbol_capabilities: FxHashMap::default(),
+            type_only_value_names: std::collections::HashSet::new(),
         }
     }
 

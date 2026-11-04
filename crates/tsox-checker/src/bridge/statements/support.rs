@@ -161,42 +161,50 @@ fn tuple_element_type<'b, 'a>(element: &'b TSTupleElement<'a>) -> Option<&'b TST
 // missing only if oxc's own scope analysis resolved it to no declaration at all
 // (which also correctly covers imports, exported declarations and type
 // parameters that have gone out of scope), it is not in this checker's own
-// namespace, and it is not a lib.d.ts global. Anything else that fails to
-// resolve is an unsupported construct, and stays a warning.
+// namespace, and (outside configured projects) it is not a lib.d.ts global.
+// Anything else that fails to resolve is an unsupported construct, and stays a warning.
 pub(super) fn find_unresolved_type_name(
     ty: &TSType,
     scoping: &Scoping,
     namespace: &TypeNamespace,
+    allow_legacy_library_fallback: bool,
 ) -> Option<(String, Span)> {
     match ty {
         TSType::TSTypeReference(reference) => {
             let TSTypeName::IdentifierReference(id) = &reference.type_name else {
                 return None;
             };
-            let is_missing = is_unresolved_type_name(id, scoping, namespace);
+            let is_missing =
+                is_unresolved_type_name(id, scoping, namespace, allow_legacy_library_fallback);
             is_missing.then(|| (id.name.to_string(), id.span))
         }
-        TSType::TSArrayType(array) => {
-            find_unresolved_type_name(&array.element_type, scoping, namespace)
-        }
+        TSType::TSArrayType(array) => find_unresolved_type_name(
+            &array.element_type,
+            scoping,
+            namespace,
+            allow_legacy_library_fallback,
+        ),
         TSType::TSTupleType(tuple) => tuple.element_types.iter().find_map(|element| {
             let ty = tuple_element_type(element)?;
-            find_unresolved_type_name(ty, scoping, namespace)
+            find_unresolved_type_name(ty, scoping, namespace, allow_legacy_library_fallback)
         }),
-        TSType::TSUnionType(union) => union
-            .types
-            .iter()
-            .find_map(|member| find_unresolved_type_name(member, scoping, namespace)),
-        TSType::TSIntersectionType(intersection) => intersection
-            .types
-            .iter()
-            .find_map(|member| find_unresolved_type_name(member, scoping, namespace)),
+        TSType::TSUnionType(union) => union.types.iter().find_map(|member| {
+            find_unresolved_type_name(member, scoping, namespace, allow_legacy_library_fallback)
+        }),
+        TSType::TSIntersectionType(intersection) => intersection.types.iter().find_map(|member| {
+            find_unresolved_type_name(member, scoping, namespace, allow_legacy_library_fallback)
+        }),
         TSType::TSTypeLiteral(literal) => literal.members.iter().find_map(|member| {
             let TSSignature::TSPropertySignature(property) = member else {
                 return None;
             };
             let annotation = property.type_annotation.as_ref()?;
-            find_unresolved_type_name(&annotation.type_annotation, scoping, namespace)
+            find_unresolved_type_name(
+                &annotation.type_annotation,
+                scoping,
+                namespace,
+                allow_legacy_library_fallback,
+            )
         }),
         TSType::TSFunctionType(func) => func
             .params
@@ -204,10 +212,20 @@ pub(super) fn find_unresolved_type_name(
             .iter()
             .find_map(|param| {
                 let annotation = param.type_annotation.as_ref()?;
-                find_unresolved_type_name(&annotation.type_annotation, scoping, namespace)
+                find_unresolved_type_name(
+                    &annotation.type_annotation,
+                    scoping,
+                    namespace,
+                    allow_legacy_library_fallback,
+                )
             })
             .or_else(|| {
-                find_unresolved_type_name(&func.return_type.type_annotation, scoping, namespace)
+                find_unresolved_type_name(
+                    &func.return_type.type_annotation,
+                    scoping,
+                    namespace,
+                    allow_legacy_library_fallback,
+                )
             }),
         _ => None,
     }

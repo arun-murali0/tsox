@@ -668,6 +668,23 @@ pub trait ImportSource: DeclProvider {
         Vec::new()
     }
 
+    /// Whether the importing project has an attached tsconfig whose standard-library
+    /// selection is authoritative. When false, callers may retain the checker's historical
+    /// built-in-name fallback for standalone and comparison-harness checks. When true,
+    /// names such as `Array` and `Promise` must be backed by declarations actually selected
+    /// into this project's graph (including an explicit empty `lib` list or `noLib`).
+    fn requires_registered_global_types(&self) -> bool {
+        false
+    }
+
+    /// Whether configured project library declarations are authoritative for global values.
+    /// When true, the checker must not silently treat a runtime global as `any` merely
+    /// because its spelling appears in the legacy ambient-global fallback list. The value
+    /// must be provided by a declaration in the selected project library set.
+    fn requires_registered_global_values(&self) -> bool {
+        false
+    }
+
     /// Whether the project declares `name` globally but its declaration could not be carried
     /// over (see `IncompleteReason::UnrepresentableDeclaration`). The name exists, so a use of
     /// it is not a missing name, but nothing is known about its type.
@@ -680,6 +697,19 @@ pub trait ImportSource: DeclProvider {
     }
 
     fn global_name_unmodelled(&self, _name: &str) -> bool {
+        false
+    }
+
+    /// The type parameters (name, has a default) of a generic global whose declaration could
+    /// not be carried over, so a reference to it can still be checked for its number of type
+    /// arguments.
+    fn global_generic_params(&self, _name: &str) -> Option<Vec<(String, bool)>> {
+        None
+    }
+
+    /// Whether every declaration of `name` that could not be carried over is a type (an
+    /// interface or an alias), so the name has no runtime value.
+    fn global_type_only_unmodelled(&self, _name: &str) -> bool {
         false
     }
 }

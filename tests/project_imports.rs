@@ -1393,14 +1393,14 @@ fn a_namespace_import_is_an_object_of_the_modules_value_exports() {
 
 #[test]
 fn a_namespace_import_of_a_partial_module_stays_unbound() {
-    // `namespace N` is not readable yet, so a.ts's list may be missing exports and `ns`
-    // must not claim a property does not exist.
+    // `namespace N` has a member the checker cannot type yet (an unannotated call), so a.ts's
+    // list may be missing exports and `ns` must not claim a property does not exist.
     let project = run(
         "star-as-partial",
         &[
             (
                 "a.ts",
-                "export const k = 1;\nexport namespace N { export const x = 1; }",
+                "export const k = 1;\nexport namespace N { export const x = Math.max(1, 2); }",
             ),
             ("b.ts", "import * as ns from './a';\nns.anything;"),
         ],
@@ -1410,6 +1410,28 @@ fn a_namespace_import_of_a_partial_module_stays_unbound() {
         "{:?}",
         project.errors("b.ts")
     );
+}
+
+#[test]
+fn a_namespace_import_of_a_module_with_a_readable_namespace_knows_its_exports() {
+    // A namespace whose members are all typed is part of the module's value object, so the
+    // list is complete and an unknown property is TS2339, as in tsc.
+    let project = run(
+        "star-as-readable-namespace",
+        &[
+            (
+                "a.ts",
+                "export const k = 1;\nexport namespace N { export const x = 1; }",
+            ),
+            ("b.ts", "import * as ns from './a';\nns.anything;"),
+        ],
+    );
+    let codes: Vec<_> = project
+        .errors("b.ts")
+        .iter()
+        .map(|d| d.code.tsc_code())
+        .collect();
+    assert_eq!(codes, vec![Some(2339)], "{:?}", project.errors("b.ts"));
 }
 
 #[test]
@@ -1742,7 +1764,7 @@ fn a_namespace_import_of_a_partial_module_still_names_its_types() {
         &[
             (
                 "a.ts",
-                "export interface User { name: string }\nexport namespace N { export const x = 1; }",
+                "export interface User { name: string }\nexport namespace N { export const x = Math.max(1, 2); }",
             ),
             (
                 "b.ts",

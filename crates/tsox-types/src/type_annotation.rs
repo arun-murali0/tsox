@@ -378,6 +378,23 @@ pub fn resolve_ts_type(
                 namespace.insert_type_alias(id.name, alias.body, alias.type_parameters, alias.span);
             }
             if !namespace.contains(id.name) {
+                // A standard-library generic whose body could not be carried over has no
+                // type to read, but its parameter list is known: `Array` or `Map<string>`
+                // is still the wrong number of type arguments.
+                if let Some((required, total)) = namespace.unmodelled_generic_arity(id.name) {
+                    let given = reference
+                        .type_arguments
+                        .as_deref()
+                        .map_or(0, |arguments| arguments.params.len());
+                    if given < required || given > total {
+                        namespace.note_type_argument_issue(
+                            id.name,
+                            required,
+                            total,
+                            reference.span,
+                        );
+                    }
+                }
                 if let Some(builtin) = resolve_builtin_generic(id.name, reference, namespace, arena)
                 {
                     return Some(builtin);

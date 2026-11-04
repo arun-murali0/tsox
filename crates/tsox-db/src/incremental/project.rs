@@ -1039,13 +1039,16 @@ impl IncrementalProject {
         let (resolver, root) = match config {
             Some(config) => (
                 ModuleResolver::with_tsconfig(config.config_file())
-                    .with_node_next(config.uses_node_next()),
+                    .with_node_next(config.uses_node_next())
+                    .with_no_lib(config.effective_compiler_options().no_lib),
                 Some(config.root().to_path_buf()),
             ),
             None => (ModuleResolver::new(), None),
         };
         let mut entries: Vec<PathBuf> = match config {
-            Some(config) => config.project_entries(&resolver),
+            Some(config) => config
+                .project_entries_with_standard_libraries(&resolver)
+                .map_err(|error| error.to_string())?,
             None => fixed.to_vec(),
         };
         entries = entries
@@ -1199,7 +1202,8 @@ impl IncrementalProject {
             return false;
         };
         let resolver = ModuleResolver::with_tsconfig(config.config_file())
-            .with_node_next(config.uses_node_next());
+            .with_node_next(config.uses_node_next())
+            .with_no_lib(config.effective_compiler_options().no_lib);
         let mut now: Vec<PathBuf> = config
             .project_entries(&resolver)
             .into_iter()

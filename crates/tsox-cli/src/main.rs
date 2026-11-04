@@ -305,40 +305,30 @@ fn check_with_modules(
 ) -> Result<Tally, String> {
     use tsox::{ModuleGraph, ModuleResolver, check_project};
 
-    // The graph wants absolute entry paths so a file reached by an import and the same
-    // file named as an entry are one node.
-    let mut entries = Vec::with_capacity(files.len());
-    for file in files {
-        let absolute = fs::canonicalize(file)
-            .map_err(|error| format!("could not resolve {}: {error}", file.display()))?;
-        entries.push(absolute);
-    }
-
-    // The project's tsconfig.json decides `paths`, `baseUrl` and `extends` for resolution,
-    // and is attached to the graph with the project root, so a missing package is reported
-    // when nothing in the configuration could answer it. Without a readable config the
-    // resolver reads none and there is no root, so a missing package is never reported.
+    // The project's tsconfig.json decides its selected source files, standard-library set,
+    // `types`/`typeRoots` declarations, and module resolution. The graph wants absolute paths
+    // so a file reached by an import and the same file named as an entry are one node.
     let (resolver, root) = match config {
         Some(config) => (
             ModuleResolver::with_tsconfig(config.config_file())
-                .with_node_next(config.uses_node_next()),
+                .with_node_next(config.uses_node_next())
+                .with_no_lib(config.effective_compiler_options().no_lib),
             Some(config.root().to_path_buf()),
         ),
         None => (ModuleResolver::new(), None),
     };
-    // The declaration files `types` and `typeRoots` bring in are entries too: nothing imports
-    // them, yet their global declarations and ambient modules are part of the program.
-    let mut loaded_type_entries = false;
-    if let Some(config) = config {
-        for path in config.type_entry_files(&resolver) {
-            if let Ok(absolute) = fs::canonicalize(&path) {
-                if !entries.contains(&absolute) {
-                    entries.push(absolute);
-                }
-            }
-        }
-        loaded_type_entries = true;
+    let mut entries = if let Some(config) = config {
+        config
+            .project_entries_with_standard_libraries(&resolver)
+            .map_err(|error| error.to_string())?
+    } else {
+        files.to_vec()
+    };
+    for path in &mut entries {
+        *path = fs::canonicalize(&*path)
+            .map_err(|error| format!("could not resolve {}: {error}", path.display()))?;
     }
+    let loaded_type_entries = config.is_some();
     let mut graph = ModuleGraph::build(&entries, &resolver).map_err(|error| error.to_string())?;
     if let (Some(config), Some(root)) = (config, root) {
         graph = graph.with_root(root).with_config(config);

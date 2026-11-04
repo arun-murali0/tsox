@@ -207,6 +207,36 @@ pub enum DeclKind {
     Namespace = 7,
 }
 
+/// The TypeScript symbol spaces contributed by a declaration.
+///
+/// TypeScript has separate type and value namespaces. A declaration may contribute to
+/// either namespace or both: interfaces and aliases are type-only, functions and
+/// variables are value-only, and classes/enums contribute to both. Keeping this mapping
+/// next to `DeclKind` gives every importer and global-registration path one shared rule
+/// instead of reconstructing it with slightly different variant matches.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SymbolSpaces(u8);
+
+impl SymbolSpaces {
+    pub const TYPE: Self = Self(0b01);
+    pub const VALUE: Self = Self(0b10);
+
+    pub const fn contains(self, space: Self) -> bool {
+        self.0 & space.0 == space.0
+    }
+}
+
+impl DeclKind {
+    /// Which namespaces this declaration contributes to in TypeScript.
+    pub const fn symbol_spaces(self) -> SymbolSpaces {
+        match self {
+            Self::Interface | Self::Alias => SymbolSpaces::TYPE,
+            Self::Class | Self::Enum => SymbolSpaces(SymbolSpaces::TYPE.0 | SymbolSpaces::VALUE.0),
+            Self::Function | Self::Var | Self::Namespace => SymbolSpaces::VALUE,
+        }
+    }
+}
+
 impl DeclKey {
     /// `index` is the position in source order among declarations of the same kind
     /// and name in this module (overloads, merged declarations), so each is distinct
@@ -276,4 +306,29 @@ impl CycleKey {
 pub struct TypeParamKey {
     pub owner: DeclKey,
     pub index: u32,
+}
+
+#[cfg(test)]
+mod symbol_space_tests {
+    use super::{DeclKind, SymbolSpaces};
+
+    #[test]
+    fn declaration_kinds_contribute_to_the_correct_symbol_spaces() {
+        let has = |kind: DeclKind, space: SymbolSpaces| kind.symbol_spaces().contains(space);
+
+        assert!(has(DeclKind::Interface, SymbolSpaces::TYPE));
+        assert!(!has(DeclKind::Interface, SymbolSpaces::VALUE));
+        assert!(has(DeclKind::Alias, SymbolSpaces::TYPE));
+        assert!(!has(DeclKind::Alias, SymbolSpaces::VALUE));
+        assert!(has(DeclKind::Class, SymbolSpaces::TYPE));
+        assert!(has(DeclKind::Class, SymbolSpaces::VALUE));
+        assert!(has(DeclKind::Enum, SymbolSpaces::TYPE));
+        assert!(has(DeclKind::Enum, SymbolSpaces::VALUE));
+        assert!(!has(DeclKind::Function, SymbolSpaces::TYPE));
+        assert!(has(DeclKind::Function, SymbolSpaces::VALUE));
+        assert!(!has(DeclKind::Var, SymbolSpaces::TYPE));
+        assert!(has(DeclKind::Var, SymbolSpaces::VALUE));
+        assert!(!has(DeclKind::Namespace, SymbolSpaces::TYPE));
+        assert!(has(DeclKind::Namespace, SymbolSpaces::VALUE));
+    }
 }

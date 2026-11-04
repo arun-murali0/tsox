@@ -94,7 +94,13 @@ fn check_identifier_declarator(
     match (annotation_outcome, inferred_type) {
         (AnnotationOutcome::Unresolvable, _) => {
             let unknown_name = declarator.type_annotation.as_ref().and_then(|annotation| {
-                find_unresolved_type_name(&annotation.type_annotation, scoping, &ctx.namespace)
+                find_unresolved_type_name(
+                    &annotation.type_annotation,
+                    scoping,
+                    &ctx.namespace,
+                    ctx.imports
+                        .is_none_or(|source| !source.requires_registered_global_types()),
+                )
             });
             match unknown_name {
                 // An unknown name is reported by the whole-file pass in
@@ -205,7 +211,13 @@ fn check_destructured_declarator(
     let source_type = match (annotation_outcome, inferred_type) {
         (AnnotationOutcome::Unresolvable, _) => {
             let unknown_name = declarator.type_annotation.as_ref().and_then(|annotation| {
-                find_unresolved_type_name(&annotation.type_annotation, scoping, &ctx.namespace)
+                find_unresolved_type_name(
+                    &annotation.type_annotation,
+                    scoping,
+                    &ctx.namespace,
+                    ctx.imports
+                        .is_none_or(|source| !source.requires_registered_global_types()),
+                )
             });
             match unknown_name {
                 // An unknown name is reported by the whole-file pass in
