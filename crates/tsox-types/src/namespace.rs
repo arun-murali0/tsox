@@ -295,6 +295,18 @@ struct RecursiveAliasReferenceFinder<'n> {
 }
 
 impl<'ast> Visit<'ast> for RecursiveAliasReferenceFinder<'_> {
+    // A body such as `number[][]...[]` a million levels deep nests as deep as it is long,
+    // and this walk recurses with it. Past the stack budget it stops and records the cut,
+    // which the unit reports once (TSR9102); the answer for the rest of the body is "no
+    // reference found", the same as for a type this walk does not look into.
+    fn visit_ts_type(&mut self, it: &TSType<'ast>) {
+        if crate::stack_guard::exhausted() {
+            crate::stack_guard::note_cut();
+            return;
+        }
+        walk::walk_ts_type(self, it);
+    }
+
     fn visit_ts_type_reference(&mut self, reference: &TSTypeReference<'ast>) {
         if let TSTypeName::IdentifierReference(identifier) = &reference.type_name {
             let short_name = self.name.rsplit('.').next().unwrap_or(self.name);
