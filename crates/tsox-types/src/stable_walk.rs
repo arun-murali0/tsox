@@ -148,6 +148,14 @@ impl<'a, R: KeyResolver> StableHasher<'a, R> {
                     infers: &infers,
                 }));
             }
+            // No stable identity yet: a declaration that exports one is incomplete, which is
+            // the answer a caller already handles, never a wrong one.
+            Type::Keyof(_)
+            | Type::IndexedAccess(..)
+            | Type::Mapped(_)
+            | Type::Template(_)
+            | Type::StringMapping(..)
+            | Type::Variadic(_) => return None,
             Type::Tuple(elements) => {
                 let mut parts = Vec::with_capacity(elements.len());
                 for e in elements {

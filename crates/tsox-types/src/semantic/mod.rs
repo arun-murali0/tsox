@@ -1,4 +1,4 @@
-mod generics;
+pub(crate) mod generics;
 pub mod queries;
 mod solver;
 

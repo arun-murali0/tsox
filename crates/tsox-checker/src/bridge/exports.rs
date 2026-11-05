@@ -1894,6 +1894,46 @@ fn register_nested_signature_keys(
                     }
                 }
                 Type::Named(_, inner) => step(path, TAG_INNER, None, |p| self.visit(*inner, p)),
+                // `keyof T` and `T[K]`: each operand is a step of its own under the member tag.
+                Type::Keyof(operand) | Type::StringMapping(_, operand) => {
+                    step(path, TAG_MEMBER, Some(0), |p| self.visit(*operand, p));
+                }
+                Type::Variadic(elements) => {
+                    for (position, element) in elements.iter().enumerate() {
+                        step(path, TAG_MEMBER, Some(position as u32), |p| {
+                            self.visit(element.type_id, p)
+                        });
+                    }
+                }
+                Type::Template(template) => {
+                    for (position, part) in template.types.iter().enumerate() {
+                        step(path, TAG_MEMBER, Some(position as u32), |p| {
+                            self.visit(*part, p)
+                        });
+                    }
+                }
+                Type::Mapped(mapped) => {
+                    for (position, part) in [
+                        Some(mapped.constraint),
+                        mapped.name_type,
+                        Some(mapped.value),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    {
+                        step(path, TAG_MEMBER, Some(position as u32), |p| {
+                            self.visit(part, p)
+                        });
+                    }
+                }
+                Type::IndexedAccess(object, index) => {
+                    for (position, part) in [*object, *index].into_iter().enumerate() {
+                        step(path, TAG_MEMBER, Some(position as u32), |p| {
+                            self.visit(part, p)
+                        });
+                    }
+                }
                 // A conditional's four parts, each a step of its own under the member tag.
                 Type::Conditional(conditional) => {
                     for (index, part) in [

@@ -249,6 +249,8 @@ pub struct TypeNamespace<'a> {
     // and which names have already had that first declaration reported (a third
     // declaration must not report the first one again).
     declaration_spans: FxHashMap<String, Span>,
+    // Library names this checker answers from its own prelude instead (see prelude.rs).
+    prelude_overrides: Vec<String>,
     // Inside a namespace a declaration is either exported (one symbol across every block
     // of the namespace) or local to its own block. Kept per name: (exported, block).
     declaration_visibility: FxHashMap<String, (bool, u32)>,
@@ -462,6 +464,7 @@ impl<'a> TypeNamespace<'a> {
             declaration_collisions: Vec::new(),
             too_complex: Vec::new(),
             declaration_spans: FxHashMap::default(),
+            prelude_overrides: Vec::new(),
             declaration_visibility: FxHashMap::default(),
             scope_blocks: Vec::new(),
             scope_exported: Vec::new(),
@@ -1153,6 +1156,34 @@ impl<'a> TypeNamespace<'a> {
         self.remember_declaration(name, span);
         self.entries.insert(
             name.to_string(),
+            TypeEntry {
+                kind: DeclKind::TypeAlias(body, type_parameters),
+                resolved: None,
+                resolving: false,
+                scope: self.scope.clone(),
+            },
+        );
+    }
+
+    /// Answers `name` from the prelude's alias even though a loaded library declares it,
+    /// unless this file declares the name itself. For a library alias written in terms
+    /// the checker does not model (`Awaited` asks a `Promise` for its `then`), which would
+    /// otherwise reduce to the wrong type. Done once per name.
+    pub fn override_with_prelude_alias(
+        &mut self,
+        name: &str,
+        body: &'a TSType<'a>,
+        type_parameters: Option<&'a oxc_ast::ast::TSTypeParameterDeclaration<'a>>,
+    ) {
+        if self.declaration_spans.contains_key(name)
+            || self.prelude_overrides.iter().any(|n| n == name)
+        {
+            return;
+        }
+        self.prelude_overrides.push(name.to_string());
+        let qualified = self.qualify(name);
+        self.entries.insert(
+            qualified,
             TypeEntry {
                 kind: DeclKind::TypeAlias(body, type_parameters),
                 resolved: None,

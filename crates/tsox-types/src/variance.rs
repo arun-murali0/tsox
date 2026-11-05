@@ -160,7 +160,13 @@ impl Walk<'_> {
             }
             Type::Function(function) => self.walk_function(function, pol, false),
             // A conditional type reads its parameters in ways this walk does not model.
-            Type::Conditional(_) => self.unreliable = true,
+            Type::Conditional(_)
+            | Type::Mapped(_)
+            | Type::Keyof(_)
+            | Type::IndexedAccess(..)
+            | Type::Template(_)
+            | Type::Variadic(_)
+            | Type::StringMapping(..) => self.unreliable = true,
             _ => {}
         }
     }

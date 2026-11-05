@@ -66,8 +66,26 @@ fn resolve_tuple_type(
     arena: &mut TypeArena,
 ) -> Option<TypeId> {
     let mut elements: Vec<TupleElement> = Vec::with_capacity(tuple.element_types.len());
+    let mut generic: Vec<usize> = Vec::new();
     for written in &tuple.element_types {
-        resolve_tuple_element(written, false, namespace, arena, &mut elements)?;
+        resolve_tuple_element(
+            written,
+            false,
+            namespace,
+            arena,
+            &mut elements,
+            &mut generic,
+        )?;
+    }
+    // A spread of something still generic (`[...A, ...B]`): every rest element is then an
+    // operand, a tuple or array type spliced in once it is known, and reduction decides.
+    if !generic.is_empty() {
+        for (index, element) in elements.iter_mut().enumerate() {
+            if element.rest && !generic.contains(&index) {
+                element.type_id = arena.alloc(Type::Array(element.type_id));
+            }
+        }
+        return Some(crate::semantic::generics::reduce_variadic(arena, elements));
     }
 
     // One rest element, last; nothing required after an optional one.
@@ -92,6 +110,7 @@ fn resolve_tuple_element(
     namespace: &mut TypeNamespace,
     arena: &mut TypeArena,
     out: &mut Vec<TupleElement>,
+    generic: &mut Vec<usize>,
 ) -> Option<()> {
     match written {
         TSTupleElement::TSOptionalType(optional) => {
@@ -103,7 +122,11 @@ fn resolve_tuple_element(
             });
         }
         TSTupleElement::TSRestType(rest) => {
-            let spread = resolve_ts_type(&rest.type_annotation, namespace, arena)?;
+            let annotation = match &rest.type_annotation {
+                TSType::TSNamedTupleMember(member) => member.element_type.as_ts_type()?,
+                other => other,
+            };
+            let spread = resolve_ts_type(annotation, namespace, arena)?;
             match arena.get(spread).clone() {
                 Type::Array(element) => out.push(TupleElement {
                     type_id: element,
@@ -111,6 +134,17 @@ fn resolve_tuple_element(
                     rest: true,
                 }),
                 Type::Tuple(inner) => out.extend(inner),
+                Type::GenericParameter(..)
+                | Type::Variadic(_)
+                | Type::IndexedAccess(..)
+                | Type::Conditional(_) => {
+                    generic.push(out.len());
+                    out.push(TupleElement {
+                        type_id: spread,
+                        optional: false,
+                        rest: true,
+                    });
+                }
                 _ => return None,
             }
         }
@@ -124,6 +158,7 @@ fn resolve_tuple_element(
                     namespace,
                     arena,
                     out,
+                    generic,
                 );
             }
             ty => {
@@ -202,6 +237,55 @@ pub fn resolve_ts_type(
             }
         }
 
+        // `{ [K in C as N]: V }`, with the `?` and `-?` modifiers. K is bound in N and V only.
+        TSType::TSMappedType(mapped) => {
+            use oxc_ast::ast::TSMappedTypeModifierOperator as Modifier;
+            let constraint = resolve_ts_type(&mapped.constraint, namespace, arena)?;
+            // `[K in keyof T]` is homomorphic in T: the result copies T's optionality and,
+            // for a tuple or an array, its shape.
+            let source = match &mapped.constraint {
+                TSType::TSTypeOperatorType(operator)
+                    if operator.operator == TSTypeOperatorOperator::Keyof =>
+                {
+                    resolve_ts_type(&operator.type_annotation, namespace, arena)
+                }
+                _ => None,
+            };
+            let key_name = mapped.key.name.to_string();
+            let key_start = mapped.key.span.start;
+            let key = crate::types::TypeParameterId::with_file(namespace.file_id(), key_start, 0);
+            let scope = namespace.declare_infer_type_params(arena, &[(key_name, key_start)]);
+            let resolved = (|| {
+                let name_type = match &mapped.name_type {
+                    Some(name_type) => Some(resolve_ts_type(name_type, namespace, arena)?),
+                    None => None,
+                };
+                let value = match &mapped.type_annotation {
+                    Some(value) => resolve_ts_type(value, namespace, arena)?,
+                    None => arena.alloc(Type::Any),
+                };
+                Some((name_type, value))
+            })();
+            namespace.pop_type_params(scope);
+            let (name_type, value) = resolved?;
+            let optional = match mapped.optional {
+                None => crate::types::MappedModifier::Keep,
+                Some(Modifier::Minus) => crate::types::MappedModifier::Remove,
+                Some(_) => crate::types::MappedModifier::Add,
+            };
+            Some(crate::semantic::generics::reduce_mapped(
+                arena,
+                crate::types::MappedType {
+                    key,
+                    constraint,
+                    source,
+                    name_type,
+                    value,
+                    optional,
+                },
+            ))
+        }
+
         TSType::TSConditionalType(conditional) => {
             // Infer parameters are declared by the extends pattern and are visible
             // while resolving both that pattern and the true branch. They are binders
@@ -224,6 +308,7 @@ pub fn resolve_ts_type(
                 arena: &mut *arena,
                 declared: &infer_params,
                 done: Vec::new(),
+                in_template: false,
             };
             constrainer.visit_ts_type(&conditional.extends_type);
             let resolved = (|| {
@@ -372,6 +457,28 @@ pub fn resolve_ts_type(
             // Only consulted when the namespace doesn't already claim the name,
             // so an unusual user-defined `interface Array { ... }` is never
             // shadowed by this.
+            let intrinsic = match id.name {
+                "Uppercase" => Some(crate::types::StringCase::Upper),
+                "Lowercase" => Some(crate::types::StringCase::Lower),
+                "Capitalize" => Some(crate::types::StringCase::Capitalize),
+                "Uncapitalize" => Some(crate::types::StringCase::Uncapitalize),
+                _ => None,
+            };
+            if let Some(case) = intrinsic
+                && !namespace.contains(id.name)
+                && let Some(arguments) = reference.type_arguments.as_deref()
+                && arguments.params.len() == 1
+            {
+                let operand = resolve_ts_type(&arguments.params[0], namespace, arena)?;
+                return Some(crate::semantic::generics::reduce_string_mapping(
+                    arena, case, operand,
+                ));
+            }
+            if id.name == "Awaited"
+                && let Some(alias) = crate::prelude::alias(id.name)
+            {
+                namespace.override_with_prelude_alias(id.name, alias.body, alias.type_parameters);
+            }
             if !namespace.contains(id.name)
                 && let Some(alias) = crate::prelude::alias(id.name)
             {
@@ -416,12 +523,42 @@ pub fn resolve_ts_type(
             }
         }
 
+        // `` `on${K}` ``: a union of strings when every placeholder is a literal, a pattern
+        // otherwise.
+        TSType::TSTemplateLiteralType(template) => {
+            let texts: Vec<String> = template
+                .quasis
+                .iter()
+                .map(|quasi| {
+                    quasi
+                        .value
+                        .cooked
+                        .as_ref()
+                        .map_or_else(|| quasi.value.raw.to_string(), |c| c.to_string())
+                })
+                .collect();
+            let mut types = Vec::with_capacity(template.types.len());
+            for part in &template.types {
+                types.push(resolve_ts_type(part, namespace, arena)?);
+            }
+            Some(crate::semantic::generics::reduce_template(
+                arena, texts, types,
+            ))
+        }
+
         // `T[K]` when both sides are concrete: a property name, a union of names,
         // `keyof T`, a number index into an array, or a position in a tuple. Anything
         // still generic, or a key the object does not have, stays unresolved as before.
         TSType::TSIndexedAccessType(access) => {
             let object = resolve_ts_type(&access.object_type, namespace, arena)?;
             let index = resolve_ts_type(&access.index_type, namespace, arena)?;
+            // `T[K]` with a parameter on either side stays a symbolic node until
+            // substitution makes both concrete.
+            if crate::semantic::generics::contains_type_param(arena, object)
+                || crate::semantic::generics::contains_type_param(arena, index)
+            {
+                return Some(arena.alloc(Type::IndexedAccess(object, index)));
+            }
             indexed_access(arena, object, index)
         }
 
@@ -442,6 +579,9 @@ pub fn resolve_ts_type(
             if operator.operator == TSTypeOperatorOperator::Keyof =>
         {
             let operand = resolve_ts_type(&operator.type_annotation, namespace, arena)?;
+            if crate::semantic::generics::contains_type_param(arena, operand) {
+                return Some(arena.alloc(Type::Keyof(operand)));
+            }
             let keys = concrete_keys(arena, operand)?;
             let members: Vec<TypeId> = keys
                 .iter()
@@ -503,6 +643,8 @@ struct InferConstraintResolver<'n, 'a> {
     arena: &'n mut TypeArena,
     declared: &'n [(String, u32)],
     done: Vec<u32>,
+    // Inside the placeholders of a template literal, where an `infer` is a string.
+    in_template: bool,
 }
 
 impl<'ast> Visit<'ast> for InferConstraintResolver<'_, '_> {
@@ -512,12 +654,12 @@ impl<'ast> Visit<'ast> for InferConstraintResolver<'_, '_> {
             && !self.done.contains(&start)
         {
             self.done.push(start);
-            if let Some(constraint) = infer
-                .type_parameter
-                .constraint
-                .as_ref()
-                .and_then(|ty| resolve_ts_type(ty, self.namespace, self.arena))
-            {
+            let constraint = match infer.type_parameter.constraint.as_ref() {
+                Some(ty) => resolve_ts_type(ty, self.namespace, self.arena),
+                None if self.in_template => Some(self.arena.string()),
+                None => None,
+            };
+            if let Some(constraint) = constraint {
                 let id = TypeParameterId::with_file(self.namespace.file_id(), start, index as u32);
                 let name = self.declared[index].0.clone();
                 self.namespace
@@ -529,6 +671,15 @@ impl<'ast> Visit<'ast> for InferConstraintResolver<'_, '_> {
 
     fn visit_ts_conditional_type(&mut self, _conditional: &TSConditionalType<'ast>) {
         // A nested conditional type owns its own infer variables.
+    }
+
+    fn visit_ts_template_literal_type(
+        &mut self,
+        template: &oxc_ast::ast::TSTemplateLiteralType<'ast>,
+    ) {
+        let before = std::mem::replace(&mut self.in_template, true);
+        walk::walk_ts_template_literal_type(self, template);
+        self.in_template = before;
     }
 }
 
@@ -899,7 +1050,7 @@ fn resolve_builtin_generic(
 /// all be named (a type parameter, an index signature, anything not an object shape).
 /// `keyof (A & B)` is the keys of either side, and `keyof (A | B)` is only the keys
 /// every member has.
-fn concrete_keys(arena: &TypeArena, id: TypeId) -> Option<Vec<std::rc::Rc<str>>> {
+pub(crate) fn concrete_keys(arena: &TypeArena, id: TypeId) -> Option<Vec<std::rc::Rc<str>>> {
     match arena.get(id) {
         Type::Object(object) => Some(object.properties.iter().map(|p| p.name.clone()).collect()),
         Type::Intersection(members) => {
@@ -934,7 +1085,11 @@ fn concrete_keys(arena: &TypeArena, id: TypeId) -> Option<Vec<std::rc::Rc<str>>>
 /// `object[index]` for concrete types, or `None` when it cannot be worked out here.
 /// A union of keys, or a union as the object, gives the union of each member's result;
 /// an optional property or tuple element also admits `undefined`.
-fn indexed_access(arena: &mut TypeArena, object: TypeId, index: TypeId) -> Option<TypeId> {
+pub(crate) fn indexed_access(
+    arena: &mut TypeArena,
+    object: TypeId,
+    index: TypeId,
+) -> Option<TypeId> {
     if let Type::Union(members) = arena.get(index).clone() {
         let mut parts = Vec::with_capacity(members.len());
         for member in members {
