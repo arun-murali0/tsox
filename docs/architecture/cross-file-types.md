@@ -18,12 +18,12 @@
 
 ## 2. What was planned
 
-`LLD.md` sets the shape before any of it was built:
+The design set the shape before any of it was built:
 
-- **Identity (section 3).** A module has a key that does not depend on the run, and a declaration has a `DeclKey`. The shape of a declaration is a separate `SigHash`, so editing a body does not change the key of everything that refers to it (decision 1). Hashes are XXH3-128 over an explicit byte stream whose first byte is a format version (decisions 5 and 8).
-- **Moving a type (section 3.4).** A declaration crosses arenas as plain data, and an importer rebuilds it. No arena is shared between files (ADR-1).
-- **The unit (section 4.3).** A unit is one strongly connected component of the module graph, checked by one worker in one arena in three phases: declare, shapes, bodies. Members of a cycle share the arena, so nothing crosses arenas inside a cycle.
-- **Inferred exports (section 4.4).** An unannotated export such as `export const x = f()` is resolved on demand through its slot, and a re-entry of a slot already being resolved is the circularity error tsc reports.
+- **Identity.** A module has a key that does not depend on the run, and a declaration has a `DeclKey`. The shape of a declaration is a separate `SigHash`, so editing a body does not change the key of everything that refers to it. Hashes are XXH3-128 over an explicit byte stream whose first byte is a format version. (See [decisions](../decisions.md).)
+- **Moving a type.** A declaration crosses arenas as plain data, and an importer rebuilds it. No arena is shared between files.
+- **The unit.** A unit is one strongly connected component of the module graph, checked by one worker in one arena in three phases: declare, shapes, bodies. Members of a cycle share the arena, so nothing crosses arenas inside a cycle.
+- **Inferred exports.** An unannotated export such as `export const x = f()` is resolved on demand through its slot, and a re-entry of a slot already being resolved is the circularity error tsc reports.
 
 ## 3. Identity that survives a run
 
@@ -85,24 +85,22 @@ The check is split into declare, bodies and publish, so a unit's imports can be 
 
 ## 8. Cycles: where the code differs from the plan
 
-**Plan.** Section 4.3 of the LLD makes one strongly connected component one unit in one arena, so members of a cycle see each other directly.
+**Plan.** One strongly connected component is one unit in one arena, so members of a cycle see each other directly.
 
-**Built.** A unit is one file, and the members of a cycle are separate units that share a layer. The first pass over a cycle therefore found nothing among its members: an import from a sibling left the name unknown. `cacdbdb` checks the members again, each round reading the snapshot the previous round left, until what they export stops changing, at most four rounds (`CYCLE_ROUNDS`). A file that merely imports a cycle sees what the cycle exports.
+**First built.** A unit was one file, and the members of a cycle were separate units that shared a layer. The first pass over a cycle therefore found nothing among its members: an import from a sibling left the name unknown. `cacdbdb` checked the members again, each round reading the snapshot the previous round left, until what they export stops changing, at most four rounds. A file that merely imports a cycle sees what the cycle exports.
 
-**What the record does not say.** The commit describes the problem it fixes, and not why iterating was preferred to one arena per component. [decisions](../decisions.md) still states the planned rule (decision 4). Whichever is kept, decision 4 and this section should say the same thing.
+**Since then.** The component became the unit of scheduling, settlement, publication and failure isolation, with each member still in an arena of its own, and the round bound grows with the cycle (one round per member plus a spare, never fewer than four). Repeating the check was chosen over a shared arena because a shared arena would change how types are stored, which is the type system's design and not the project driver's. [cycles-and-settlement](cycles-and-settlement.md) tells that story, and [decisions](../decisions.md) records the rule.
 
 **Gained.** Imports among cycle members find what the previous round exported, and the report is the same however the threads are scheduled.
 
-**Cost.** Up to four extra checks of every member of a cycle, and an export set that has not settled after four rounds is left as it stands.
+**Cost.** Extra checks of every member of a cycle. An export set that has not settled when the bound runs out is marked incomplete (`CycleDidNotSettle`) and is not published as final.
 
 ## 9. What is still not done
 
-- **Classes, enums and overloads as exports.** They are left out and set `incomplete`.
-- **`export * as ns`,** default classes, default expressions and anonymous defaults. They also set `incomplete`.
-- **Packages.** An import of a file under `node_modules` binds nothing, and bare specifiers are not diagnosed.
-- **tsconfig `paths` and `baseUrl`,** ambient modules and augmentation (see [module-resolution](module-resolution.md)).
-- **The Salsa layer.** The project check does not use it; nothing re-checks only the changed files and their dependents ([foundation-dependencies](foundation-dependencies.md)).
-- **The LLD's on-demand inferred exports (section 4.4).** The plan resolves an inferred export through its slot when it is asked for. The code reads inferred types after the bodies are checked instead, and the slot-state circularity report the plan describes was not part of that change.
+Classes, enums, overloaded and generic functions, default exports, `export * as ns`, installed packages and path aliases all cross files now; the [language coverage](../language-coverage.md) page measures them against `tsc`. What remains:
+
+- **A declaration the collector cannot represent yet** marks the export list partial, with a named reason. The list of reasons and their counts is in [partial-results](partial-results.md); one, `UnrepresentableDeclaration`, accounts for most of them.
+- **On-demand inferred exports.** The design resolves an inferred export through its slot when it is asked for. The code reads inferred types after the bodies are checked instead, so a circle of inferred return types that crosses a function that is not exported is not reported (see [cycles-and-settlement](cycles-and-settlement.md)).
 - **Benchmarks against a saved baseline** for the keys commit.
 
 ## 10. Invariants to keep

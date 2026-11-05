@@ -4,7 +4,7 @@
 
 ## 1. Why this is its own milestone
 
-An intersection touches four things at once: interning (a node whose identity is a list), unresolved declarations (a `Ref` reads as an empty object until its members are resolved), generics (substituting a type parameter can make an intersection reducible), and the stable hash planned for stage 2. The rules were fixed first, in LLD 1.13 and decisions 10 to 12, and checked against tsc 5.9.3 (the comparison tooling has since moved to 6.0.3; the probe has not been repeated there). This milestone is the code that follows them.
+An intersection touches four things at once: interning (a node whose identity is a list), unresolved declarations (a `Ref` reads as an empty object until its members are resolved), generics (substituting a type parameter can make an intersection reducible), and the stable hash that carries a type across files. The rules were fixed first, in [decisions](../decisions.md) 10 to 12, and checked against tsc 5.9.3 (the comparison tooling has since moved to 6.0.3; the probe has not been repeated there). This milestone is the code that follows them.
 
 There are 25 unit tests in `crates/tsox-types/src/arena.rs` (one per construction rule and for the lazy reduction), 10 in `crates/tsox-types/src/subtyping.rs` (relations), and 17 fixtures in `tests/fixtures/intersection-types/` with `tests/intersection_types.rs`. The later work on calls and edge cases adds `tests/intersection_overloads.rs` with the fixtures in `intersection-calls/` (7) and `intersection-edges/` (5). Each fixture was run through tsc first, and each reports what tsc reports, with the same code and the same message.
 
@@ -21,7 +21,7 @@ intersection_reduces_to_never   reads bodies; asked on demand; cached; never par
 
 ## 3. Identity is the written order
 
-`A & B` and `B & A` are two ids that are assignable both ways. The members are never sorted, because call signatures are tried in member order and callability needs a body. The cost is stated in LLD 1.13 rule 4: reordering the members of a written intersection changes its stable hash, which is an extra recheck and never a stale result.
+`A & B` and `B & A` are two ids that are assignable both ways. The members are never sorted, because call signatures are tried in member order and callability needs a body. The cost: reordering the members of a written intersection changes its stable hash, which is an extra recheck and never a stale result.
 
 Distribution has one subtlety that came from the existing union. `alloc_union` stores its members in the reverse of the order it is given, so distributing a union and rebuilding it would flip its stored order and give a different id for the same type. The results are handed back reversed, so `("a" | "b" | "c") & string` is the id of `"a" | "b" | "c"`. `an_alias_of_an_intersection_is_flattened_like_the_intersection_itself` and `distribution_reduces_each_choice` protect it.
 

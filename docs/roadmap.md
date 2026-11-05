@@ -4,57 +4,51 @@ This roadmap describes the semantic capabilities the project is building toward.
 
 ## Current baseline
 
-**Cross-File Types** is the current semantic frontier: a type written in one file is used in another, imports are diagnosed, and the members of an import cycle settle (see [cross-file-types](architecture/cross-file-types.md)).
+The semantic frontier is **the project engine and breadth of the type system**. A project is checked as a set of files: imports of every declaration kind cross files, cycles settle, `tsconfig.json` selects files and steers resolution, globals and module augmentations are visible without an import, and only what a change reaches is checked again. The pieces are mapped in [project-engine](architecture/project-engine.md). What the checker gets right and wrong today is measured against `tsc` in [language-coverage](language-coverage.md), and on the compiler's own tests in the [conformance baseline](conformance/baseline-part01-05.md).
 
 The completed foundation includes:
 
 - Oxc-backed parsing and semantic information;
-- primitive and function types;
-- structural objects, arrays, unions, aliases, and interfaces;
-- declaration resolution and circular-reference protection;
-- literal widening;
-- control-flow narrowing;
-- classes, inheritance, constructors, methods, and `this`;
-- expression and statement checking;
-- parameters and destructuring;
-- generics on functions, interfaces, aliases and classes, with inference, constraints, defaults and recursive shapes;
-- narrowing that follows control flow, including discriminated unions, loops and joins;
-- intersection types and calls through an intersection of functions;
-- declarations as `Ref` slots with names on their own nodes;
-- stable keys, portable declarations and a project check that passes each layer's exports to the next.
+- primitive and function types, structural objects, arrays, tuples, unions and intersections, aliases and interfaces;
+- declaration resolution and circular-reference protection, with declarations as `Ref` slots and names on their own nodes;
+- literal widening and control-flow narrowing, including discriminated unions, loops, joins, type predicates and assertion functions;
+- classes, inheritance, constructors, methods and `this`;
+- generics on functions, interfaces, aliases and classes, with inference, constraints, defaults, recursive shapes and variance-based relations;
+- `keyof`, indexed access, conditional types with `infer`, overload sets and the `Partial` and `Pick` utility types;
+- `async` and `await`, and loosely typed array and Promise members;
+- stable keys, portable declarations and a project check that settles import cycles and publishes each file's exports to its importers;
+- a ready-queue scheduler, partial export lists with named reasons, resource limits that report instead of guessing, and a query layer for incremental and watch mode.
 
-## Next: closing the cross-file gaps
-The generic core that this section used to describe is done. The next work finishes what crossing files started, without another repository-wide rewrite.
-Targets:
-1. export classes, enums and overloads, which today set `incomplete` and are left out;
-2. `export * as ns`, default classes, default expressions and anonymous defaults;
-3. read packages, so an import from `node_modules` binds something and a bare specifier can be diagnosed;
-4. tsconfig `paths` and `baseUrl`;
-5. re-check only the changed files and their dependents, through the Salsa layer that exists and is not yet used;
-6. decide on purpose between one unit per cycle and the current iteration of its members (decision 4 in [decisions](decisions.md)).
+## Next
+
+The work that is open, in the order the evidence suggests. Each item says where its detail lives.
+
+1. **Fix the false positive on static members.** Reading `A.s` or `A.make()` through the class name is reported as a missing property on valid code. It is the only false positive found in [language-coverage](language-coverage.md), so it comes first.
+2. **Enforce the class and object rules that need no new type machinery:** abstract instantiation, `private` and `#private` access, `implements`, override compatibility, `readonly` writes, use before assignment, iterability in `for ... of`, `satisfies`, and namespace members. Each has a probe that turns to a match when it is done.
+3. **Resolve the types that are still unresolved:** mapped types, template literal types, index signatures and `Record`. Today the checker warns that the annotation is not resolved and says nothing more.
+4. **Give the standard library real shapes.** The TypeScript 6.0.3 lib files are vendored as data; nothing reads them yet. Loading them through the project provider needs generic inference, and replaces the loose `any` that `array.map` and `promise.then` return. See [library-and-ambient-declarations](architecture/library-and-ambient-declarations.md).
+5. **Shrink the partial export lists.** One reason, `UnrepresentableDeclaration`, accounts for most of them, and declaration files without export statements have no semantics yet. See [partial-results](architecture/partial-results.md).
+6. **Close the conformance gaps in order of frequency**, and the hangs the baseline found, then reconcile the baseline's two sets of percentages.
+7. **Read the flow graph for narrowing.** The graph is built for every function body and nothing reads it yet. See [flow](architecture/flow.md).
+8. **Engine measurements and limits:** parallel discovery (needs a multi-core measurement), a cheaper second pass for projects whose scripts use each other's names, budgets for recursive work, and the cubic `else if` chain. See [safety-net-and-limits](architecture/safety-net-and-limits.md) and [scheduler](architecture/scheduler.md).
+
 The cross-file algorithms belong beside the portable declarations. AST traversal belongs in `bridge/`.
 
-## After the cross-file foundation
+## Order of the type-system work
 
-The preferred order is:
+The order is based on semantic dependencies, not on TypeScript syntax order:
 
 ```text
-Cross-File Types
+the class and object rules          (no new type machinery)
     ↓
-keyof + indexed access
+mapped types + template literal types + index signatures
     ↓
-overloads + contextual typing
+utility types built on them (Record, Required, Omit, ...)
     ↓
-mapped types
+real library shapes through the provider
     ↓
-conditional types + infer
-    ↓
-utility types
-    ↓
-stronger control-flow semantics
+stronger control-flow semantics, reading the flow graph
 ```
-
-The order is based on semantic dependencies, not on TypeScript syntax order.
 
 ## Semantic facts
 
