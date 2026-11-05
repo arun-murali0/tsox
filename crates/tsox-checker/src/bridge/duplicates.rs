@@ -252,19 +252,38 @@ fn report_namespace_export_mismatches(
     ctx: &mut CheckContext<'_, '_>,
 ) {
     let declarations = named_declarations(items);
-    let mut reported = std::collections::HashSet::new();
-    for (index, left) in declarations.iter().enumerate() {
-        for right in declarations.iter().skip(index + 1) {
-            if left.name != right.name
-                || left.exported == right.exported
-                || !mergeable_kinds(left.kind, right.kind)
-            {
-                continue;
-            }
-            for span in [left.span, right.span] {
-                if reported.insert((left.name.clone(), span.start)) {
-                    ctx.error(messages::namespace_export_mismatch(&left.name), span);
+    // Only declarations of one name can disagree, so pair them within a name instead of
+    // across the whole scope: a file with many declarations would otherwise compare every
+    // one with every later one. The pairs are sorted back into scope order so the reports
+    // come out as they did when all pairs were visited in turn.
+    let mut by_name: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
+    for (index, declaration) in declarations.iter().enumerate() {
+        by_name
+            .entry(declaration.name.as_str())
+            .or_default()
+            .push(index);
+    }
+    let mut pairs = Vec::new();
+    for indexes in by_name.values().filter(|indexes| indexes.len() > 1) {
+        for (at, &left) in indexes.iter().enumerate() {
+            for &right in &indexes[at + 1..] {
+                let (left_declaration, right_declaration) =
+                    (&declarations[left], &declarations[right]);
+                if left_declaration.exported != right_declaration.exported
+                    && mergeable_kinds(left_declaration.kind, right_declaration.kind)
+                {
+                    pairs.push((left, right));
                 }
+            }
+        }
+    }
+    pairs.sort_unstable();
+    let mut reported = std::collections::HashSet::new();
+    for (left, right) in pairs {
+        let (left, right) = (&declarations[left], &declarations[right]);
+        for span in [left.span, right.span] {
+            if reported.insert((left.name.clone(), span.start)) {
+                ctx.error(messages::namespace_export_mismatch(&left.name), span);
             }
         }
     }
