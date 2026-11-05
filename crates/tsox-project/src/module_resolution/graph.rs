@@ -240,7 +240,15 @@ impl ModuleGraph {
 
         // order[new] is the discovery position of the file that gets the id `new`.
         let mut order: Vec<usize> = (0..paths.len()).collect();
-        order.sort_by(|&a, &b| paths[a].cmp(paths[b]));
+        // The bundled standard-library files come first, then the project's files in path
+        // order. A project can sit anywhere in the file system relative to the library
+        // directory, so sorting them together would let a new project file shift the ids of
+        // the libraries and rerun everything that reads them.
+        let library_directory = tsox_base::standard_lib::library_directory();
+        order.sort_by(|&a, &b| {
+            let is_project = |path: &Path| !path.starts_with(&library_directory);
+            (is_project(paths[a]), paths[a]).cmp(&(is_project(paths[b]), paths[b]))
+        });
 
         let mut new_position = vec![0; order.len()];
         for (new, &old) in order.iter().enumerate() {
