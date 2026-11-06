@@ -127,7 +127,7 @@ fn resolve_tuple_element(
                 other => other,
             };
             let spread = resolve_ts_type(annotation, namespace, arena)?;
-            match arena.get(spread).clone() {
+            match arena.raw(spread).clone() {
                 Type::Array(element) => out.push(TupleElement {
                     type_id: element,
                     optional: false,
@@ -137,7 +137,10 @@ fn resolve_tuple_element(
                 Type::GenericParameter(..)
                 | Type::Variadic(_)
                 | Type::IndexedAccess(..)
-                | Type::Conditional(_) => {
+                | Type::Conditional(_)
+                | Type::Ref(_)
+                | Type::App(..)
+                | Type::Named(..) => {
                     generic.push(out.len());
                     out.push(TupleElement {
                         type_id: spread,
@@ -193,6 +196,7 @@ pub fn resolve_ts_type(
         TSType::TSUndefinedKeyword(_) => Some(arena.undefined()),
         TSType::TSAnyKeyword(_) => Some(arena.any()),
         TSType::TSUnknownKeyword(_) => Some(arena.unknown()),
+        TSType::TSObjectKeyword(_) => Some(arena.alloc(Type::NonPrimitive)),
         TSType::TSNeverKeyword(_) => Some(arena.never()),
         TSType::TSVoidKeyword(_) => Some(arena.void()),
         // `x is T` is a boolean to every caller; `asserts x is T` returns nothing. What the
@@ -273,6 +277,7 @@ pub fn resolve_ts_type(
                 Some(Modifier::Minus) => crate::types::MappedModifier::Remove,
                 Some(_) => crate::types::MappedModifier::Add,
             };
+            arena.register_mapped_key(key);
             Some(crate::semantic::generics::reduce_mapped(
                 arena,
                 crate::types::MappedType {

@@ -1721,6 +1721,34 @@ impl Substitution<'_> {
                         .copied()
                         .zip(rewritten_arguments.iter().copied())
                         .collect();
+                    // An argument that still mentions a binder this rewrite is standing under
+                    // (`DP<T[K]>` inside `[K in keyof T]`) cannot be expanded yet: it is
+                    // expanded when that key is replaced by a name. The application is kept
+                    // with its new arguments until then.
+                    if rewritten_arguments.iter().any(|&argument| {
+                        free_generic_params(arena, argument)
+                            .iter()
+                            .any(|&(id, _)| self.preserve.contains(&id) || arena.is_mapped_key(id))
+                    }) {
+                        let application = arena.alloc_app(slot, rewritten_arguments, body);
+                        arena.register_app_template(
+                            application,
+                            template.base,
+                            template.parameters.clone(),
+                        );
+                        return application;
+                    }
+                    // Met again with the very bindings it is being instantiated with: the
+                    // declaration reaches itself, and the application stands for that knot.
+                    if arena.app_instantiation_active(template.base, &bindings) {
+                        let application = arena.alloc_app(slot, rewritten_arguments, body);
+                        arena.register_app_template(
+                            application,
+                            template.base,
+                            template.parameters.clone(),
+                        );
+                        return application;
+                    }
                     if !arena.begin_app_instantiation(template.base, &bindings) {
                         crate::stack_guard::note_cut();
                         return arena.error();
@@ -1910,6 +1938,34 @@ impl Substitution<'_> {
             // `keyof T` and `T[K]` are reduced as soon as substitution leaves them nothing
             // generic; until then the rebuilt node stays symbolic.
             Type::Mapped(mapped) => {
+                // A binding that mentions this very key (`DP<T[K]>` inside `DP`'s own
+                // `[K in ...]`) would be captured by it, so the binder is renamed first.
+                let mut mapped = mapped;
+                let captured = self.bindings.iter().any(|&(_, bound)| {
+                    free_generic_params(arena, bound)
+                        .iter()
+                        .any(|&(id, _)| id == mapped.key)
+                });
+                if captured
+                    && let Some(&(_, node)) = free_generic_params(arena, mapped.value)
+                        .iter()
+                        .chain(
+                            free_generic_params(arena, mapped.name_type.unwrap_or(mapped.value))
+                                .iter(),
+                        )
+                        .find(|&&(id, _)| id == mapped.key)
+                    && let Type::GenericParameter(_, name, bound) = arena.get(node).clone()
+                {
+                    let fresh = mapped.key.renamed();
+                    arena.register_mapped_key(fresh);
+                    let fresh_node = arena.alloc(Type::GenericParameter(fresh, name, bound));
+                    let rename = [(mapped.key, fresh_node)];
+                    mapped.value = substitute_bound_type_params(arena, mapped.value, &rename);
+                    mapped.name_type = mapped
+                        .name_type
+                        .map(|name| substitute_bound_type_params(arena, name, &rename));
+                    mapped.key = fresh;
+                }
                 let constraint = self.rewrite(arena, mapped.constraint, cut);
                 let source = mapped.source.map(|source| self.rewrite(arena, source, cut));
                 // The key is a binder of the name and the value, not of the constraint,
@@ -2036,6 +2092,25 @@ pub fn reduce_mapped(arena: &mut TypeArena, mapped: crate::types::MappedType) ->
         || mapped.source.is_some_and(|source| generic(arena, source))
     {
         return arena.alloc(Type::Mapped(mapped));
+    }
+
+    // A homomorphic mapped type over a primitive is that primitive.
+    if let Some(source) = mapped.source
+        && mapped.name_type.is_none()
+        && matches!(
+            arena.get(source),
+            Type::Number
+                | Type::String
+                | Type::Boolean
+                | Type::Null
+                | Type::Undefined
+                | Type::Void
+                | Type::StringLiteral(_)
+                | Type::NumberLiteral(_)
+                | Type::BooleanLiteral(_)
+        )
+    {
+        return source;
     }
 
     // A homomorphic mapped type over a tuple or an array maps each element.
@@ -2902,6 +2977,12 @@ pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleE
         if !element.rest {
             flat.push(*element);
             continue;
+        }
+        // A reference still pointing at its own declaration has no body to read yet.
+        if matches!(arena.raw(element.type_id), Type::Ref(_))
+            && arena.declared_body(element.type_id).is_none()
+        {
+            return arena.alloc(Type::Variadic(elements));
         }
         match arena.get(element.type_id).clone() {
             Type::Tuple(inner) => flat.extend(inner),

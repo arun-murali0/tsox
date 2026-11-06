@@ -102,6 +102,7 @@ impl<'a, R: KeyResolver> StableHasher<'a, R> {
             Type::Null => return Some(hash_node(&NodeIn::Prim(Prim::Null))),
             Type::Undefined => return Some(hash_node(&NodeIn::Prim(Prim::Undefined))),
             Type::Any => return Some(hash_node(&NodeIn::Prim(Prim::Any))),
+            Type::NonPrimitive => return None,
             Type::Unknown => return Some(hash_node(&NodeIn::Prim(Prim::Unknown))),
             Type::Never => return Some(hash_node(&NodeIn::Prim(Prim::Never))),
             Type::Void => return Some(hash_node(&NodeIn::Prim(Prim::Void))),

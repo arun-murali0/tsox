@@ -1968,6 +1968,7 @@ fn register_nested_signature_keys(
                 | Type::Undefined
                 | Type::Any
                 | Type::Unknown
+                | Type::NonPrimitive
                 | Type::Error
                 | Type::Never
                 | Type::Void

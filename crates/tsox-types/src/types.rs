@@ -86,6 +86,8 @@ pub enum Type {
     Any,
 
     Unknown,
+    // The `object` keyword: any non-primitive value.
+    NonPrimitive,
 
     Error,
     Function(FunctionType),
@@ -209,6 +211,7 @@ impl PartialEq for Type {
             | (Type::Undefined, Type::Undefined)
             | (Type::Any, Type::Any)
             | (Type::Unknown, Type::Unknown)
+            | (Type::NonPrimitive, Type::NonPrimitive)
             | (Type::Error, Type::Error)
             | (Type::Never, Type::Never)
             | (Type::Void, Type::Void) => true,
@@ -254,6 +257,7 @@ impl PartialEq for Type {
                 | Type::Undefined
                 | Type::Any
                 | Type::Unknown
+                | Type::NonPrimitive
                 | Type::Error
                 | Type::Never
                 | Type::Void
@@ -296,6 +300,7 @@ impl Hash for Type {
             | Type::Undefined
             | Type::Any
             | Type::Unknown
+            | Type::NonPrimitive
             | Type::Error
             | Type::Never
             | Type::Void => {}
@@ -388,6 +393,16 @@ impl TypeParameterId {
     // generics::ordered_generic_param_ids.
     pub fn parameter_index(&self) -> u32 {
         self.parameter_index
+    }
+
+    /// Another parameter of the same declaration site, for renaming a binder that an
+    /// argument being substituted under it would otherwise be captured by.
+    pub fn renamed(&self) -> Self {
+        Self {
+            file_id: self.file_id,
+            declaration_span_start: self.declaration_span_start,
+            parameter_index: self.parameter_index.wrapping_add(1 << 16),
+        }
     }
 }
 

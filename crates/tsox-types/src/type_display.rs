@@ -261,6 +261,7 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
         Type::Undefined => out.push_str("undefined"),
         Type::Any => out.push_str("any"),
         Type::Unknown => out.push_str("unknown"),
+        Type::NonPrimitive => out.push_str("object"),
         Type::Never => out.push_str("never"),
         Type::Void => out.push_str("void"),
         Type::Error => out.push_str("error"),
