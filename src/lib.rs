@@ -35,6 +35,9 @@ pub use unit::{
     AmbientExports, CancelToken, ReturnRead, UnitContext, UnitError, UnitOutput, Worker,
 };
 
+#[cfg(feature = "snapshot")]
+pub use tsox_checker::unit_snapshot::{SNAPSHOT_FORMAT, SnapshotError, UnitSnapshot};
+
 #[cfg(feature = "incremental")]
 pub use incremental::{CheckStats, IncrementalProject, ModuleHeader, SecondPass};
 #[cfg(feature = "incremental")]
@@ -53,6 +56,9 @@ pub use module_resolution::{
     check_project, content_hash, parse_jsonc, project_needs_dom_libraries, run_units,
     scan_module_requests, summarize_partial, unit_dependencies,
 };
+
+#[cfg(all(feature = "module-resolution", feature = "snapshot"))]
+pub use module_resolution::{DiskLibraryUnitCache, LibraryUnitCache, install_library_unit_cache};
 
 // Exposed only so a test can make an import cycle run out of recheck rounds (see
 // tests/project_imports.rs). Hidden from generated docs since it is not part of the

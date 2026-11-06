@@ -11,6 +11,7 @@
 
 use crate::keys::{DeclKey, NodeHash, StreamWriter, TypeParamKey};
 
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 #[repr(u8)]
 pub enum Prim {

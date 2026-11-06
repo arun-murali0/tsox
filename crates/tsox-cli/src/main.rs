@@ -87,6 +87,13 @@ fn main() -> ExitCode {
         Ordering::Relaxed,
     );
 
+    if let Some(dir) = lib_cache_dir(&args) {
+        if let Err(message) = install_lib_cache(&dir) {
+            eprintln!("error: {message}");
+            return ExitCode::from(2);
+        }
+    }
+
     let tsconfig_path = PathBuf::from(&options.project);
     if !tsconfig_path.is_file() {
         eprintln!("error: no such tsconfig file: {}", tsconfig_path.display());
@@ -464,6 +471,29 @@ fn report_project(
     tally
 }
 
+// `--lib-cache <dir>`, or `TSOX_LIB_CACHE_DIR`: where the checked bundled library files are
+// kept between runs. Off unless one is given.
+fn lib_cache_dir(args: &[String]) -> Option<PathBuf> {
+    let position = args.iter().position(|arg| arg == "--lib-cache");
+    match position {
+        Some(index) => args.get(index + 1).map(PathBuf::from),
+        None => env::var_os("TSOX_LIB_CACHE_DIR").map(PathBuf::from),
+    }
+}
+
+#[cfg(feature = "snapshot")]
+fn install_lib_cache(dir: &std::path::Path) -> Result<(), String> {
+    let cache = tsox::DiskLibraryUnitCache::new(dir)
+        .map_err(|error| format!("cannot use the library cache {}: {error}", dir.display()))?;
+    tsox::install_library_unit_cache(Box::new(cache));
+    Ok(())
+}
+
+#[cfg(not(feature = "snapshot"))]
+fn install_lib_cache(_dir: &std::path::Path) -> Result<(), String> {
+    Err("this build has no library cache; build with --features snapshot".to_string())
+}
+
 fn parse_options(args: &[String]) -> Option<Options> {
     let project = parse_project_arg(args)?;
     Some(Options {
@@ -528,7 +558,7 @@ fn print_help() {
     println!(
         "tsox: a from-scratch TypeScript type checker (experimental CLI)\n\n\
          USAGE:\n    \
-         tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--eager-libs] [--tsc-codes]\n    \
+         tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--eager-libs] [--lib-cache <dir>] [--tsc-codes]\n    \
          [--incremental | --watch]\n\n\
          OPTIONS:\n    \
          --project <path>    Read the tsconfig.json at <path> and check the files its\n                         \

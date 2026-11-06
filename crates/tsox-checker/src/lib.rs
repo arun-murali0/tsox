@@ -22,3 +22,5 @@ pub mod bridge;
 pub mod flow;
 pub mod reachability;
 pub mod unit;
+#[cfg(feature = "snapshot")]
+pub mod unit_snapshot;

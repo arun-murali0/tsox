@@ -1727,6 +1727,7 @@ dependencies = [
 name = "tsox-checker"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
@@ -1734,6 +1735,7 @@ dependencies = [
  "oxc_parser",
  "oxc_semantic",
  "oxc_span",
+ "serde",
  "thiserror",
  "tracing",
  "tsox-base",
@@ -1789,6 +1791,7 @@ dependencies = [
  "oxc_parser",
  "oxc_semantic",
  "oxc_span",
+ "serde",
  "smallvec",
  "tsox-base",
 ]

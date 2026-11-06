@@ -30,6 +30,7 @@ use crate::types::{
     ConditionalType, FileId, FunctionType, ObjectType, Param, PropertyEntry, Type, TypeParameterId,
 };
 
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PProp {
     pub name: Box<str>,
@@ -38,6 +39,7 @@ pub struct PProp {
     pub ty: u32,
 }
 
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PTupleElement {
     pub optional: bool,
@@ -45,6 +47,7 @@ pub struct PTupleElement {
     pub ty: u32,
 }
 
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PParam {
     pub name: Option<Box<str>>,
@@ -57,6 +60,7 @@ pub struct PParam {
 // importer rebuilds the type in one bottom-up pass with no recursion (see the header). A
 // declaration appears by key (`DeclRef`, `App`), never by body; an `App` also carries its
 // instantiated body, which is the amendment to LLD 3.4 the header records.
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PFunctionTypeParam {
     pub key: TypeParamKey,
@@ -67,6 +71,7 @@ pub struct PFunctionTypeParam {
 
 /// One `infer` binder of a conditional type: the key that names it everywhere the type is
 /// used, its name, and its constraint (`infer U extends string`) as a node index.
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PInferParam {
     pub key: TypeParamKey,
@@ -74,6 +79,7 @@ pub struct PInferParam {
     pub constraint: Option<u32>,
 }
 
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum PNode {
     Prim(Prim),
@@ -124,12 +130,14 @@ pub enum PNode {
     },
 }
 
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PortableType {
     pub nodes: Box<[PNode]>,
     pub root: u32,
 }
 
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PTypeParam {
     pub name: Box<str>,
@@ -142,6 +150,7 @@ pub struct PTypeParam {
     pub default: Option<u32>,
 }
 
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PortableDecl {
     pub key: DeclKey,

@@ -1892,6 +1892,33 @@ fn load_text<'g>(
     }
 }
 
+// The cache entry for this file, when it may have one: the cache is installed and the file is
+// a bundled library file (see `library_cache`).
+#[cfg(feature = "snapshot")]
+fn library_cache_key(
+    project: &Project<'_>,
+    id: FileId,
+    path: &std::path::Path,
+    source: &str,
+    ctx: &UnitContext<'_>,
+) -> Option<(&'static dyn super::library_cache::LibraryUnitCache, u128)> {
+    static LIBRARY_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
+    let cache = super::library_cache::installed()?;
+    let directory = LIBRARY_DIRECTORY.get_or_init(tsox_base::standard_lib::library_directory);
+    if !path.starts_with(directory) {
+        return None;
+    }
+    let module = project.graph.module_key(id).map(|module| module.as_u128());
+    let key = super::library_cache::key(
+        cache,
+        source,
+        module,
+        &ctx.options,
+        project.collect_global_decls,
+    );
+    Some((cache, key))
+}
+
 // One unit per file. The worker is the thread's own, so nothing mutable is shared.
 fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked {
     let graph = project.graph;
@@ -1933,8 +1960,33 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                 if let Some(cancel) = project.cancel {
                     ctx = ctx.with_cancel(cancel.clone());
                 }
-                let checked = worker.check_unit(&ctx);
+                #[cfg(feature = "snapshot")]
+                let cache_key = library_cache_key(project, id, path, &source, &ctx);
+                #[cfg(feature = "snapshot")]
+                let cached = cache_key.and_then(|(cache, key)| {
+                    let bytes = cache.load(key)?;
+                    let snapshot =
+                        tsox_checker::unit_snapshot::UnitSnapshot::decode(&bytes).ok()?;
+                    Some(snapshot.into_output())
+                });
+                #[cfg(not(feature = "snapshot"))]
+                let cached: Option<crate::unit::UnitOutput> = None;
+                let from_cache = cached.is_some();
+                let checked = match cached {
+                    Some(output) => Ok(output),
+                    None => worker.check_unit(&ctx),
+                };
                 reads = imports.take_reads();
+                #[cfg(feature = "snapshot")]
+                if !from_cache
+                    && reads.is_empty()
+                    && let (Some((cache, key)), Ok(output)) = (cache_key, &checked)
+                    && let Ok(snapshot) = tsox_checker::unit_snapshot::UnitSnapshot::capture(output)
+                    && let Ok(bytes) = snapshot.encode()
+                {
+                    cache.store(key, &bytes);
+                }
+                let _ = from_cache;
                 match checked {
                     Ok(output) => {
                         incomplete_reasons = output.incomplete_reasons.clone();
