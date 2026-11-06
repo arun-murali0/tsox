@@ -34,3 +34,6 @@ flamegraph.svg
 
 # tsc result cache (see scripts/ts-diag-tool/check-fixtures.js)
 scripts/ts-diag-tool/.tsc-cache.json
+
+# tsgo copy installed by compare-local.sh --tsgo
+scripts/ts-diag-tool/.tsgo/

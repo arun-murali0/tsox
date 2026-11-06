@@ -90,7 +90,7 @@
 // one hang names itself instead of freezing the whole comparison. The default is no limit.
 //
 // Usage: node compare.js --status [run-folder]
-//        node compare.js <target-dir-or-file> <tsox-binary> [--strict-only] [--json | --json-stream | --summary] [--background] [--only-differ] [--differ] [--no-cache] [--module] [--flat] [--runs N] [--threads N] [--timeout S]
+//        node compare.js <target-dir-or-file> <tsox-binary> [--strict-only] [--json | --json-stream | --summary] [--background] [--only-differ] [--differ] [--no-cache] [--module] [--tsgo] [--flat] [--runs N] [--threads N] [--timeout S]
 
 const fs = require("fs");
 const os = require("os");
@@ -104,6 +104,7 @@ const {
   defaultCachePath,
 } = require("./check-fixtures");
 const Table = require("cli-table3");
+const tsgoRef = require("./tsgo-project");
 
 const args = process.argv.slice(2);
 // Flags that take a value: the value follows the flag and is not a target or a binary.
@@ -132,7 +133,11 @@ const showDiffer = args.includes("--differ");
 // tsc results are cached per fixture (see check-fixtures.js); --no-cache forces a full run.
 const noCache = args.includes("--no-cache");
 // Cross-file mode: tsc checks the directory as one project (see the doc comment above).
-const moduleMode = args.includes("--module");
+// --tsgo: the reference is tsgo (native TypeScript 7), not tsc. It checks the directory as one
+// project, so it implies --module (see tsgo-project.js).
+const tsgoMode = args.includes("--tsgo");
+const refName = tsgoMode ? "tsgo" : "tsc";
+const moduleMode = args.includes("--module") || tsgoMode;
 const runs = intFlag("--runs") ?? (moduleMode ? 5 : 1);
 const threads = intFlag("--threads");
 // tsox checks each file alone, with no module graph (see the doc comment above).
@@ -239,7 +244,7 @@ if (args.includes("--background")) startBackground();
 const [target, tsoxBin] = positional;
 if (!target || !tsoxBin) {
   console.error(
-    "usage: node compare.js <target-dir-or-file> <tsox-binary> [--strict-only] [--json | --json-stream | --summary] [--background] [--only-differ] [--differ] [--no-cache] [--module] [--flat] [--runs N] [--threads N] [--timeout S]",
+    "usage: node compare.js <target-dir-or-file> <tsox-binary> [--strict-only] [--json | --json-stream | --summary] [--background] [--only-differ] [--differ] [--no-cache] [--module] [--tsgo] [--flat] [--runs N] [--threads N] [--timeout S]",
   );
   process.exit(2);
 }
@@ -675,7 +680,7 @@ function codeLabel(d) {
 
 function newTierTable() {
   return new Table({
-    head: ["file", "line", "tsox", "tsc", "verdict"],
+    head: ["file", "line", "tsox", refName, "verdict"],
     colWidths: [FILE_W, LINE_W, TSRUST_W, TSC_W, VERDICT_W],
     wordWrap: true,
     style: { head: [], border: NO_COLOR ? [] : ["grey"] },
@@ -956,7 +961,72 @@ function runTscProject() {
   };
 }
 
-const { files, stats, perf, project } = moduleMode
+// --tsgo: the same project-mode comparison with tsgo as the reference. compare.js runs the
+// tsgo binary itself through the same measuring wrapper as tsox (so time and peak memory are
+// tsgo's own, not a Node wrapper's) and reads its text output (see tsgo-project.js).
+function runTsgoProject() {
+  const bin = tsgoRef.findTsgo();
+  if (!bin) {
+    console.error(
+      "error: tsgo not found. Set TSGO_BIN, put `tsgo` on PATH, or run scripts/compare-local.sh --tsgo, which installs typescript@7 under scripts/ts-diag-tool/.tsgo.",
+    );
+    process.exit(2);
+  }
+  if (!fs.statSync(target).isDirectory()) {
+    console.error("error: --tsgo needs a directory as the target");
+    process.exit(2);
+  }
+  const version = tsgoRef.tsgoVersion(bin);
+  const prepared = tsgoRef.prepareProject(target, { strictOnly });
+  if (prepared.files.length === 0) {
+    prepared.cleanup();
+    console.error(`no .ts files found under ${target}`);
+    process.exit(2);
+  }
+  const cmd = [bin, ...prepared.args];
+  const results = [];
+  try {
+    for (let i = 0; i < runs; i++) {
+      const run = runMeasured(cmd, { measure: true, label: "tsgo" });
+      results.push({
+        run,
+        out: tsgoRef.parseOutput(run.stdout, prepared.files),
+      });
+    }
+  } finally {
+    prepared.cleanup();
+  }
+  const { out } = results[0];
+  const byFile = new Map(prepared.files.map((f) => [f, []]));
+  for (const d of out.results) byFile.get(d.file).push(d);
+  prepared.files.forEach((f) => onTscFile(f, byFile.get(f)));
+  const programTimes = results
+    .map((r) => r.out.programMs)
+    .filter((v) => v !== null);
+  return {
+    files: prepared.files,
+    stats: {
+      cached: 0,
+      ran: prepared.files.length,
+      ranMs: median(results.map((r) => r.run.wallMs)),
+      cachedMs: 0,
+      cachedUntimed: 0,
+    },
+    perf: {
+      maxRssKb: median(results.map((r) => r.run.maxRssKb)),
+      measuredThisRun: true,
+    },
+    project: {
+      programMs: programTimes.length ? median(programTimes) : 0,
+      outsideRoots: out.outsideRoots,
+    },
+    referenceVersion: version,
+  };
+}
+
+const { files, stats, perf, project, referenceVersion } = tsgoMode
+  ? runTsgoProject()
+  : moduleMode
   ? runTscProject()
   : {
       ...checkFiles(target, {
@@ -983,7 +1053,8 @@ const performance = {
     memoryMeasuredWith: mappedRun.how,
   },
   tsc: {
-    typescript: ts.version,
+    reference: refName,
+    typescript: tsgoMode ? referenceVersion : ts.version,
     mode: moduleMode ? "project" : "per-file",
     files: files.length,
     wallMs: Math.round(tscWallMs),
@@ -1019,7 +1090,7 @@ function printPerformance() {
   const rows = [
     ["", "time", "peak memory"],
     ["tsox", fmtMs(p.tsox.wallMs), rustMem],
-    ["tsc", tscTime, tscMem],
+    [refName, tscTime, tscMem],
   ];
   const w = [0, 1, 2].map((i) => Math.max(...rows.map((r) => r[i].length)));
   log("");
@@ -1141,6 +1212,7 @@ if (summaryOnly) {
     ["lines_exact", exactLines],
     ["lines_compared", comparedLines],
     ["tsox_errors", tsoxDiags.length],
+    ["reference", tsgoMode ? `tsgo ${referenceVersion}` : `tsc ${ts.version}`],
     ["tsc_errors", tscErrorCount],
     ["tsox_time", ms(p.tsox.wallMs)],
     ["tsox_time_per_file", perFile(p.tsox.wallMs)],
