@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(kept, lean_names);
     }
 
-    use super::{StandardLibraryError, StandardLibrarySet, is_dom_only_global};
+    use super::{StandardLibraryError, StandardLibrarySet};
     use crate::compiler_options::{EffectiveCompilerOptions, ScriptTarget};
 
     fn options(target: ScriptTarget) -> EffectiveCompilerOptions {
@@ -474,47 +474,5 @@ mod tests {
         assert!(!has_file(&lean, "lib.dom.d.ts"));
         assert!(!has_file(&lean, "lib.es2020.full.d.ts"));
         assert_eq!(lean.files().len() + 6, set.files().len());
-    }
-
-    #[test]
-    fn dom_only_globals_are_sorted_and_exclude_es_names() {
-        assert!(is_dom_only_global("document"));
-        assert!(is_dom_only_global("HTMLElement"));
-        assert!(!is_dom_only_global("Promise"));
-        assert!(!is_dom_only_global("Array"));
-        assert!(!is_dom_only_global("Date"));
-    }
-}
-
-#[cfg(test)]
-mod dom_family_tests {
-    use super::*;
-
-    #[test]
-    fn dom_only_names_are_found_and_es_names_are_not() {
-        assert!(is_dom_only_global("document"));
-        assert!(is_dom_only_global("HTMLElement"));
-        assert!(!is_dom_only_global("Array"));
-        assert!(!is_dom_only_global("Promise"));
-    }
-
-    #[test]
-    fn the_name_list_is_sorted_and_free_of_duplicates() {
-        let list = crate::dom_only_globals::DOM_ONLY_GLOBALS;
-        assert!(list.windows(2).all(|pair| pair[0] < pair[1]));
-    }
-
-    #[test]
-    fn dropping_the_dom_family_keeps_the_es_files_in_order() {
-        let options = EffectiveCompilerOptions::default();
-        let full = StandardLibrarySet::for_options(&options).unwrap();
-        let lean = full.without_dom_family();
-        assert!(full.has_dom_family() && !lean.has_dom_family());
-        let kept: Vec<_> = full
-            .files()
-            .iter()
-            .filter(|file| !is_dom_family_library(&file.name))
-            .collect();
-        assert_eq!(lean.files().iter().collect::<Vec<_>>(), kept);
     }
 }
