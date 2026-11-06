@@ -1600,6 +1600,9 @@ struct ImportsOf<'a> {
     // thread, so the lock is never contended; it is there because the provider is
     // handed out as a shared reference.
     reads: std::sync::Mutex<Vec<DeclKey>>,
+    // Whether the standard-library registry applies. The answer stats every library file,
+    // and the checker asks once per global name, so it is worked out once per file.
+    registry_applies: std::sync::OnceLock<bool>,
 }
 
 impl ImportsOf<'_> {
@@ -1716,6 +1719,12 @@ impl ImportsOf<'_> {
     // the libraries it asks for has no registry to consult, so it keeps reading the names the
     // checker already knows as it did before the libraries were loaded.
     fn standard_library_registry_applies(&self) -> bool {
+        *self
+            .registry_applies
+            .get_or_init(|| self.compute_registry_applies())
+    }
+
+    fn compute_registry_applies(&self) -> bool {
         let graph = self.project.graph;
         if !graph.has_config() {
             return false;
@@ -1911,6 +1920,7 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                     project,
                     from: id,
                     reads: std::sync::Mutex::new(Vec::new()),
+                    registry_applies: std::sync::OnceLock::new(),
                 };
                 let mut ctx = UnitContext::new(id, &name, &source)
                     .with_imports(&imports)
