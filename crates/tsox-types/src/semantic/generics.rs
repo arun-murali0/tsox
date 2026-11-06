@@ -813,6 +813,18 @@ fn infer_type_param_bindings_uncached(
                     );
                 }
             }
+            for (signature, from) in index_inference_sources(&param_object, &arg_object) {
+                infer_type_param_bindings_inner(
+                    arena,
+                    signature,
+                    from,
+                    bindings,
+                    locked,
+                    cache,
+                    seen,
+                    preserve_literals,
+                );
+            }
         }
         Type::Function(param_fn) => {
             let Type::Function(arg_fn) = arena.get(arg_type).clone() else {
@@ -1179,6 +1191,11 @@ fn collect_inference_candidates_inner(
                         seen,
                     );
                 }
+            }
+            for (signature, from) in index_inference_sources(&param_object, &arg_object) {
+                collect_inference_candidates_inner(
+                    arena, signature, from, locked, variance, false, out, cache, seen,
+                );
             }
         }
         Type::Function(param_fn) => {
@@ -1694,6 +1711,22 @@ impl Substitution<'_> {
         copy
     }
 
+    #[inline(never)]
+    fn rewrite_indexes(
+        &mut self,
+        arena: &mut TypeArena,
+        mut object: ObjectType,
+        cut: &mut usize,
+    ) -> ObjectType {
+        for index in [&mut object.string_index, &mut object.number_index]
+            .into_iter()
+            .flatten()
+        {
+            index.value = self.rewrite(arena, index.value, cut);
+        }
+        object
+    }
+
     fn rewrite_uncached(
         &mut self,
         arena: &mut TypeArena,
@@ -1766,6 +1799,13 @@ impl Substitution<'_> {
                 return type_id;
             }
 
+            if rewritten_arguments != arguments
+                && arena.record_value_type(type_id).is_some()
+                && let [key, value] = rewritten_arguments[..]
+                && let Some(record) = reduce_record(arena, key, value)
+            {
+                return record;
+            }
             let body = self.rewrite(arena, body, cut);
             return arena.alloc_app(slot, rewritten_arguments, body);
         }
@@ -1850,7 +1890,8 @@ impl Substitution<'_> {
                         is_method: p.is_method,
                     });
                 }
-                arena.alloc(Type::Object(ObjectType::new(properties)))
+                let rebuilt = self.rewrite_indexes(arena, object.with_properties(properties), cut);
+                arena.alloc(Type::Object(rebuilt))
             }
             Type::Union(members) => {
                 let mut substituted = Vec::with_capacity(members.len());
@@ -2147,6 +2188,25 @@ pub fn reduce_mapped(arena: &mut TypeArena, mapped: crate::types::MappedType) ->
         }
     }
 
+    if mapped.name_type.is_none()
+        && matches!(arena.get(mapped.constraint), Type::String | Type::Number)
+    {
+        let is_string = matches!(arena.get(mapped.constraint), Type::String);
+        let key = mapped.constraint;
+        let value = substitute_bound_type_params(arena, mapped.value, &[(mapped.key, key)]);
+        let signature = crate::types::IndexSignature {
+            key_name: "key".into(),
+            value,
+            readonly: false,
+        };
+        let object = ObjectType::new(Vec::new());
+        return arena.alloc(Type::Object(if is_string {
+            object.with_indexes(Some(signature), None)
+        } else {
+            object.with_indexes(None, Some(signature))
+        }));
+    }
+
     let Some(names) = mapped_key_names(arena, mapped.constraint) else {
         return arena.alloc(Type::Mapped(mapped));
     };
@@ -2204,6 +2264,27 @@ pub fn reduce_keyof(arena: &mut TypeArena, operand: TypeId) -> TypeId {
             0 => arena.never(),
             1 => members[0],
             _ => arena.alloc_union(members),
+        };
+    }
+    if let Type::Object(object) = arena.get(operand).clone()
+        && (object.string_index.is_some() || object.number_index.is_some())
+    {
+        let mut members: Vec<TypeId> = Vec::new();
+        if object.string_index.is_some() {
+            members.push(arena.alloc(Type::String));
+            members.push(arena.alloc(Type::Number));
+        } else {
+            members.push(arena.alloc(Type::Number));
+        }
+        for property in object.properties.iter() {
+            if object.string_index.is_none() {
+                members.push(arena.alloc(Type::StringLiteral(property.name.to_string())));
+            }
+        }
+        return if members.len() == 1 {
+            members[0]
+        } else {
+            arena.alloc_union(members)
         };
     }
     arena.alloc(Type::Keyof(operand))
@@ -2309,7 +2390,15 @@ fn parts_of(arena: &TypeArena, type_id: TypeId) -> SmallVec<[TypeId; 8]> {
             parts.extend(function.params.iter().map(|parameter| parameter.type_id));
             parts.push(function.return_type);
         }
-        Type::Object(object) => parts.extend(object.properties.iter().map(|p| p.type_id)),
+        Type::Object(object) => {
+            parts.extend(object.properties.iter().map(|p| p.type_id));
+            parts.extend(
+                [&object.string_index, &object.number_index]
+                    .into_iter()
+                    .flatten()
+                    .map(|index| index.value),
+            );
+        }
         Type::Union(members) | Type::Intersection(members) => parts.extend(members.iter().copied()),
         Type::Conditional(conditional) => {
             parts.extend([
@@ -3018,4 +3107,70 @@ pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleE
         return arena.alloc(Type::Variadic(elements));
     }
     arena.alloc_tuple(flat)
+}
+
+/// `Record<K, V>` once K is known: one required property per literal key, or an index
+/// signature when the key is `string` or `number`. `None` while K is still generic.
+pub fn reduce_record(arena: &mut TypeArena, key: TypeId, value: TypeId) -> Option<TypeId> {
+    fn members(arena: &TypeArena, id: TypeId, out: &mut Vec<TypeId>) {
+        match arena.get(id) {
+            Type::Union(parts) => {
+                for &part in parts {
+                    members(arena, part, out);
+                }
+            }
+            _ => out.push(id),
+        }
+    }
+    let mut parts = Vec::new();
+    members(arena, key, &mut parts);
+    let has = |arena: &TypeArena, wanted: fn(&Type) -> bool| {
+        parts.iter().any(|&part| wanted(arena.get(part)))
+    };
+    let index = |name: &str, value: TypeId| crate::types::IndexSignature {
+        key_name: name.into(),
+        value,
+        readonly: false,
+    };
+    if has(arena, |t| matches!(t, Type::String)) {
+        let object = ObjectType::new(Vec::new()).with_indexes(Some(index("x", value)), None);
+        return Some(arena.alloc(Type::Object(object)));
+    }
+    if has(arena, |t| matches!(t, Type::Number)) {
+        let object = ObjectType::new(Vec::new()).with_indexes(None, Some(index("x", value)));
+        return Some(arena.alloc(Type::Object(object)));
+    }
+    let names = mapped_key_names(arena, key)?;
+    let properties = names
+        .into_iter()
+        .map(|name| PropertyEntry {
+            name: name.into(),
+            type_id: value,
+            optional: false,
+            is_method: false,
+        })
+        .collect();
+    Some(arena.alloc(Type::Object(ObjectType::new(properties))))
+}
+
+/// The (parameter value type, argument type) pairs an index signature contributes to
+/// inference: the argument's own signature if it has one, otherwise every property type
+/// of the argument (an object literal argument is read as a dictionary of its members).
+fn index_inference_sources(param: &ObjectType, arg: &ObjectType) -> Vec<(TypeId, TypeId)> {
+    let mut pairs = Vec::new();
+    for (signature, own) in [
+        (&param.string_index, &arg.string_index),
+        (&param.number_index, &arg.number_index),
+    ] {
+        let Some(signature) = signature else { continue };
+        match own {
+            Some(own) => pairs.push((signature.value, own.value)),
+            None => {
+                for property in arg.properties.iter() {
+                    pairs.push((signature.value, property.type_id));
+                }
+            }
+        }
+    }
+    pairs
 }

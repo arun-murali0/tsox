@@ -77,23 +77,41 @@ pub fn elaborate_mismatch(
                 let Some(name) = property.key.static_name() else {
                     continue;
                 };
-                let (Some(have), Some(wanted)) = (
-                    actual_object.properties.iter().find(|p| *p.name == *name),
-                    expected_object.properties.iter().find(|p| *p.name == *name),
-                ) else {
+                let Some(have) = actual_object.properties.iter().find(|p| *p.name == *name) else {
                     continue;
                 };
-                if ctx.semantic().is_assignable(have.type_id, wanted.type_id) {
+                // A listed property is checked against its own type; any other name against
+                // the index signature that covers it.
+                let wanted_type = match expected_object.properties.iter().find(|p| *p.name == *name)
+                {
+                    Some(wanted) => wanted.type_id,
+                    None => {
+                        let numeric = !name.is_empty() && name.chars().all(|c| c.is_ascii_digit());
+                        let index = if numeric {
+                            expected_object
+                                .number_index
+                                .as_ref()
+                                .or(expected_object.string_index.as_ref())
+                        } else {
+                            expected_object.string_index.as_ref()
+                        };
+                        match index {
+                            Some(index) => index.value,
+                            None => continue,
+                        }
+                    }
+                };
+                if ctx.semantic().is_assignable(have.type_id, wanted_type) {
                     continue;
                 }
-                if elaborate_mismatch(&property.value, have.type_id, wanted.type_id, ctx) {
+                if elaborate_mismatch(&property.value, have.type_id, wanted_type, ctx) {
                     reported = true;
                     continue;
                 }
                 let message = messages::assignability(
                     &ctx.arena,
                     have.type_id,
-                    wanted.type_id,
+                    wanted_type,
                     DiagnosticCode::DeclaredTypeMismatch,
                 );
                 ctx.error(message, property.key.span());

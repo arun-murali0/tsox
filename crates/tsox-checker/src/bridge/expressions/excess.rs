@@ -63,6 +63,20 @@ pub fn check_excess_properties(expr: &Expression, target: TypeId, ctx: &mut Chec
             .iter()
             .find(|p| *p.name == *key.name.as_str())
         {
+            // A name the target does not list is the index signature's business.
+            None if target_object.string_index.is_some()
+                || (target_object.number_index.is_some()
+                    && key.name.as_str().chars().all(|c| c.is_ascii_digit())) =>
+            {
+                let value = target_object
+                    .string_index
+                    .as_ref()
+                    .or(target_object.number_index.as_ref())
+                    .map(|index| index.value);
+                if let Some(value) = value {
+                    check_excess_properties(&property.value, value, ctx);
+                }
+            }
             None => ctx.error(
                 crate::diagnostic_messages::messages::excess_property(
                     &ctx.arena, &key.name, target,
