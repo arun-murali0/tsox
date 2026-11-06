@@ -854,6 +854,13 @@ pub mod messages {
         )
     }
 
+    pub fn fallthrough_case_in_switch() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::FallthroughCaseInSwitch,
+            "Fallthrough case in switch.",
+        )
+    }
+
     pub fn unresolvable_destructuring_type_annotation() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnresolvableDestructuringTypeAnnotation,

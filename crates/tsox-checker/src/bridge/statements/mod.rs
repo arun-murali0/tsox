@@ -13,7 +13,7 @@ mod support;
 mod variables;
 
 pub(super) use patterns::{bind_params, bind_pattern};
-pub(super) use support::{contains_break, statement_always_exits, statement_leaves_flow};
+pub(super) use support::statement_leaves_flow;
 
 use classes::check_class_declaration;
 use control_flow::{

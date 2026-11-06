@@ -83,34 +83,6 @@ pub fn statement_leaves_flow(stmt: &Statement) -> bool {
     }
 }
 
-// Whether a `break` appears anywhere inside `stmt`. Deliberately generous: a break
-// that belongs to a nested loop or switch is counted too, and a `try` or `with` is
-// assumed to hide one, because the only use of this answer is to decide that a loop
-// can only be left by its test failing, and a false "yes there is a break" merely
-// skips a narrowing. A function body is not entered: a break cannot cross it.
-pub fn contains_break(stmt: &Statement) -> bool {
-    match stmt {
-        Statement::BreakStatement(_) => true,
-        Statement::BlockStatement(block) => block.body.iter().any(contains_break),
-        Statement::IfStatement(if_stmt) => {
-            contains_break(&if_stmt.consequent)
-                || if_stmt.alternate.as_ref().is_some_and(contains_break)
-        }
-        Statement::WhileStatement(inner) => contains_break(&inner.body),
-        Statement::DoWhileStatement(inner) => contains_break(&inner.body),
-        Statement::ForStatement(inner) => contains_break(&inner.body),
-        Statement::ForInStatement(inner) => contains_break(&inner.body),
-        Statement::ForOfStatement(inner) => contains_break(&inner.body),
-        Statement::LabeledStatement(inner) => contains_break(&inner.body),
-        Statement::SwitchStatement(inner) => inner
-            .cases
-            .iter()
-            .any(|case| case.consequent.iter().any(contains_break)),
-        Statement::TryStatement(_) | Statement::WithStatement(_) => true,
-        _ => false,
-    }
-}
-
 // Reports every parameter with no type annotation and no default value as an
 // implicit `any`, the same condition tsc reports under noImplicitAny. Callers
 // decide *where* this applies: it is only called for parameter lists that can

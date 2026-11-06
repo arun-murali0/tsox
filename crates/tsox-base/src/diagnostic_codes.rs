@@ -88,6 +88,7 @@ pub enum DiagnosticCode {
 
     // 1600s: reachability
     UnreachableCode,
+    FallthroughCaseInSwitch,
 
     // 1700s: type construction
     ExpressionTooComplex,
@@ -188,6 +189,7 @@ impl DiagnosticCode {
             PropertyDeclarationsMustHaveIdenticalModifiers => "TSR1512",
 
             UnreachableCode => "TSR1601",
+            FallthroughCaseInSwitch => "TSR1602",
 
             ExpressionTooComplex => "TSR1701",
 
@@ -297,6 +299,7 @@ impl DiagnosticCode {
             TupleNegativeIndex => 2514,
 
             UnreachableCode => 7027,
+            FallthroughCaseInSwitch => 7029,
             ExpressionTooComplex => 2590,
 
             UnimplementedCallExpressionKind

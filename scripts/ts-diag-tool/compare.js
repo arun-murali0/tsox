@@ -318,7 +318,28 @@ if (stat.isFile()) {
   tsoxProjectRoot = target;
 }
 const tsconfigPath = path.join(tsoxProjectRoot, ".compare-tsconfig.json");
-fs.writeFileSync(tsconfigPath, "");
+// The options tsc is given (see check-fixtures.js), written down for tsox as well. An empty
+// config means "TypeScript's defaults" to tsox, which would leave it without
+// allowUnreachableCode:false and the other extras while tsc has them, and every
+// difference that follows would be the harness's, not the checker's.
+const tsoxCompilerOptions = {
+  strict: true,
+  target: "es2020",
+  module: "commonjs",
+  skipLibCheck: true,
+  ...(strictOnly
+    ? {}
+    : {
+        allowUnreachableCode: false,
+        noUncheckedIndexedAccess: true,
+        noImplicitOverride: true,
+        exactOptionalPropertyTypes: true,
+        noPropertyAccessFromIndexSignature: true,
+        noFallthroughCasesInSwitch: true,
+        noImplicitReturns: true,
+      }),
+};
+fs.writeFileSync(tsconfigPath, JSON.stringify({ compilerOptions: tsoxCompilerOptions }));
 
 // Runs tsox once and reports how long it took and, when the OS lets us ask, its peak
 // memory. Node cannot read a child's peak RSS by itself, so `measure` wraps the command in
