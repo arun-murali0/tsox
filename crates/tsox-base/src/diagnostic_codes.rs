@@ -15,7 +15,10 @@
 /// The map is what lets scripts/ts-diag-tool/compare.js compare code and message
 /// text, and not only the line a diagnostic is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "wasm", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    any(feature = "wasm", feature = "snapshot"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub enum DiagnosticCode {
     // 1000s: assignability / type mismatch
     BinaryOperandTypeMismatch,

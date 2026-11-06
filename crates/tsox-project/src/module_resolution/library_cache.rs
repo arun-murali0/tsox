@@ -5,8 +5,8 @@
 //! store them and a later run read them back instead of checking the files again.
 //!
 //! What may be stored is decided in `check_file`, and the rule is narrow on purpose: only a
-//! library file, only an output with no diagnostics, and only one whose unit asked nothing of
-//! the rest of the project. A unit that asked nothing cannot have been influenced by what the
+//! library file, and only one whose unit asked nothing of the rest of the project. Its
+//! diagnostics are stored with it, so a cache hit gives the unit exactly as it was checked. A unit that asked nothing cannot have been influenced by what the
 //! project declares, so its output depends on its text and the settings below alone. The key
 //! is a hash of all of those and of the running program, so a rebuilt checker never reads what
 //! an older one wrote. Anything that does not decode is checked as usual and written again.

@@ -49,27 +49,61 @@ fn codes(root: &Path) -> Vec<(String, Option<u32>)> {
     out
 }
 
-#[test]
-fn a_cold_and_a_warm_run_report_what_an_uncached_run_reports() {
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("library-unit-cache");
+fn project(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("library-unit-cache-{name}"));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
+    let names: Vec<String> = files.iter().map(|(n, _)| format!("\"{n}\"")).collect();
     fs::write(
         root.join("tsconfig.json"),
-        r#"{"compilerOptions":{"strict":true,"target":"es2020","lib":["es2020"]},"files":["main.ts"]}"#,
+        format!(
+            r#"{{"compilerOptions":{{"strict":true,"target":"es2020","lib":["es2020"]}},"files":[{}]}}"#,
+            names.join(",")
+        ),
     )
     .unwrap();
-    fs::write(
-        root.join("main.ts"),
-        "const a: number[] = [1, 2];\nconst s: string = a.map(x => x + 1);\nconst p: Promise<number> = Promise.resolve(1);\n",
-    )
-    .unwrap();
+    for (name, source) in files {
+        fs::write(root.join(name), source).unwrap();
+    }
+    root
+}
+
+#[test]
+fn a_cold_and_a_warm_run_report_what_an_uncached_run_reports() {
+    // The second project changes the library's own globals from the outside: a script that
+    // merges into `Array` and `Promise`, and a module that augments them with `declare global`.
+    // A cached library unit must not hide what either one does.
+    let projects = [
+        project(
+            "plain",
+            &[(
+                "main.ts",
+                "const a: number[] = [1, 2];\nconst s: string = a.map(x => x + 1);\nconst p: Promise<number> = Promise.resolve(1);\n",
+            )],
+        ),
+        project(
+            "augmenting",
+            &[
+                (
+                    "globals.ts",
+                    "interface Array<T> { second(): T | undefined }\ninterface Promise<T> { tap(): Promise<T> }\n",
+                ),
+                (
+                    "main.ts",
+                    "export {};\ndeclare global { interface String { shout(): string } }\nconst a: number[] = [1];\nconst n: string = a.second();\nconst m: number = 'x'.shout();\nconst bad: boolean = Promise.resolve(1).tap();\n",
+                ),
+            ],
+        ),
+    ];
 
     // Before the cache is installed.
-    let uncached = codes(&root);
-    assert!(!uncached.is_empty(), "the fixture must report something");
+    let uncached: Vec<_> = projects.iter().map(|root| codes(root)).collect();
+    assert!(
+        uncached.iter().all(|codes| !codes.is_empty()),
+        "{uncached:?}"
+    );
 
-    let dir = root.join("cache");
+    let dir = projects[0].join("cache");
     assert!(install_library_unit_cache(Box::new(
         DiskLibraryUnitCache::new(&dir).unwrap()
     )));
@@ -82,14 +116,27 @@ fn a_cold_and_a_warm_run_report_what_an_uncached_run_reports() {
     };
     assert!(entries().is_empty());
 
-    assert_eq!(codes(&root), uncached, "a cold run");
+    // The first project fills the cache; the second reads what it can from it.
+    for (index, root) in projects.iter().enumerate() {
+        assert_eq!(
+            codes(root),
+            uncached[index],
+            "a cold run of project {index}"
+        );
+    }
     let written = entries();
     assert!(
-        !written.is_empty(),
-        "a cold run stores the library units that read nothing"
+        written.len() >= 40,
+        "a cold run stores the library units that read nothing, {}",
+        written.len()
     );
-
-    assert_eq!(codes(&root), uncached, "a warm run");
+    for (index, root) in projects.iter().enumerate() {
+        assert_eq!(
+            codes(root),
+            uncached[index],
+            "a warm run of project {index}"
+        );
+    }
     assert_eq!(
         entries().len(),
         written.len(),
@@ -100,7 +147,13 @@ fn a_cold_and_a_warm_run_report_what_an_uncached_run_reports() {
     fs::write(&written[0], b"not a snapshot").unwrap();
     let truncated = fs::read(&written[1]).unwrap();
     fs::write(&written[1], &truncated[..truncated.len() / 2]).unwrap();
-    assert_eq!(codes(&root), uncached, "after damage");
+    for (index, root) in projects.iter().enumerate() {
+        assert_eq!(
+            codes(root),
+            uncached[index],
+            "after damage, project {index}"
+        );
+    }
     assert_ne!(fs::read(&written[0]).unwrap(), b"not a snapshot");
     assert_eq!(fs::read(&written[1]).unwrap(), truncated);
 }

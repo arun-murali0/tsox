@@ -1981,8 +1981,8 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                 if !from_cache
                     && reads.is_empty()
                     && let (Some((cache, key)), Ok(output)) = (cache_key, &checked)
-                    && let Ok(snapshot) = tsox_checker::unit_snapshot::UnitSnapshot::capture(output)
-                    && let Ok(bytes) = snapshot.encode()
+                    && let Ok(bytes) =
+                        tsox_checker::unit_snapshot::UnitSnapshot::capture(output).encode()
                 {
                     cache.store(key, &bytes);
                 }

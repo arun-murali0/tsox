@@ -52,13 +52,9 @@ fn every_default_library_unit_round_trips_exactly() {
     );
     let mut total_bytes = 0;
     let mut carried = 0;
+    let mut diagnostics = 0;
     for (name, output) in &outputs {
-        let snapshot = match UnitSnapshot::capture(output) {
-            Ok(snapshot) => snapshot,
-            // A library file that reports something is not a snapshot candidate.
-            Err(SnapshotError::HasDiagnostics) => continue,
-            Err(other) => panic!("{name}: {other}"),
-        };
+        let snapshot = UnitSnapshot::capture(output);
         let bytes = snapshot.encode().unwrap();
         total_bytes += bytes.len();
         let decoded = UnitSnapshot::decode(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -69,11 +65,17 @@ fn every_default_library_unit_round_trips_exactly() {
         assert_eq!(back.globals, output.globals, "{name}");
         assert_eq!(back.exports, output.exports, "{name}");
         assert_eq!(back.incomplete, output.incomplete, "{name}");
+        assert_eq!(back.diagnostics, output.diagnostics, "{name}");
+        diagnostics += back.diagnostics.len();
         carried += back.globals.len() + back.exports.len();
     }
     eprintln!(
         "{} units, {total_bytes} bytes, {carried} carried items",
         outputs.len()
+    );
+    assert!(
+        diagnostics > 0,
+        "no library unit reported anything, so diagnostics were not exercised"
     );
     assert!(
         carried > 0,
@@ -86,9 +88,9 @@ fn a_reader_refuses_other_formats_and_damaged_bytes() {
     let outputs = lib_outputs();
     let (_, output) = outputs
         .iter()
-        .find(|(_, o)| o.diagnostics.is_empty())
-        .expect("a quiet library unit");
-    let bytes = UnitSnapshot::capture(output).unwrap().encode().unwrap();
+        .find(|(_, o)| !o.diagnostics.is_empty())
+        .expect("a library unit with diagnostics");
+    let bytes = UnitSnapshot::capture(output).encode().unwrap();
 
     let mut other_format = bytes.clone();
     other_format[0] = other_format[0].wrapping_add(1);

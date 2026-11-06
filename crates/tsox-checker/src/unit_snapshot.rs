@@ -1,10 +1,9 @@
 //! A byte form for what a unit hands back, so the result of checking a bundled library file
 //! can be stored and read again instead of being computed on every run.
 //!
-//! A snapshot holds the whole of a [`UnitOutput`] except its diagnostics: a library file is
-//! never reported on, and a snapshot of one that had diagnostics is refused at capture, so a
-//! reader never gets a quieter unit than the one that was checked. What it holds is arena-free
-//! data (LLD 2.1 rule 3), so a decoded snapshot is usable in any worker.
+//! A snapshot holds the whole of a [`UnitOutput`], diagnostics included, so a decoded one is
+//! the unit that was checked and not a quieter copy of it. What it holds is arena-free data
+//! (LLD 2.1 rule 3), so it is usable in any worker.
 //!
 //! The header carries the format number of this module and `ENC_VERSION` of the key
 //! encoding. A reader that sees either differ gets an error and recomputes; it never reads
@@ -12,6 +11,7 @@
 
 use bincode::Options;
 use thiserror::Error;
+use tsox_base::diagnostics::Diagnostic;
 use tsox_base::keys::{DeclKey, ENC_VERSION};
 use tsox_types::portable::PortableDecl;
 
@@ -19,7 +19,7 @@ use crate::bridge::IncompleteReason;
 use crate::unit::{AmbientExports, ReturnRead, UnitOutput};
 
 /// Bump this when the fields below, or the meaning of one, change.
-pub const SNAPSHOT_FORMAT: u32 = 1;
+pub const SNAPSHOT_FORMAT: u32 = 2;
 
 /// Bytes a snapshot may take when decoded. A library file's output is a few hundred kilobytes;
 /// the bound only stops a damaged length prefix from asking for a huge allocation.
@@ -27,8 +27,6 @@ const DECODE_LIMIT: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SnapshotError {
-    #[error("the unit has diagnostics, so it is not a library snapshot")]
-    HasDiagnostics,
     #[error("snapshot format {found} is not the supported format {SNAPSHOT_FORMAT}")]
     Format { found: u32 },
     #[error("snapshot was written under key encoding {found}, not {ENC_VERSION}")]
@@ -41,6 +39,7 @@ pub enum SnapshotError {
 pub struct UnitSnapshot {
     format: u32,
     enc_version: u8,
+    diagnostics: Vec<Diagnostic>,
     incomplete: bool,
     incomplete_reasons: Vec<IncompleteReason>,
     exports: Vec<PortableDecl>,
@@ -55,14 +54,12 @@ pub struct UnitSnapshot {
 }
 
 impl UnitSnapshot {
-    /// What `output` holds, or why it cannot be a snapshot.
-    pub fn capture(output: &UnitOutput) -> Result<Self, SnapshotError> {
-        if !output.diagnostics.is_empty() {
-            return Err(SnapshotError::HasDiagnostics);
-        }
-        Ok(Self {
+    /// What `output` holds.
+    pub fn capture(output: &UnitOutput) -> Self {
+        Self {
             format: SNAPSHOT_FORMAT,
             enc_version: ENC_VERSION,
+            diagnostics: output.diagnostics.clone(),
             incomplete: output.incomplete,
             incomplete_reasons: output.incomplete_reasons.clone(),
             exports: output.exports.clone(),
@@ -74,13 +71,13 @@ impl UnitSnapshot {
             augmentations: output.augmentations.clone(),
             globals: output.globals.clone(),
             return_reads: output.return_reads.clone(),
-        })
+        }
     }
 
-    /// The unit output this snapshot was taken from, with no diagnostics.
+    /// The unit output this snapshot was taken from.
     pub fn into_output(self) -> UnitOutput {
         UnitOutput {
-            diagnostics: Vec::new(),
+            diagnostics: self.diagnostics,
             incomplete: self.incomplete,
             incomplete_reasons: self.incomplete_reasons,
             exports: self.exports,
