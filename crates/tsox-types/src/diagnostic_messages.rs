@@ -66,6 +66,26 @@ pub mod messages {
     /// The code and text for `actual` not being assignable to `expected`, reported
     /// under `plain` when no missing property replaces it. Used where a caller reports
     /// a mismatch of its own kind (a property of an object literal, an arrow body).
+    pub fn tuple_index_out_of_range(text: String) -> DiagnosticMessage {
+        DiagnosticMessage::new(DiagnosticCode::TupleIndexOutOfRange, text)
+    }
+
+    pub fn does_not_satisfy(
+        arena: &TypeArena,
+        actual: TypeId,
+        expected: TypeId,
+    ) -> DiagnosticMessage {
+        use crate::type_display::{display_source_type, display_type};
+        DiagnosticMessage::new(
+            DiagnosticCode::SatisfiesMismatch,
+            format!(
+                "Type '{}' does not satisfy the expected type '{}'.",
+                display_source_type(arena, actual, expected),
+                display_type(arena, expected)
+            ),
+        )
+    }
+
     pub fn assignability(
         arena: &TypeArena,
         actual: TypeId,

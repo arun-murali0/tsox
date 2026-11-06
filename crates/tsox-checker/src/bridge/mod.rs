@@ -223,6 +223,13 @@ fn publish(ctx: &mut CheckContext<'_, '_>) -> (Vec<Diagnostic>, CheckMetrics) {
         }
     }
 
+    for (span, message) in ctx.namespace.take_tuple_index_issues() {
+        ctx.error(
+            crate::diagnostic_messages::messages::tuple_index_out_of_range(message),
+            span,
+        );
+    }
+
     for span in ctx.namespace.take_too_complex() {
         ctx.error(
             crate::diagnostic_messages::messages::expression_too_complex(),

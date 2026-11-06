@@ -219,6 +219,17 @@ pub fn declare_top_level<'ast>(program: &'ast Program<'ast>, ctx: &mut CheckCont
     }
     declare_values(&items, ctx, program.source_type.is_typescript_definition());
     resolve_merged_declarations(&items, ctx);
+    // tsc reads every alias, used or not, so an error inside one (`[A, B][2]`) is reported
+    // for an alias nothing refers to.
+    for (item, _) in items.iter().copied() {
+        if let TopLevelItem::Alias(alias) = item
+            && alias.type_parameters.is_none()
+        {
+            let _ = ctx
+                .namespace
+                .resolve(alias.id.name.as_str(), &mut ctx.arena);
+        }
+    }
 }
 
 // tsc checks a merged interface (several `interface A` parts, or a class with an interface of

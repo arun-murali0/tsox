@@ -38,6 +38,8 @@ pub enum DiagnosticCode {
     ObjectPossiblyNull,
     ObjectPossiblyUndefined,
     ObjectPossiblyNullOrUndefined,
+    SatisfiesMismatch,
+    TupleIndexOutOfRange,
 
     // 1100s: calls
     NotCallable,
@@ -145,6 +147,8 @@ impl DiagnosticCode {
             ObjectPossiblyNull => "TSR1018",
             ObjectPossiblyUndefined => "TSR1019",
             ObjectPossiblyNullOrUndefined => "TSR1020",
+            SatisfiesMismatch => "TSR1021",
+            TupleIndexOutOfRange => "TSR1022",
 
             NotCallable => "TSR1101",
             ArgumentArityMismatch => "TSR1102",
@@ -249,6 +253,8 @@ impl DiagnosticCode {
             ObjectPossiblyNull => 2531,
             ObjectPossiblyUndefined => 2532,
             ObjectPossiblyNullOrUndefined => 2533,
+            SatisfiesMismatch => 1360,
+            TupleIndexOutOfRange => 2493,
 
             NotCallable => 2349,
             NotConstructor => 2351,

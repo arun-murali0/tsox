@@ -564,6 +564,22 @@ pub fn resolve_ts_type(
             {
                 return Some(arena.alloc(Type::IndexedAccess(object, index)));
             }
+            if let Type::Tuple(elements) = arena.get(object).clone()
+                && let Type::NumberLiteral(position) = arena.get(index).clone()
+                && position >= 0.0
+                && position.fract() == 0.0
+                && !elements.iter().any(|element| element.rest)
+                && position as usize >= elements.len()
+            {
+                let message = format!(
+                    "Tuple type '{}' of length '{}' has no element at index '{}'.",
+                    crate::type_display::display_type(arena, object),
+                    elements.len(),
+                    position as usize
+                );
+                namespace.note_tuple_index_issue(access.span, message);
+                return Some(arena.error());
+            }
             indexed_access(arena, object, index)
         }
 

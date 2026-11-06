@@ -216,6 +216,8 @@ pub struct TypeNamespace<'a> {
     // here and reported as a warning once checking finishes, the same way
     // implicit_any_params is.
     unresolved_constraints: Vec<(String, Span)>,
+    // `[A, B][2]`: the message and where it goes, written when the access is read.
+    tuple_index_issues: Vec<(Span, String)>,
 
     // Real TypeScript merges multiple `interface Foo` declarations for the same
     // name into one shape. The first declaration stays in `entries` as
@@ -477,6 +479,7 @@ impl<'a> TypeNamespace<'a> {
             imported_generics: FxHashMap::default(),
             implicit_any_params: Vec::new(),
             unresolved_constraints: Vec::new(),
+            tuple_index_issues: Vec::new(),
             type_argument_issues: Vec::new(),
             constraint_violations: Vec::new(),
             instantiations: FxHashMap::default(),
@@ -805,6 +808,16 @@ impl<'a> TypeNamespace<'a> {
 
     pub fn take_implicit_any_params(&mut self) -> Vec<(String, Span)> {
         std::mem::take(&mut self.implicit_any_params)
+    }
+
+    pub fn note_tuple_index_issue(&mut self, span: Span, message: String) {
+        if !self.tuple_index_issues.iter().any(|(s, _)| *s == span) {
+            self.tuple_index_issues.push((span, message));
+        }
+    }
+
+    pub fn take_tuple_index_issues(&mut self) -> Vec<(Span, String)> {
+        std::mem::take(&mut self.tuple_index_issues)
     }
 
     pub fn take_unresolved_constraints(&mut self) -> Vec<(String, Span)> {
