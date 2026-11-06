@@ -9,13 +9,38 @@ yet; see "Phases" below.
 
 | From `oxc_cfg` (the skeleton) | From one AST pass (what the skeleton lacks) |
 |---|---|
-| Basic blocks and edges; reachability (`is_unreachable`) | Which successor is the true one and which the false one: the edge into an `if`, ternary or loop body, or into the right operand of `&&`, `\|\|`, `??` |
+| Basic blocks and edges | Which successor is the true one and which the false one: the edge into an `if`, ternary or loop body, or into the right operand of `&&`, `\|\|`, `??` |
 | `Finalize` and explicit `Error` edges (try, catch, finally) | Assignments: declarators, `x = v`, `x++`, `for (x of …)`, destructuring, `a.b.c = v` |
 | The node-to-block map (`nodes().cfg_id`), used for every AST node | Switch dispatch: the block each `case` is entered by, and what falling through means |
 | Block order inside a body | Where an expression ends when it branches (`a ?? b` ends in the block where its paths meet) |
 
 Back edges are found by a depth-first walk, not read from oxc: oxc marks the closing edge of a
 `while` or `for` as `Backedge` but a `continue` as an ordinary jump.
+
+## Reachability: the one place the skeleton is not used
+
+"Is this statement dead" is answered by `crate::reachability`, not by oxc's `is_unreachable`.
+oxc builds a correct graph of JavaScript, and tsc's binder builds a different one, and every
+difference changes which statements tsc calls dead:
+
+- a condition is constant only when it is the bare `true` or `false` keyword; `(true)`, `!true`,
+  `1` and `null` are not, while `&&` and `||` carry constants through their operands and `??`
+  does not;
+- `break` and `continue` jump straight to their target, past an enclosing `finally`;
+- a `catch` and a `finally` are entered from the start of their `try`, so they are live whenever
+  the `try` is;
+- a `switch` with no `default` always falls out of the bottom;
+- a diagnostic covers a run of adjacent dead statements, and a function declaration, an empty
+  statement, a `var` without initializer or a block ends the run.
+
+`reachability::analyze` replays those rules over the AST and returns the dead statements and
+the TS7027 / TS7029 spans. It is a pure function of the program, so definite assignment and the
+narrowing resolver can ask the same question and get the same answer. The graph stays what it
+is good for, blocks and the node-to-block map, for the dataflow phases below.
+
+Still open here because they need types: a call to a `never`-returning or `asserts false`
+function, and a `switch` that exhausts its discriminant. tsc folds both into the same question
+when it checks.
 
 ## Flow nodes
 
@@ -68,3 +93,16 @@ TSOX_FLOW_CORPUS=tests/typescript-testcases cargo test -p tsox-checker --lib flo
 
 `TSOX_FLOW_FILE=x.ts cargo test -p tsox-checker --lib flow::tests::show -- --ignored --nocapture`
 prints one file's graph.
+
+## Checking reachability against tsc
+
+`tests/reachability_rules.rs` pins the exact lines tsc reports for one case per rule above.
+`scripts/flow-stress/run.sh` generates random control flow and compares tsox with tsc line by
+line:
+
+```text
+scripts/flow-stress/run.sh --seed 1 --files 400 --codes 7027,7029
+```
+
+It prints, per code, how many lines agree and differ, then the statement around the first
+differences. Any seed should report 0 differ.

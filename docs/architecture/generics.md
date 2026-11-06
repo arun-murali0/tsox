@@ -115,6 +115,6 @@ What's still limited here: this protects *declaration*-level recursion (a type r
 - **Inference walks arrays, objects, functions and unions only.** Tuples and `Promise<T>` contribute no bindings.
 - **`const` type parameters** and **variance modifiers (`in`/`out`)** on declared type parameters.
 - **Full coinductive subtyping** for recursive types compared against each other (see §8).
-- **`Awaited<T>` and real `Promise<T>` modeling** (see §9) — blocked on `async`/`await` support existing first.
+- **`Awaited<T>` and real `Promise<T>` modeling** (see §9). `async` and `await` are checked now, so what blocks this is real library shapes through the provider; see [library-and-ambient-declarations](library-and-ambient-declarations.md).
 
-For the complete, itemized picture across the whole type system (not just generics), see `checklist.md` at the repository root.
+For what the checker catches across the whole type system, measured against `tsc` and not just for generics, see [language-coverage](../language-coverage.md).

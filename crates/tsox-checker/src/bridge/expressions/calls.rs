@@ -56,6 +56,9 @@ struct CallSite<'s, 'ast> {
     // declaration that appears in its type is not.
     callee_is_declaration: bool,
     explicit_type_args: &'s [TypeId],
+    // What the call is expected to produce, when its position says (an annotated
+    // declaration, a return, an assignment target).
+    return_context: Option<TypeId>,
 }
 
 // Only a plain name or an `a.b` member is a callee this checker can type. Any other callee
@@ -68,6 +71,7 @@ pub(super) fn infer_call_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
+    let return_context = ctx.call_return_context.take();
     let mut callee_is_declaration = false;
     let (callee_type, callee_name) = match &call.callee {
         Expression::Identifier(ident) => {
@@ -101,6 +105,7 @@ pub(super) fn infer_call_expression_type(
     check_callable(
         callee_type,
         CallSite {
+            return_context,
             arguments: &call.arguments,
             span: call.span(),
             callee_name: &callee_name,
@@ -147,6 +152,7 @@ pub(super) fn infer_new_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
+    let return_context = ctx.call_return_context.take();
     let (callee_type, callee_name) = match &new_expr.callee {
         Expression::Identifier(callee_ident) => (
             resolve_identifier_type(callee_ident, scoping, ctx),
@@ -167,6 +173,7 @@ pub(super) fn infer_new_expression_type(
     check_callable(
         callee_type,
         CallSite {
+            return_context,
             arguments: &new_expr.arguments,
             span: new_expr.span(),
             callee_name: &callee_name,
@@ -812,6 +819,7 @@ fn check_callable(
         is_new,
         callee_is_declaration,
         explicit_type_args,
+        return_context,
     } = site;
 
     // A value of a constrained type parameter (`fn: T` with `T extends (...a: any[]) => R`)
@@ -1048,10 +1056,14 @@ fn check_callable(
                 let Some(expr) = other.as_expression() else {
                     continue;
                 };
+                // A callback whose parameters are all annotated does not need the other
+                // arguments to be typed, and it is itself evidence for them (`pipe((n:
+                // number) => String(n), s => s.length)` fixes B from the first one), so
+                // only a context-sensitive one is put off.
                 let is_callback = matches!(
                     expr,
                     Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
-                );
+                ) && is_context_sensitive(expr);
                 let is_contextual_object = has_non_callback_non_object_anchor
                     && matches!(expr, Expression::ObjectExpression(_))
                     && is_context_sensitive(expr);
@@ -1136,8 +1148,18 @@ fn check_callable(
         }
     }
 
+    // `(...args: T)` with `T extends unknown[]`: the parameter stands for every argument
+    // from its position on, so T is inferred as the tuple of their types rather than
+    // matched against them one by one.
+    let tuple_rest_index = function_type
+        .params
+        .iter()
+        .position(|p| p.rest && matches!(ctx.arena.get(p.type_id), Type::GenericParameter(..)));
     let mut inference = GenericInferenceSession::new(bindings, locked);
     for (index, arg_type) in arg_types.iter().enumerate() {
+        if tuple_rest_index.is_some_and(|rest| index >= rest) {
+            continue;
+        }
         let Some(arg_type) = arg_type else { continue };
         if let Some(param_type) =
             GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index)
@@ -1149,6 +1171,44 @@ fn check_callable(
                 &mut ctx.relation_cache,
             );
         }
+    }
+    if let Some(rest) = tuple_rest_index
+        && first_spread.is_none()
+        && arg_types.len() >= rest
+        && arg_types[rest..].iter().all(|t| t.is_some())
+    {
+        let elements: Vec<crate::types::TupleElement> = arg_types[rest..]
+            .iter()
+            .flatten()
+            .map(|&type_id| crate::types::TupleElement {
+                type_id: crate::types::widen(&ctx.arena, type_id),
+                optional: false,
+                rest: false,
+            })
+            .collect();
+        let tuple = ctx.arena.alloc_tuple(elements);
+        inference.infer_argument(
+            &mut ctx.arena,
+            function_type.params[rest].type_id,
+            tuple,
+            &mut ctx.relation_cache,
+        );
+    }
+
+    // The type the call is expected to produce is evidence for a parameter that only the
+    // return type mentions (`const a: string[] = mk()` for `mk<T>(): T[]`). It is the
+    // weakest kind, so any argument decides first (tsc's InferencePriority.ReturnType).
+    if let Some(expected) = return_context
+        && !GenericSolver::contains_type_param(&ctx.arena, expected)
+        && GenericSolver::contains_type_param(&ctx.arena, function_type.return_type)
+    {
+        inference.infer_argument_with_priority(
+            &mut ctx.arena,
+            function_type.return_type,
+            expected,
+            InferencePriority::Low,
+            &mut ctx.relation_cache,
+        );
     }
 
     // Preview bindings from non-callback arguments. This is not the final answer: the
@@ -1188,6 +1248,21 @@ fn check_callable(
         let Some(expr) = arguments[index].as_expression() else {
             continue;
         };
+        // An earlier deferred argument may have fixed a parameter this one is typed from
+        // (`two(x => x.length, y => ...)`), so the preview is rebuilt from the evidence
+        // gathered so far, the way tsc fixes parameters left to right.
+        let refreshed = inference
+            .clone()
+            .finish(&mut ctx.arena, &mut ctx.relation_cache);
+        for (id, ty) in refreshed {
+            match contextual_bindings
+                .iter_mut()
+                .find(|(bound, _)| *bound == id)
+            {
+                Some(slot) => slot.1 = ty,
+                None => contextual_bindings.push((id, ty)),
+            }
+        }
         let Some(param_type) =
             GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index)
         else {
@@ -1324,7 +1399,34 @@ fn check_callable(
         else {
             continue;
         };
-        let expected = GenericSolver::substitute_type_params(&mut ctx.arena, param_type, &bindings);
+        let mut expected =
+            GenericSolver::substitute_type_params(&mut ctx.arena, param_type, &bindings);
+        // An argument under a tuple-typed rest parameter is checked against the tuple
+        // element at its place.
+        let rest_tuple = match tuple_rest_index {
+            Some(rest) if index >= rest => {
+                let substituted = GenericSolver::substitute_type_params(
+                    &mut ctx.arena,
+                    function_type.params[rest].type_id,
+                    &bindings,
+                );
+                match ctx.arena.get(substituted).clone() {
+                    Type::Tuple(elements) => Some((rest, elements)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some((rest, elements)) = rest_tuple {
+            let position = index - rest;
+            expected = match elements.get(position) {
+                Some(element) => element.type_id,
+                None => match elements.last() {
+                    Some(last) if last.rest => last.type_id,
+                    _ => continue,
+                },
+            };
+        }
         if !ctx.is_assignable_instantiating(arg_type, expected) {
             // tsc reports a bad property of an object literal argument on the property
             // itself, as a plain assignability error; only an argument it cannot take
@@ -1346,8 +1448,26 @@ fn check_callable(
         }
     }
 
-    let result =
-        GenericSolver::substitute_type_params(&mut ctx.arena, function_type.return_type, &bindings);
+    // A constructor's result is the class body, and its members may declare type parameters
+    // of their own (`map<U>(f: (t: T) => U): Box<U>`). Those are inferred at the member's
+    // call, so they must stay: only the class's own parameters that nothing informed fall
+    // back to unknown.
+    let result = if is_new {
+        let mut class_bindings = bindings.clone();
+        for &id in &own_ids {
+            if !class_bindings.iter().any(|(bound, _)| *bound == id) {
+                let unknown = ctx.arena.unknown();
+                class_bindings.push((id, unknown));
+            }
+        }
+        GenericSolver::substitute_bound_type_params(
+            &mut ctx.arena,
+            function_type.return_type,
+            &class_bindings,
+        )
+    } else {
+        GenericSolver::substitute_type_params(&mut ctx.arena, function_type.return_type, &bindings)
+    };
     // A constructor's result is the class body with its parameters substituted. Keep it as
     // an application of the class, as an annotation `Vec2<number>` is, so it prints that
     // way and is related to one through the class's variance instead of body by body.

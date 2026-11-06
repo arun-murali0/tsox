@@ -24,6 +24,8 @@ pub struct ModuleResolver {
     // Under NodeNext a `.ts` file's module format comes from the nearest package.json `type`.
     // Off by default: bundler-style projects read every import under `import`.
     node_next: bool,
+    // `noLib` suppresses automatic library inclusion, including `/// <reference lib>` edges.
+    no_lib: bool,
     // Directory -> whether the nearest package.json at or above it says "type": "module".
     package_types: Mutex<HashMap<PathBuf, bool>>,
 }
@@ -45,6 +47,7 @@ impl ModuleResolver {
             require_resolver: Resolver::new(options(ResolveMode::Require)),
             reads_tsconfig: false,
             node_next: false,
+            no_lib: false,
             package_types: Mutex::new(HashMap::new()),
         }
     }
@@ -68,6 +71,7 @@ impl ModuleResolver {
             require_resolver: with_config(ResolveMode::Require),
             reads_tsconfig: true,
             node_next: false,
+            no_lib: false,
             package_types: Mutex::new(HashMap::new()),
         }
     }
@@ -83,6 +87,18 @@ impl ModuleResolver {
     /// Whether imports are read under the NodeNext rule set (see `with_node_next`).
     pub fn is_node_next(&self) -> bool {
         self.node_next
+    }
+
+    /// Makes `noLib` suppress both automatic standard-library entries and explicit
+    /// `/// <reference lib="..." />` edges, matching TypeScript's no-library mode.
+    pub fn with_no_lib(mut self, on: bool) -> Self {
+        self.no_lib = on;
+        self
+    }
+
+    /// Whether this resolver is operating with `noLib` enabled.
+    pub fn no_lib(&self) -> bool {
+        self.no_lib
     }
 
     /// Whether the nearest `package.json` at or above `from`'s directory declares

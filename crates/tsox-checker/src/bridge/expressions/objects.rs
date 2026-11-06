@@ -136,20 +136,37 @@ fn accessor_value_type(
 // The declared types of property `name` in `expected`: an object has it directly, a union
 // of objects has one per member that declares it, and anything else has none.
 fn declared_properties(ctx: &CheckContext<'_, '_>, expected: TypeId, name: &str) -> Vec<TypeId> {
-    let mut found: Vec<TypeId> = Vec::new();
-    let members: Vec<TypeId> = match ctx.arena.get(expected) {
-        Type::Union(members) => members.clone(),
-        _ => vec![expected],
-    };
-    for member in members {
-        if let Type::Object(object) = ctx.arena.get(member) {
-            if let Some(property) = object.properties.iter().find(|p| &*p.name == name) {
-                if !found.contains(&property.type_id) {
+    fn collect(
+        ctx: &CheckContext<'_, '_>,
+        id: TypeId,
+        name: &str,
+        depth: u8,
+        found: &mut Vec<TypeId>,
+    ) {
+        if depth > 4 {
+            return;
+        }
+        match ctx.arena.get(id) {
+            // Each member of a union may declare the property, and each member of an
+            // intersection does too: a literal written for `{ a: 1 } & { b: 2 }` is read
+            // against both.
+            Type::Union(members) | Type::Intersection(members) => {
+                for &member in members.clone().iter() {
+                    collect(ctx, member, name, depth + 1, found);
+                }
+            }
+            Type::Object(object) => {
+                if let Some(property) = object.properties.iter().find(|p| &*p.name == name)
+                    && !found.contains(&property.type_id)
+                {
                     found.push(property.type_id);
                 }
             }
+            _ => {}
         }
     }
+    let mut found: Vec<TypeId> = Vec::new();
+    collect(ctx, expected, name, 0, &mut found);
     found
 }
 

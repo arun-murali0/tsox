@@ -487,10 +487,19 @@ fn export_braces_of_an_unknown_name_is_unsupported() {
 
 #[test]
 fn export_braces_of_an_unsupported_declaration_is_unsupported() {
-    // A namespace has a value side the portable form does not carry yet.
-    let out = run("namespace N { export const x = 1; } export { N };");
+    // A namespace with a member the checker cannot type yet (an unannotated call) has a value
+    // side the portable form does not carry.
+    let out = run("namespace N { export const x = Math.max(1, 2); } export { N };");
     assert!(out.incomplete);
     assert!(out.exports.is_empty());
+}
+
+#[test]
+fn export_braces_of_a_readable_namespace_exports_it() {
+    // A namespace whose members are all typed is carried as a value object.
+    let out = run("namespace N { export const x = 1; } export { N };");
+    assert!(!out.incomplete, "{out:?}");
+    assert_eq!(names(&out), vec!["N"]);
 }
 
 #[test]

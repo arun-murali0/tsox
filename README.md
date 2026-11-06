@@ -6,7 +6,7 @@
 
 **Tsoxide (tsox) is experimental software. Do not use it as a production TypeScript compiler**
 
-The project is actively evolving. TypeScript compatibility is incomplete (there are no tuples, `keyof`, mapped or conditional types, and classes, enums and overloads do not yet cross files), and the compatibility harness is an experimental comparison tool rather than a correctness proof.
+The project is actively evolving. TypeScript compatibility is incomplete (mapped and template literal types are not resolved yet, several class rules such as `abstract`, `private` and `implements` are not enforced, and reading a static member through the class name is wrongly reported; [what the checker catches today](docs/language-coverage.md) is measured against `tsc`), and the compatibility harness is an experimental comparison tool rather than a correctness proof.
 
 ## What is Tsoxide?
 
@@ -83,7 +83,7 @@ The project is also an architecture study. The implementation is intentionally b
 
 ## Current implementation
 
-The project records progress using **semantic milestone names**, not opaque version labels. The current baseline is **Cross-File Types**: a type written in one file is used in another, imports are diagnosed, and import cycles settle (see [docs/architecture/cross-file-types.md](docs/architecture/cross-file-types.md)), on top of generics that are substantially complete across functions, interfaces, type aliases and classes (see [docs/architecture/generics.md](docs/architecture/generics.md)). `checklist.md` at the repository root tracks the full TypeScript type-system surface item by item, and `BUILD.md` tracks the current build order beyond it.
+The project records progress using **semantic milestone names**, not opaque version labels. The current baseline is the **Project Engine** (see [docs/architecture/project-engine.md](docs/architecture/project-engine.md)), which builds on **Cross-File Types**: a type written in one file is used in another, imports are diagnosed, and import cycles settle (see [docs/architecture/cross-file-types.md](docs/architecture/cross-file-types.md)), on top of generics that are substantially complete across functions, interfaces, type aliases and classes (see [docs/architecture/generics.md](docs/architecture/generics.md)). [docs/language-coverage.md](docs/language-coverage.md) says what the checker catches today, measured against `tsc`, and the [roadmap](docs/roadmap.md) lists what is open.
 
 ```text
 Foundation
@@ -171,8 +171,11 @@ docs/
 ├── README.md
 ├── architecture.md
 ├── architecture/          # one case study per subsystem: arena, narrowing, generics,
-│                          # intersections, module-resolution, cross-file-types,
-│                          # foundation-dependencies
+│                          # intersections, module-resolution, cross-file-types, the
+│                          # project engine (scheduler, partial results, cycles, configuration,
+│                          # library, query layer, safety), workspace, flow
+├── language-coverage.md   # what the checker catches today, measured against tsc
+├── conformance/           # the tsc conformance baseline
 ├── case-study.md
 ├── decisions.md
 ├── roadmap.md
@@ -184,14 +187,14 @@ scripts/
 ├── ci.sh
 ├── harness.sh
 ├── compare-local.sh
+├── check-layering.py      # the crate dependency rule, run first by ci.sh
+├── coverage-probes.py     # tsox against tsc on small probe programs; feeds docs/language-coverage.md
 ├── ts-diag-tool/          # tsc/tsgo diagnostic comparison, see README's own section on it
 └── enable-hooks.sh
 
 benches/                 # Criterion and IAI benchmarks
 examples/                # Small usage and profiling examples
 crates/                  # the workspace crates, including the CLI (see Repository structure)
-checklist.md             # full TypeScript type-system surface, item-by-item status
-BUILD.md                 # current build order, derived from checklist.md
 ```
 
 ## Architecture direction
@@ -229,7 +232,7 @@ cargo fmt --all
 Check:
 
 ```bash
-cargo check --all-targets --all-features
+cargo check --workspace --all-targets --all-features
 ```
 
 Lint:
@@ -241,7 +244,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 Test:
 
 ```bash
-cargo test --all-targets --all-features
+cargo test --workspace --all-targets --all-features
 ```
 
 Run the repository quality gate:
@@ -282,8 +285,10 @@ Start with [docs/README.md](docs/README.md) for the milestone map and architectu
 - [Cross-File Types](docs/architecture/cross-file-types.md): stable keys, portable declarations, units, imports and exports, and where the code differs from the plan.
 - [Arena](docs/architecture/arena.md): ids, interning, `Ref` slots, named nodes and the performance phases.
 - [Case study](docs/case-study.md): why the checker is built the way it is, one decision per section.
-- [Decisions](docs/decisions.md): the choices that closed the open questions in `HLD.md`, with what would reopen each.
-- [Architecture Foundation](docs/architecture/foundation-dependencies.md): the optional dependencies from the design documents (Salsa, Bumpalo, mimalloc), each behind its own feature and not yet used by the checker.
+- [Decisions](docs/decisions.md): the design decisions, with what would reopen each.
+- [Architecture Foundation](docs/architecture/foundation-dependencies.md): the optional dependencies (Salsa, Bumpalo, mimalloc), each behind its own feature.
+- [Project Engine](docs/architecture/project-engine.md): how a set of files is checked: the scheduler, partial results, cycles, configuration, library declarations, the query layer, and the limits that keep it from aborting.
+- [Language coverage](docs/language-coverage.md): what the checker catches today, measured against `tsc`.
 - [Testing](docs/testing.md): fixture conventions, regression policy, benchmarks, and compatibility harness.
 - [Purpose and boundaries](docs/purpose-and-overdesign.md): why the project exists and what it deliberately does not rebuild.
 

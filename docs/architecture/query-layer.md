@@ -1,8 +1,7 @@
-# The query layer (E7)
+# The Query Layer
 
-The design this implements is in [`e7-system-design-plan.txt`](e7-system-design-plan.txt) (kept as
-written) and LLD 6.2 to 6.7. This note says what was built, where it differs from the plan, and
-what was measured. Code: `crates/tsox-db/src/incremental.rs` (inputs, handles) and `crates/tsox-db/src/incremental/project.rs`
+This note says what the query layer is, what was built against the plan it started from (the first
+column of the table under Shape), and what was measured. Code: `crates/tsox-db/src/incremental.rs` (inputs, handles) and `crates/tsox-db/src/incremental/project.rs`
 (queries and the driver). Behind the `incremental` feature, which turns on `module-resolution`.
 
 ## Shape
@@ -10,7 +9,7 @@ what was measured. Code: `crates/tsox-db/src/incremental.rs` (inputs, handles) a
 Two planes, as planned. Salsa decides what must run again. The checker does the work and knows
 nothing about Salsa: `check_unit_isolated` runs `run_unit`, the code the full driver runs for one
 component, against a snapshot of what its dependencies exported. The scheduler of `check_project`
-stays in charge of order (LLD 6.7, option 1); for each component of the first pass it asks the
+stays in charge of order (the plan's first option: the full driver keeps the schedule and the query layer answers per unit); for each component of the first pass it asks the
 query layer, and a component whose inputs did not change is answered from its memo.
 `IncrementalProject::check()` returns the same `ProjectReport` as `check_project`.
 
@@ -44,7 +43,7 @@ uses `IncrementalProject` directly, with `set_buffer` for unsaved text. The full
 
 - **Who owns a parse.** The header query scans a file for its requests and keeps no tree. The
   checking unit parses its own file and drops the tree with its arena. Nothing keeps an AST between
-  revisions, so peak memory is not doubled (the E4 measurement that argued against keeping trees).
+  revisions, so peak memory is not doubled (the measurement in [scheduler](scheduler.md) that argued against keeping trees).
   Parsing once for both stays open.
 - **Order stays with the scheduler.** A unit reads its dependencies from a store, not through a
   query, because a query result would make it depend on all of the dependency. That is sound only
@@ -57,12 +56,12 @@ uses `IncrementalProject` directly, with `set_buffer` for unsaved text. The full
 
 ## Evidence
 
-`tests/incremental_project.rs` (16 tests) takes each row of the LLD 6.5 matrix, asserts which units
+`tests/incremental_project.rs` (37 tests) takes each row of the invalidation matrix below, asserts which units
 ran, and compares the report with a cold `check_project` on the same files; a run of 40 random
 edits does the same after every edit. The Salsa behaviors it relies on are pinned in
 `crates/tsox-db/src/incremental.rs` (early cutoff, reuse, thread handles, cancellation).
 
-| LLD 6.5 row | Test | Units that ran |
+| Invalidation case | Test | Units that ran |
 |---|---|---|
 | Unchanged save | `an_unchanged_save_runs_nothing` | none, no header query, epoch unchanged |
 | Whitespace or comment edit | `a_whitespace_edit_runs_that_unit_and_stops_there` | that unit |

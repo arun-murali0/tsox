@@ -38,6 +38,8 @@ pub enum DiagnosticCode {
     ObjectPossiblyNull,
     ObjectPossiblyUndefined,
     ObjectPossiblyNullOrUndefined,
+    SatisfiesMismatch,
+    TupleIndexOutOfRange,
 
     // 1100s: calls
     NotCallable,
@@ -56,6 +58,7 @@ pub enum DiagnosticCode {
     NoExportedMember,
     NoDefaultExport,
     TypeUsedAsValue,
+    ImportTypeOnlyValue,
 
     // 1300s: destructuring
     ArrayDestructuringRequiresArray,
@@ -79,9 +82,15 @@ pub enum DiagnosticCode {
     DuplicateTypeDeclaration,
     EnumDeclarationMerge,
     DuplicateBlockScopedVariable,
+    NamespaceExportMismatch,
+    NamespaceMergeOrder,
+    SubsequentPropertyDeclarationMustMatch,
+    EnumMultipleDeclarationsRequireInitializer,
+    PropertyDeclarationsMustHaveIdenticalModifiers,
 
     // 1600s: reachability
     UnreachableCode,
+    FallthroughCaseInSwitch,
 
     // 1700s: type construction
     ExpressionTooComplex,
@@ -138,6 +147,8 @@ impl DiagnosticCode {
             ObjectPossiblyNull => "TSR1018",
             ObjectPossiblyUndefined => "TSR1019",
             ObjectPossiblyNullOrUndefined => "TSR1020",
+            SatisfiesMismatch => "TSR1021",
+            TupleIndexOutOfRange => "TSR1022",
 
             NotCallable => "TSR1101",
             ArgumentArityMismatch => "TSR1102",
@@ -154,6 +165,7 @@ impl DiagnosticCode {
             NoExportedMember => "TSR1204",
             NoDefaultExport => "TSR1205",
             TypeUsedAsValue => "TSR1206",
+            ImportTypeOnlyValue => "TSR1209",
 
             ArrayDestructuringRequiresArray => "TSR1301",
 
@@ -174,8 +186,14 @@ impl DiagnosticCode {
             EnumDeclarationMerge => "TSR1505",
             TypeArgumentListCountMismatch => "TSR1506",
             DuplicateBlockScopedVariable => "TSR1507",
+            NamespaceExportMismatch => "TSR1508",
+            NamespaceMergeOrder => "TSR1509",
+            SubsequentPropertyDeclarationMustMatch => "TSR1510",
+            EnumMultipleDeclarationsRequireInitializer => "TSR1511",
+            PropertyDeclarationsMustHaveIdenticalModifiers => "TSR1512",
 
             UnreachableCode => "TSR1601",
+            FallthroughCaseInSwitch => "TSR1602",
 
             ExpressionTooComplex => "TSR1701",
 
@@ -235,6 +253,8 @@ impl DiagnosticCode {
             ObjectPossiblyNull => 2531,
             ObjectPossiblyUndefined => 2532,
             ObjectPossiblyNullOrUndefined => 2533,
+            SatisfiesMismatch => 1360,
+            TupleIndexOutOfRange => 2493,
 
             NotCallable => 2349,
             NotConstructor => 2351,
@@ -251,6 +271,7 @@ impl DiagnosticCode {
             NoExportedMember => 2305,
             NoDefaultExport => 1192,
             TypeUsedAsValue => 2693,
+            ImportTypeOnlyValue => 1361,
 
             ArrayDestructuringRequiresArray => 2488,
 
@@ -261,6 +282,11 @@ impl DiagnosticCode {
             DuplicateTypeDeclaration => 2300,
             EnumDeclarationMerge => 2567,
             DuplicateBlockScopedVariable => 2451,
+            NamespaceExportMismatch => 2395,
+            NamespaceMergeOrder => 2434,
+            SubsequentPropertyDeclarationMustMatch => 2717,
+            EnumMultipleDeclarationsRequireInitializer => 2432,
+            PropertyDeclarationsMustHaveIdenticalModifiers => 2687,
 
             ImplicitAnyParameter => 7006,
             ImplicitAnyElement => 7053,
@@ -279,6 +305,7 @@ impl DiagnosticCode {
             TupleNegativeIndex => 2514,
 
             UnreachableCode => 7027,
+            FallthroughCaseInSwitch => 7029,
             ExpressionTooComplex => 2590,
 
             UnimplementedCallExpressionKind

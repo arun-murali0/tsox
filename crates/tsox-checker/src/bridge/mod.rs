@@ -196,6 +196,40 @@ fn bodies_phase<'ast>(
 // Turns what the passes left in the namespace into diagnostics and returns the file's
 // diagnostics in order, with the metrics of the check that made them.
 fn publish(ctx: &mut CheckContext<'_, '_>) -> (Vec<Diagnostic>, CheckMetrics) {
+    for issue in ctx.namespace.take_interface_property_issues() {
+        if issue.modifier_mismatch {
+            let message =
+                crate::diagnostic_messages::messages::property_declarations_must_have_identical_modifiers(
+                    &issue.name,
+                );
+            ctx.error(message, issue.span);
+            if let Some(related_span) = issue.related_span {
+                let message =
+                    crate::diagnostic_messages::messages::property_declarations_must_have_identical_modifiers(
+                        &issue.name,
+                    );
+                ctx.error(message, related_span);
+            }
+        } else {
+            ctx.error(
+                crate::diagnostic_messages::messages::subsequent_property_declaration_must_match(
+                    &ctx.arena,
+                    &issue.name,
+                    issue.existing,
+                    issue.incoming,
+                ),
+                issue.span,
+            );
+        }
+    }
+
+    for (span, message) in ctx.namespace.take_tuple_index_issues() {
+        ctx.error(
+            crate::diagnostic_messages::messages::tuple_index_out_of_range(message),
+            span,
+        );
+    }
+
     for span in ctx.namespace.take_too_complex() {
         ctx.error(
             crate::diagnostic_messages::messages::expression_too_complex(),
@@ -247,7 +281,10 @@ fn publish(ctx: &mut CheckContext<'_, '_>) -> (Vec<Diagnostic>, CheckMetrics) {
                             imported.params.iter().map(|p| p.name.as_str()).collect();
                         format!("{name}<{}>", params.join(", "))
                     }
-                    None => name.to_string(),
+                    None => ctx
+                        .namespace
+                        .unmodelled_generic_display(name)
+                        .unwrap_or_else(|| name.to_string()),
                 },
             };
             ctx.error(

@@ -278,6 +278,13 @@ struct Globals {
     // Names the project declares globally whose declaration could not be carried over. A use
     // of one is not a missing name, but nothing is known about its type.
     unmodelled_globals: std::collections::HashSet<String>,
+    // The type parameters of the generic ones among them, so a reference can still be checked
+    // for its number of type arguments. The first declaration in path order wins.
+    unmodelled_generics: FxHashMap<String, Vec<(String, bool)>>,
+    // Of the unmodelled names, those dropped as a type and those dropped with a runtime side.
+    // A name only in the first is a type with no value.
+    unmodelled_type_names: std::collections::HashSet<String>,
+    unmodelled_value_names: std::collections::HashSet<String>,
     // Whether a package specifier no file answers is certainly a missing module (see
     // `bare_specifiers_are_reportable`).
     bare_reportable: bool,
@@ -353,6 +360,18 @@ impl Globals {
                 globals
                     .unmodelled_globals
                     .extend(block.unmodelled.iter().cloned());
+                globals
+                    .unmodelled_type_names
+                    .extend(block.unmodelled_types.iter().cloned());
+                globals
+                    .unmodelled_value_names
+                    .extend(block.unmodelled_values.iter().cloned());
+                for (name, params) in &block.unmodelled_generics {
+                    globals
+                        .unmodelled_generics
+                        .entry(name.clone())
+                        .or_insert_with(|| params.clone());
+                }
             }
         }
         // A script reaches the members of a UMD global without an import edge, so it does
@@ -1214,7 +1233,7 @@ pub fn check_unit_isolated(
 pub fn unit_environment(graph: &ModuleGraph) -> String {
     format!(
         "{:?}|{}|{:?}|{}",
-        graph.check_options(),
+        graph.compiler_options(),
         bare_specifiers_are_reportable(graph, false),
         graph.root(),
         graph.type_entries_loaded(),
@@ -1394,7 +1413,13 @@ fn ambient_providers(graph: &ModuleGraph) -> Vec<FileId> {
             .is_some_and(|name| {
                 name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts")
             });
-        if is_declaration && graph.declares_ambient_modules(id) {
+        // Selected TypeScript standard-library files are script declarations whose top-level
+        // declarations contribute to the project's global type/value environment. They must
+        // be checked in the provider pass just like ambient-module declaration files: consumers
+        // have no import edge to them, so ordinary dependency scheduling cannot make their
+        // declarations available before a consumer is checked.
+        let is_standard_library = path.starts_with(tsox_base::standard_lib::library_directory());
+        if is_standard_library || (is_declaration && graph.declares_ambient_modules(id)) {
             found.push(id);
         }
     }
@@ -1575,6 +1600,9 @@ struct ImportsOf<'a> {
     // thread, so the lock is never contended; it is there because the provider is
     // handed out as a shared reference.
     reads: std::sync::Mutex<Vec<DeclKey>>,
+    // Whether the standard-library registry applies. The answer stats every library file,
+    // and the checker asks once per global name, so it is worked out once per file.
+    registry_applies: std::sync::OnceLock<bool>,
 }
 
 impl ImportsOf<'_> {
@@ -1681,6 +1709,33 @@ impl DeclProvider for ImportsOf<'_> {
             return Some(decl.clone());
         }
         self.project.globals.decls.get(&key).cloned()
+    }
+}
+
+impl ImportsOf<'_> {
+    // Whether a standard-library global missing from the project is really undeclared. That is
+    // so when the graph was built with the selected standard libraries, or when the options
+    // select none (`noLib`, `lib: []`). A graph assembled by hand around a config but without
+    // the libraries it asks for has no registry to consult, so it keeps reading the names the
+    // checker already knows as it did before the libraries were loaded.
+    fn standard_library_registry_applies(&self) -> bool {
+        *self
+            .registry_applies
+            .get_or_init(|| self.compute_registry_applies())
+    }
+
+    fn compute_registry_applies(&self) -> bool {
+        let graph = self.project.graph;
+        if !graph.has_config() {
+            return false;
+        }
+        match tsox_base::standard_lib::StandardLibrarySet::for_options(&graph.compiler_options()) {
+            Ok(set) if !set.is_empty() => set
+                .paths()
+                .iter()
+                .any(|path| graph.files().id(path).is_some()),
+            _ => true,
+        }
     }
 }
 
@@ -1797,12 +1852,29 @@ impl ImportSource for ImportsOf<'_> {
             .unwrap_or_default()
     }
 
+    fn requires_registered_global_types(&self) -> bool {
+        self.standard_library_registry_applies()
+    }
+
+    fn requires_registered_global_values(&self) -> bool {
+        self.standard_library_registry_applies()
+    }
+
     fn collect_global_decls(&self) -> bool {
         self.project.collect_global_decls
     }
 
     fn global_name_unmodelled(&self, name: &str) -> bool {
         self.project.globals.unmodelled_globals.contains(name)
+    }
+
+    fn global_type_only_unmodelled(&self, name: &str) -> bool {
+        self.project.globals.unmodelled_type_names.contains(name)
+            && !self.project.globals.unmodelled_value_names.contains(name)
+    }
+
+    fn global_generic_params(&self, name: &str) -> Option<Vec<(String, bool)>> {
+        self.project.globals.unmodelled_generics.get(name).cloned()
     }
 }
 
@@ -1848,6 +1920,7 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                     project,
                     from: id,
                     reads: std::sync::Mutex::new(Vec::new()),
+                    registry_applies: std::sync::OnceLock::new(),
                 };
                 let mut ctx = UnitContext::new(id, &name, &source)
                     .with_imports(&imports)

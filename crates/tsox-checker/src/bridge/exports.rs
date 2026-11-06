@@ -179,6 +179,21 @@ pub struct ExportTable {
     pub unresolved_names: Vec<String>,
     /// Names of exported declarations that had no portable form (see `global_unmodelled`).
     pub dropped_names: Vec<String>,
+    /// The type parameters (name, has a default) of the generic declarations among
+    /// `dropped_names`: the body is not carried over, but a reference to it can still be
+    /// checked for its number of type arguments.
+    pub dropped_generics: Vec<(String, Vec<(String, bool)>)>,
+    /// `dropped_generics` of a script's or a `declare global` block's declarations.
+    pub global_generics: Vec<(String, Vec<(String, bool)>)>,
+    /// Dropped names that are only types (an interface or an alias) and dropped names that
+    /// have a runtime side (a variable, function, class, enum or namespace). A name left
+    /// without a value is type-only: using it as a value is TS2693, not an unknown type.
+    pub dropped_type_names: Vec<String>,
+    pub dropped_value_names: Vec<String>,
+    /// `dropped_type_names` and `dropped_value_names` of a script's or a `declare global`
+    /// block's declarations.
+    pub global_unmodelled_types: Vec<String>,
+    pub global_unmodelled_values: Vec<String>,
 }
 
 impl ExportTable {
@@ -534,6 +549,9 @@ pub fn collect_exports<'ast>(
         table.global_names = std::mem::take(&mut table.names);
         table.global_decls = std::mem::take(&mut table.decls);
         table.global_unmodelled = table.dropped_names.clone();
+        table.global_generics = table.dropped_generics.clone();
+        table.global_unmodelled_types = table.dropped_type_names.clone();
+        table.global_unmodelled_values = table.dropped_value_names.clone();
     }
     let (ambient, augmentations) = collect_ambient(program, scoping, ctx, module);
     table.ambient = ambient;
@@ -585,6 +603,13 @@ fn collect_global_blocks<'ast>(
         ordinal += 1;
         let collected = collect_in(&block.body.body, true, true, scoping, ctx, key);
         table.global_unmodelled.extend(collected.dropped_names);
+        table.global_generics.extend(collected.dropped_generics);
+        table
+            .global_unmodelled_types
+            .extend(collected.dropped_type_names);
+        table
+            .global_unmodelled_values
+            .extend(collected.dropped_value_names);
         table.global_names.extend(collected.names);
         table.global_decls.extend(collected.decls);
     }
@@ -1204,6 +1229,13 @@ fn collect_in<'ast>(
         match built.and_then(|p| register(&mut keys, ctx, p)) {
             Some(p) => pending.push(p),
             None if exported => {
+                note_dropped_generic(ctx, &item.name, item.kind, &mut table.dropped_generics);
+                note_dropped_side(
+                    &item.name,
+                    item.kind,
+                    &mut table.dropped_type_names,
+                    &mut table.dropped_value_names,
+                );
                 table.dropped_names.push(item.name.clone());
                 table.mark(IncompleteReason::UnrepresentableDeclaration)
             }
@@ -1241,6 +1273,13 @@ fn collect_in<'ast>(
                 written.insert(p.key, (decl, p.exported_as));
             }
             None if !p.exported_as.is_empty() => {
+                note_dropped_generic(ctx, &p.name, p.kind, &mut table.dropped_generics);
+                note_dropped_side(
+                    &p.name,
+                    p.kind,
+                    &mut table.dropped_type_names,
+                    &mut table.dropped_value_names,
+                );
                 table.dropped_names.extend(p.exported_as.iter().cloned());
                 table.mark(IncompleteReason::UnrepresentableDeclaration)
             }
@@ -1336,6 +1375,51 @@ fn collect_in<'ast>(
 
 // An interface or an alias, read out of the namespace. The type id is the one every use
 // of the name resolves to, so its slot is the slot the resolver has to know.
+// Which side of a name a dropped declaration was on. An interface or an alias is a type only;
+// anything else has a runtime side, which is what a use as a value reads.
+fn note_dropped_side(
+    name: &str,
+    kind: DeclKind,
+    types: &mut Vec<String>,
+    values: &mut Vec<String>,
+) {
+    let into = if matches!(kind, DeclKind::Interface | DeclKind::Alias) {
+        types
+    } else {
+        values
+    };
+    if !into.iter().any(|existing| existing == name) {
+        into.push(name.to_string());
+    }
+}
+
+// A generic interface, class or alias that could not be written out still has a parameter
+// list. Keep it, so that a bare `Array` or a `Map<string>` can be reported as the wrong number
+// of type arguments even though nothing is known about the type itself.
+fn note_dropped_generic(
+    ctx: &CheckContext<'_, '_>,
+    name: &str,
+    kind: DeclKind,
+    into: &mut Vec<(String, Vec<(String, bool)>)>,
+) {
+    if !matches!(
+        kind,
+        DeclKind::Interface | DeclKind::Class | DeclKind::Alias
+    ) || into.iter().any(|(existing, _)| existing == name)
+    {
+        return;
+    }
+    if let Some(decl) = ctx.namespace.declared_type_param_decl(name) {
+        into.push((
+            name.to_string(),
+            decl.params
+                .iter()
+                .map(|param| (param.name.name.to_string(), param.default.is_some()))
+                .collect(),
+        ));
+    }
+}
+
 fn interface_or_alias(
     ctx: &mut CheckContext<'_, '_>,
     module: ModuleKey,
@@ -1810,6 +1894,46 @@ fn register_nested_signature_keys(
                     }
                 }
                 Type::Named(_, inner) => step(path, TAG_INNER, None, |p| self.visit(*inner, p)),
+                // `keyof T` and `T[K]`: each operand is a step of its own under the member tag.
+                Type::Keyof(operand) | Type::StringMapping(_, operand) => {
+                    step(path, TAG_MEMBER, Some(0), |p| self.visit(*operand, p));
+                }
+                Type::Variadic(elements) => {
+                    for (position, element) in elements.iter().enumerate() {
+                        step(path, TAG_MEMBER, Some(position as u32), |p| {
+                            self.visit(element.type_id, p)
+                        });
+                    }
+                }
+                Type::Template(template) => {
+                    for (position, part) in template.types.iter().enumerate() {
+                        step(path, TAG_MEMBER, Some(position as u32), |p| {
+                            self.visit(*part, p)
+                        });
+                    }
+                }
+                Type::Mapped(mapped) => {
+                    for (position, part) in [
+                        Some(mapped.constraint),
+                        mapped.name_type,
+                        Some(mapped.value),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    {
+                        step(path, TAG_MEMBER, Some(position as u32), |p| {
+                            self.visit(part, p)
+                        });
+                    }
+                }
+                Type::IndexedAccess(object, index) => {
+                    for (position, part) in [*object, *index].into_iter().enumerate() {
+                        step(path, TAG_MEMBER, Some(position as u32), |p| {
+                            self.visit(part, p)
+                        });
+                    }
+                }
                 // A conditional's four parts, each a step of its own under the member tag.
                 Type::Conditional(conditional) => {
                     for (index, part) in [
@@ -1844,6 +1968,7 @@ fn register_nested_signature_keys(
                 | Type::Undefined
                 | Type::Any
                 | Type::Unknown
+                | Type::NonPrimitive
                 | Type::Error
                 | Type::Never
                 | Type::Void

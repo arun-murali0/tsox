@@ -374,15 +374,15 @@ fn a_config_change_rebuilds_and_applies_the_option() {
     let before = assert_same_as_cold(&mut project, &dir);
     assert_eq!(
         before.diagnostic_count(),
-        1,
-        "noUncheckedIndexedAccess is on by default"
+        0,
+        "noUncheckedIndexedAccess is off unless the tsconfig turns it on"
     );
     dir.write(
         "tsconfig.json",
-        r#"{ "compilerOptions": { "strict": true, "noUncheckedIndexedAccess": false, "module": "esnext", "moduleResolution": "bundler" }, "include": ["*.ts"] }"#,
+        r#"{ "compilerOptions": { "strict": true, "noUncheckedIndexedAccess": true, "module": "esnext", "moduleResolution": "bundler" }, "include": ["*.ts"] }"#,
     );
     let after = assert_same_as_cold(&mut project, &dir);
-    assert_eq!(after.diagnostic_count(), 0);
+    assert_eq!(after.diagnostic_count(), 1);
     assert_eq!(project.epoch(), 1);
 }
 
@@ -779,7 +779,13 @@ fn ambient() -> Dir {
     )
 }
 
-fn providers_ran(project: &mut IncrementalProject) -> Vec<String> {
+// The bundled standard-library files are providers too (see `ambient_providers`); these
+// helpers keep them apart so a test can count the providers it wrote itself.
+fn is_library(name: &str) -> bool {
+    name.starts_with("lib.") && name.ends_with(".d.ts")
+}
+
+fn providers_ran_all(project: &mut IncrementalProject) -> Vec<String> {
     let mut found: Vec<String> = project
         .take_log()
         .into_iter()
@@ -798,9 +804,14 @@ fn a_project_with_ambient_providers_is_incremental_and_equals_a_cold_check() {
         report.diagnostic_count() >= 1,
         "two.ts assigns a number to a string"
     );
-    assert_eq!(project.stats().ambient_providers, 1);
-    assert_eq!(project.stats().providers_checked, 1);
-    assert_eq!(providers_ran(&mut project), ["types.d.ts"]);
+    // The one provider the project wrote, plus every standard-library file it loaded.
+    let ran_first = providers_ran_all(&mut project);
+    let libraries = ran_first.iter().filter(|name| is_library(name)).count();
+    assert!(libraries > 0, "the default libraries are providers");
+    assert_eq!(project.stats().ambient_providers, 1 + libraries);
+    assert_eq!(project.stats().providers_checked, 1 + libraries);
+    assert_eq!(ran_first.len(), 1 + libraries);
+    assert!(ran_first.iter().any(|name| name == "types.d.ts"));
 
     // Nothing changed: the provider and every unit come from their memos.
     assert_same_as_cold(&mut project, &dir);

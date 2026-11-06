@@ -94,7 +94,13 @@ fn check_identifier_declarator(
     match (annotation_outcome, inferred_type) {
         (AnnotationOutcome::Unresolvable, _) => {
             let unknown_name = declarator.type_annotation.as_ref().and_then(|annotation| {
-                find_unresolved_type_name(&annotation.type_annotation, scoping, &ctx.namespace)
+                find_unresolved_type_name(
+                    &annotation.type_annotation,
+                    scoping,
+                    &ctx.namespace,
+                    ctx.imports
+                        .is_none_or(|source| !source.requires_registered_global_types()),
+                )
             });
             match unknown_name {
                 // An unknown name is reported by the whole-file pass in
@@ -134,7 +140,7 @@ fn check_identifier_declarator(
             }
 
             if let Some(symbol_id) = id.symbol_id.get() {
-                ctx.symbols.declare(symbol_id, declared);
+                declare_variable(symbol_id, &id.name, declared, scoping, ctx);
                 // Problem: `let x: string | null = "a"` left x as `string | null`, so a
                 // read of `x.length` on the next line was reported, though tsc knows x
                 // holds the string it was just given.
@@ -163,13 +169,13 @@ fn check_identifier_declarator(
             };
             let registered_type = evolve_empty_array(registered_type, ctx);
             if let Some(symbol_id) = id.symbol_id.get() {
-                ctx.symbols.declare(symbol_id, registered_type);
+                declare_variable(symbol_id, &id.name, registered_type, scoping, ctx);
             }
         }
 
         (AnnotationOutcome::Resolved(declared), None) => {
             if let Some(symbol_id) = id.symbol_id.get() {
-                ctx.symbols.declare(symbol_id, declared);
+                declare_variable(symbol_id, &id.name, declared, scoping, ctx);
             }
         }
         (AnnotationOutcome::Absent, None) => {}
@@ -205,7 +211,13 @@ fn check_destructured_declarator(
     let source_type = match (annotation_outcome, inferred_type) {
         (AnnotationOutcome::Unresolvable, _) => {
             let unknown_name = declarator.type_annotation.as_ref().and_then(|annotation| {
-                find_unresolved_type_name(&annotation.type_annotation, scoping, &ctx.namespace)
+                find_unresolved_type_name(
+                    &annotation.type_annotation,
+                    scoping,
+                    &ctx.namespace,
+                    ctx.imports
+                        .is_none_or(|source| !source.requires_registered_global_types()),
+                )
             });
             match unknown_name {
                 // An unknown name is reported by the whole-file pass in
@@ -276,5 +288,21 @@ fn evolve_empty_array(type_id: TypeId, ctx: &mut CheckContext<'_, '_>) -> TypeId
         ctx.arena.alloc(Type::Array(any))
     } else {
         type_id
+    }
+}
+
+// Declares a variable's type; one declared at the top of the file can also be named by
+// `typeof` in an annotation.
+fn declare_variable(
+    symbol_id: oxc_semantic::SymbolId,
+    name: &str,
+    type_id: TypeId,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) {
+    if scoping.symbol_scope_id(symbol_id) == scoping.root_scope_id() {
+        ctx.declare_value(symbol_id, name, type_id);
+    } else {
+        ctx.symbols.declare(symbol_id, type_id);
     }
 }

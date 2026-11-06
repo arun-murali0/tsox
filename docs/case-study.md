@@ -277,8 +277,8 @@ already pinned down.
 
 **Where the design said no.** The topology has no "what does a change reach" search,
 because deciding what to recompute is the query layer's job and a second mechanism can
-disagree with it. There is no Salsa-interned name type, because ADR-1 chose per-file
-arenas over Salsa-interned types. The scratchpad takes only `Copy` values, because a bump
+disagree with it. There is no Salsa-interned name type, because the design keeps
+types in per-file arenas and not in Salsa-interned ones. The scratchpad takes only `Copy` values, because a bump
 never runs destructors. Each of those is a thing the code does not do, written down with
 the reason.
 
@@ -312,8 +312,8 @@ spelling to go stale; `Record<K, V>` hands back its value type from its own seco
 argument.
 
 **What did not.** Resolving a `Ref` still moves the arena's generation and empties the
-two caches that could hold an answer about it. The LLD's append-only caches need
-relations to expand a `Ref` lazily, and that arrives with the unit context in step 4.
+two caches that could hold an answer about it. The planned append-only caches need
+relations to expand a `Ref` lazily, and that was left for the unit context.
 An `App` still holds its instantiated body, so expansion is eager.
 
 **One behavior change to know about.** A name used to be written onto the id an alias
@@ -343,9 +343,9 @@ its name.
 
 **Choice.** An identity that does not depend on a run (`ModuleKey`, `DeclKey`, and a `SigHash` of the declaration's own shape), a declaration carried as arena-free data and rebuilt by the importer, and a unit of work with an owned input and output. A layer's exports are collected before the next layer starts, and every file of a layer reads the same snapshot, so the report does not depend on thread timing. Whatever the portable form cannot carry sets `incomplete`, and a missing export is reported only against a complete list.
 
-**Where the code differs from the plan.** The LLD makes a cycle one unit in one arena; the code checks its members again, each round reading the previous snapshot, at most four times.
+**Where the code differs from the plan.** The plan made a cycle one unit in one arena; the code checks its members again, each round reading the previous snapshot, and the bound grows with the cycle ([cycles-and-settlement](architecture/cycles-and-settlement.md)).
 
-**Cost.** Classes, enums and overloads are not exported yet, and packages are not read. A dependent sees less, never something different. The full story, with the commits, is [cross-file-types](architecture/cross-file-types.md).
+**Cost.** At that point classes, enums and overloads were not exported and packages were not read, so a dependent saw less, never something different. All three cross files now. The full story, with the commits, is [cross-file-types](architecture/cross-file-types.md).
 
 ## 18. A literal property is typed against its declared type
 **Problem.** `const e: Ev = { tag: 'x', n: 1 }` against `interface Ev { tag: 'x'; n: number }` was reported as `Type 'string' is not assignable to type '"x"'`. An object literal widened every property the moment it was read, so `tag: 'x'` became `tag: string` before it was compared with the declared type. tsc gives no error, and discriminated unions and event types are written this way all the time, so this was a false positive in single-file mode as well as across files.

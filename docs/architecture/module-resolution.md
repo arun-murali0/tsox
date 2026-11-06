@@ -60,7 +60,7 @@ then:
 
 Because new files are interned at the end of the list while it is being walked, visiting ids in order is a breadth-first walk with no queue. Those discovery ids are used only until the walk ends. They depend on the order the entries were given in and on how the imports were written, so the same project could be numbered two ways, and every list sorted by `FileId` would follow. The renumbering at the end makes the published ids a function of the set of files alone. Paths compare component by component, so the order does not depend on the separator character and a directory's files stay together.
 
-A `FileId` is therefore a place in the order for one run. It is not stored, not hashed and not part of any key; adding one file shifts every id after it (`adding_a_file_shifts_the_ids_after_it_and_nothing_else`). What survives between runs is the module key in LLD 3.1.1. `ids_follow_path_order_whatever_order_the_entries_were_given_in` gives the same project two entry orders and requires the same ids, edges, layers and cycles.
+A `FileId` is therefore a place in the order for one run. It is not stored, not hashed and not part of any key; adding one file shifts every id after it (`adding_a_file_shifts_the_ids_after_it_and_nothing_else`). What survives between runs is the module key (see [decisions](../decisions.md)). `ids_follow_path_order_whatever_order_the_entries_were_given_in` gives the same project two entry orders and requires the same ids, edges, layers and cycles.
 
 Two decisions are worth stating:
 

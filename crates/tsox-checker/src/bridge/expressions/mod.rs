@@ -30,7 +30,7 @@ pub(super) use core::resolve_identifier_type;
 use functions::{infer_arrow_function_type, infer_function_expression_type};
 use logical::{
     infer_as_expression_type, infer_conditional_expression_type, infer_logical_expression_type,
-    infer_non_null_expression_type,
+    infer_non_null_expression_type, infer_satisfies_expression_type,
 };
 pub use members::tuple_element_union;
 use members::{
@@ -103,9 +103,15 @@ pub fn infer_expression_type(
             infer_binary_expression_type(bin.operator, left, right, bin.span(), ctx)
         }
 
-        Expression::CallExpression(call) => infer_call_expression_type(call, scoping, ctx),
+        Expression::CallExpression(call) => {
+            ctx.call_return_context = expected;
+            infer_call_expression_type(call, scoping, ctx)
+        }
 
-        Expression::NewExpression(new_expr) => infer_new_expression_type(new_expr, scoping, ctx),
+        Expression::NewExpression(new_expr) => {
+            ctx.call_return_context = expected;
+            infer_new_expression_type(new_expr, scoping, ctx)
+        }
 
         // `user.address` narrowed by an earlier `user.address !== null` reads as that
         // narrowed type; every other access is typed from its object as before.
@@ -178,6 +184,10 @@ pub fn infer_expression_type(
         }
 
         Expression::TSAsExpression(as_expr) => infer_as_expression_type(as_expr, scoping, ctx),
+
+        Expression::TSSatisfiesExpression(satisfies) => {
+            infer_satisfies_expression_type(satisfies, scoping, ctx)
+        }
 
         Expression::TSNonNullExpression(non_null) => {
             infer_non_null_expression_type(non_null, scoping, ctx)

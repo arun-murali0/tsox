@@ -202,7 +202,14 @@ fn incremental_prints_what_the_default_prints() {
             ),
         ],
     );
-    let default = run(&root, "tsconfig.json");
+    // The query layer loads every library file, so the default is run the same way. Without
+    // --eager-libs it leaves the DOM files out of a project that cannot see them and the
+    // module graph line counts fewer files.
+    let default = Command::new(env!("CARGO_BIN_EXE_tsox"))
+        .current_dir(&root)
+        .args(["--project", "tsconfig.json", "--eager-libs"])
+        .output()
+        .expect("the binary runs");
     let incremental = Command::new(env!("CARGO_BIN_EXE_tsox"))
         .current_dir(&root)
         .args(["--project", "tsconfig.json", "--incremental"])

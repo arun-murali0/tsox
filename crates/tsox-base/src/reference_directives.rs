@@ -1,13 +1,14 @@
-//! `/// <reference path="..." />` and `/// <reference types="..." />` at the top of a file.
+//! `/// <reference path="..." />`, `types`, and `lib` directives at the top of a file.
 //!
-//! Read by the module scan (each one is an edge, so the file it names is found) and by the
-//! checker (an unresolved one is an error). `lib` and `no-default-lib` name nothing the
-//! checker reads: its library is fixed, so they are accepted and ignored.
+//! `path` and `types` are ordinary type-only file edges. `lib` is resolved against the
+//! vendored TypeScript standard-library declarations and becomes a library-reference edge.
+//! `no-default-lib` remains metadata and does not name another file.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DirectiveKind {
     Path,
     Types,
+    Lib,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,16 +78,56 @@ pub fn scan(source: &str) -> Vec<Directive> {
 fn attribute_of(rest: &str) -> Option<(DirectiveKind, String)> {
     let rest = rest.trim().strip_prefix("<reference")?;
     let attribute = |name: &str| -> Option<String> {
-        let at = rest.find(&format!("{name}="))? + name.len() + 1;
+        let needle = format!("{name}=");
+        let (start, _) = rest.match_indices(&needle).find(|(at, _)| {
+            *at == 0
+                || rest[..*at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_whitespace)
+        })?;
+        let at = start + needle.len();
         let quote = rest[at..]
             .chars()
             .next()
             .filter(|c| matches!(c, '"' | '\''))?;
-        let value = &rest[at + 1..];
+        let value = &rest[at + quote.len_utf8()..];
         Some(value[..value.find(quote)?].to_owned())
     };
     if let Some(path) = attribute("path") {
         return Some((DirectiveKind::Path, path));
     }
-    attribute("types").map(|types| (DirectiveKind::Types, types))
+    if let Some(types) = attribute("types") {
+        return Some((DirectiveKind::Types, types));
+    }
+    attribute("lib").map(|lib| (DirectiveKind::Lib, lib))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DirectiveKind, scan};
+
+    #[test]
+    fn library_reference_is_distinct_from_no_default_lib() {
+        let directives = scan(
+            "/// <reference no-default-lib=\"true\" />\n\
+             /// <reference lib=\"ES2020\" />\n",
+        );
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].kind, DirectiveKind::Lib);
+        assert_eq!(directives[0].specifier, "ES2020");
+    }
+
+    #[test]
+    fn path_and_types_directives_keep_their_existing_meaning() {
+        let directives = scan(
+            "/// <reference path=\"types.d.ts\" />\n\
+             /// <reference types=\"node\" />\n",
+        );
+        assert_eq!(directives.len(), 2);
+        assert_eq!(directives[0].kind, DirectiveKind::Path);
+        assert_eq!(directives[0].specifier, "./types.d.ts");
+        assert_eq!(directives[1].kind, DirectiveKind::Types);
+        assert_eq!(directives[1].specifier, "node");
+    }
 }

@@ -35,6 +35,18 @@ set -o pipefail
 #   ./scripts/compare-local.sh --status [run-folder]          # state, progress and the summary
 #   ./scripts/compare-local.sh path/to/project --module       # cross-file: tsc checks the
 #                                                             # directory as ONE project
+#   ./scripts/compare-local.sh tests/fixtures --tsc --summary  # use real tsc as the reference
+#
+# The reference is tsgo (the native TypeScript 7 compiler) by default. It is designed to
+# report the same diagnostics as TypeScript 6.0 and is several times faster, so a whole-suite
+# comparison finishes in seconds. It checks the directory as ONE project, like --module, so
+# it needs a directory target: a single-file target falls back to tsc. Pass --tsc to compare
+# against tsc (the TypeScript 6.0 compiler API, one isolated Program per file, with its
+# result cache) instead. The time and peak memory shown for the reference are its own. The
+# first run installs typescript@7 under scripts/ts-diag-tool/.tsgo when no tsgo is found
+# (see TSGO_BIN below). The report keys stay `tsc_*` (they name the reference side);
+# `reference:` says which compiler it was. CI calls scripts/ts-diag-tool/compare.js directly,
+# which still defaults to tsc unless given --tsgo.
 #
 # --module is for projects whose files import each other. tsox checks them through its
 # module graph, so tsc has to as well to give a fair time and peak memory: it checks every
@@ -46,6 +58,9 @@ set -o pipefail
 # Environment:
 #   TSOX_BIN    tsox command override (default: target/release/tsox,
 #                  falls back to a debug build if release is missing)
+#   TSGO_BIN    tsgo command for --tsgo (default: tsgo on PATH, else the copy this script
+#                  installs under scripts/ts-diag-tool/.tsgo; TSGO_VERSION picks the
+#                  typescript version to install, default 7)
 #   NO_COLOR       set to disable colored output (also auto-disabled when
 #                  stdout is not a terminal)
 
@@ -78,6 +93,37 @@ if [ "${want_ts}" != "${have_ts}" ]; then
     echo "error: npm install failed in ${DIAG_TOOL_DIR}" >&2
     exit 2
   }
+fi
+
+# --tsgo: make sure a tsgo binary exists before the run, installing typescript@7 (which ships
+# the native compiler as an optional platform package) into scripts/ts-diag-tool/.tsgo.
+# tsgo is the default reference; --tsc turns it off, and a single-file target cannot use it
+# (tsgo checks a directory as one project), so that case stays on tsc.
+wants_tsgo=1
+args_out=()
+for a in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
+  case "$a" in
+    --tsc) wants_tsgo=0 ;;
+    --tsgo) ;;
+    *) args_out+=("$a") ;;
+  esac
+done
+EXTRA_ARGS=(${args_out[@]+"${args_out[@]}"})
+if [ "${wants_tsgo}" = 1 ] && [ -f "${TARGET}" ]; then
+  echo "note: ${TARGET} is a single file, so the reference is tsc (tsgo needs a directory)." >&2
+  wants_tsgo=0
+fi
+[ "${wants_tsgo}" = 1 ] && EXTRA_ARGS+=(--tsgo)
+if [ "${wants_tsgo}" = 1 ] && [ -z "${TSGO_BIN:-}" ] && ! command -v tsgo >/dev/null 2>&1; then
+  tsgo_dir="${DIAG_TOOL_DIR}/.tsgo"
+  if [ -z "$(find "${tsgo_dir}/node_modules/@typescript" -path '*/lib/tsc' -type f 2>/dev/null | head -1)" ]; then
+    echo "Installing tsgo (typescript@${TSGO_VERSION:-7}) under ${tsgo_dir}..." >&2
+    mkdir -p "${tsgo_dir}"
+    (cd "${tsgo_dir}" && npm install --no-audit --no-fund --no-save --prefix . "typescript@${TSGO_VERSION:-7}") || {
+      echo "error: could not install tsgo; set TSGO_BIN to an existing binary" >&2
+      exit 2
+    }
+  fi
 fi
 
 if [ -z "${TSOX_BIN:-}" ]; then

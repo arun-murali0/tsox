@@ -120,13 +120,15 @@ fn the_body_of_a_function_merged_with_a_namespace_is_still_checked() {
 }
 
 #[test]
-fn a_namespace_written_before_its_function_merges_the_same_way() {
+fn a_namespace_written_before_its_function_reports_ts2434_but_still_merges() {
     let source = "namespace f { export const extra: string = 'e'; }
         function f(): number { return 1 }
         const a: number = f();
         const b: number = f.extra;";
     let found = errors(source);
-    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert_eq!(found[0].0, Some(2434));
+    assert_eq!(found[1].0, Some(2322));
 }
 
 #[test]
@@ -398,4 +400,113 @@ fn messages_outside_a_namespace_keep_the_qualified_name() {
     let found =
         errors("namespace Test { export interface T { a: number } }\nconst x: Test.T = 5;\n");
     assert!(found.iter().any(|(_, m)| m.contains("Test.T")), "{found:?}");
+}
+
+#[test]
+fn a_namespace_before_a_class_reports_ts2434_but_keeps_the_merge() {
+    let source = "namespace C { export const tag: string = 'c'; }
+        class C { value: number = 1 }
+        const c: C = new C();
+        const tag: string = C.tag;";
+    let found = errors(source);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, Some(2434));
+}
+
+#[test]
+fn namespace_and_enum_can_merge_in_either_order() {
+    let source = "namespace E { export const tag: string = 'e'; }
+        enum E { A }
+        const tag: string = E.tag;
+        const member: E = E.A;";
+    assert!(errors(source).is_empty(), "{:?}", errors(source));
+}
+
+#[test]
+fn exported_and_local_namespace_declarations_at_file_scope_report_ts2395() {
+    let source = "export namespace N { export const x = 1; }
+        namespace N { export const y = 2; }";
+    let found = errors(source);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found.iter().all(|(code, _)| *code == Some(2395)),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn repeated_namespace_blocks_detect_duplicate_exported_variables() {
+    let source = "namespace N { export const x = 1; }
+        namespace N { export const x = 2; }";
+    let found = errors(source);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found.iter().all(|(code, _)| *code == Some(2451)),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn private_declarations_in_different_namespace_blocks_remain_distinct() {
+    let source = "namespace N { const hidden = 1; }
+        namespace N { const hidden = 2; }";
+    assert!(errors(source).is_empty(), "{:?}", errors(source));
+}
+
+#[test]
+fn enum_members_merge_across_exported_namespace_blocks() {
+    let source = "namespace N { export enum E { A = 1 } }
+        namespace N { export enum E { B = 2 } }
+        const a: N.E = N.E.A;
+        const b: N.E = N.E.B;
+        const wrong: string = N.E.B;";
+    let found = errors(source);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, Some(2322));
+}
+
+#[test]
+fn nested_namespace_merge_order_is_checked_across_parent_blocks() {
+    let source = "namespace A { export namespace B { export const x = 1; } }
+        namespace A { export class B {} }";
+    let found = errors(source);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, Some(2434));
+}
+
+#[test]
+fn class_then_namespace_merges_its_exported_value_members() {
+    let source = "class C { value: number = 1 }
+        namespace C { export const tag = 'c'; }
+        const tag: string = C.tag;";
+    assert!(errors(source).is_empty(), "{:?}", errors(source));
+}
+
+#[test]
+fn enum_then_namespace_merges_its_exported_value_members() {
+    let source = "enum E { A = 1 }
+        namespace E { export const tag = 'e'; }
+        const tag: string = E.tag;
+        const member: E = E.A;";
+    assert!(errors(source).is_empty(), "{:?}", errors(source));
+}
+
+#[test]
+fn duplicate_enum_members_across_namespace_blocks_are_reported() {
+    let source = "namespace N { export enum E { A = 1 } }
+        namespace N { export enum E { A = 2 } }";
+    let found = errors(source);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found.iter().all(|(code, _)| *code == Some(2300)),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn merged_enum_initializer_rule_applies_across_namespace_blocks() {
+    let source = "namespace N { export enum E { A } }\n        namespace N { export enum E { B } }";
+    let found = errors(source);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, Some(2432));
 }

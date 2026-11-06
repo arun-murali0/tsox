@@ -1769,6 +1769,7 @@ dependencies = [
  "oxc_ast_visit",
  "oxc_parser",
  "oxc_resolver",
+ "oxc_semantic",
  "oxc_span",
  "rayon",
  "thiserror",
@@ -1782,8 +1783,10 @@ dependencies = [
 name = "tsox-types"
 version = "0.1.0"
 dependencies = [
+ "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
+ "oxc_parser",
  "oxc_semantic",
  "oxc_span",
  "smallvec",

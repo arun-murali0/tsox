@@ -7,6 +7,49 @@ use crate::arena::{DeclSlot, TypeArena, TypeId};
 /// target of its `extends` test) still depends on an enclosing type parameter.
 /// Infer parameters are binders local to the conditional's true branch and the
 /// `extends` pattern, not generic parameters of the containing alias.
+/// How a mapped type's `?` or `readonly` modifier changes what it copies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MappedModifier {
+    /// No modifier written: a homomorphic mapped type keeps the source's.
+    Keep,
+    /// `?` or `+?`.
+    Add,
+    /// `-?`.
+    Remove,
+}
+
+/// `{ [K in constraint as name_type]: value }`, while the constraint is still generic. It is
+/// expanded into an object as soon as the constraint is a known set of keys.
+/// A template literal type while some placeholder is not a literal: `texts` has one more
+/// entry than `types`, and the type reads `texts[0] ${types[0]} texts[1] ...`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TemplateType {
+    pub texts: Vec<String>,
+    pub types: Vec<TypeId>,
+}
+
+/// The intrinsic string types `Uppercase<S>` and friends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringCase {
+    Upper,
+    Lower,
+    Capitalize,
+    Uncapitalize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MappedType {
+    /// The binder `K`: in scope in `name_type` and `value`, nowhere else.
+    pub key: TypeParameterId,
+    pub constraint: TypeId,
+    /// `T` when the constraint is written `keyof T` (a homomorphic mapped type), whose
+    /// optionality and, for a tuple or array, shape the result copies.
+    pub source: Option<TypeId>,
+    pub name_type: Option<TypeId>,
+    pub value: TypeId,
+    pub optional: MappedModifier,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConditionalType {
     pub check_type: TypeId,
@@ -43,6 +86,8 @@ pub enum Type {
     Any,
 
     Unknown,
+    // The `object` keyword: any non-primitive value.
+    NonPrimitive,
 
     Error,
     Function(FunctionType),
@@ -128,6 +173,23 @@ pub enum Type {
     // re-check them. A tuple is assignable to an array of the union of its elements, and
     // never the other way round.
     Tuple(Vec<TupleElement>),
+    // `keyof T` while T is still a type parameter. Reduced to a union of the property
+    // names as soon as substitution makes T concrete (see semantic::generics), so a node
+    // of this kind only ever stands inside a generic declaration.
+    Keyof(TypeId),
+    // `T[K]` while either side is still generic. Reduced to the property's type when both
+    // are concrete, as `keyof` is.
+    IndexedAccess(TypeId, TypeId),
+    // A tuple with a spread of something still generic (`[...A, ...B]`). Every rest element
+    // is an operand (a tuple or array type), not an element type; it reduces to a plain
+    // Tuple once the operands are known.
+    Variadic(Vec<TupleElement>),
+    // A template literal type with a non-literal placeholder (`${string}`, `${T}`).
+    Template(TemplateType),
+    // `Uppercase<T>` and the like while T is not a literal or union of literals.
+    StringMapping(StringCase, TypeId),
+    // `{ [K in C]: V }` while C is still generic; see MappedType.
+    Mapped(MappedType),
 }
 
 /// One element of a tuple type (see `Type::Tuple`). The label of a labeled element
@@ -149,6 +211,7 @@ impl PartialEq for Type {
             | (Type::Undefined, Type::Undefined)
             | (Type::Any, Type::Any)
             | (Type::Unknown, Type::Unknown)
+            | (Type::NonPrimitive, Type::NonPrimitive)
             | (Type::Error, Type::Error)
             | (Type::Never, Type::Never)
             | (Type::Void, Type::Void) => true,
@@ -160,6 +223,12 @@ impl PartialEq for Type {
             (Type::Intersection(a), Type::Intersection(b)) => a == b,
             (Type::Conditional(a), Type::Conditional(b)) => a == b,
             (Type::Tuple(a), Type::Tuple(b)) => a == b,
+            (Type::Variadic(a), Type::Variadic(b)) => a == b,
+            (Type::Keyof(a), Type::Keyof(b)) => a == b,
+            (Type::Mapped(a), Type::Mapped(b)) => a == b,
+            (Type::Template(a), Type::Template(b)) => a == b,
+            (Type::StringMapping(a, x), Type::StringMapping(b, y)) => a == b && x == y,
+            (Type::IndexedAccess(a, i), Type::IndexedAccess(b, j)) => a == b && i == j,
             (Type::StringLiteral(a), Type::StringLiteral(b)) => a == b,
             // Bit pattern, not IEEE ==: keeps this consistent with Hash below, and
             // makes 0.0 and -0.0 distinct while a NaN literal equals itself.
@@ -188,6 +257,7 @@ impl PartialEq for Type {
                 | Type::Undefined
                 | Type::Any
                 | Type::Unknown
+                | Type::NonPrimitive
                 | Type::Error
                 | Type::Never
                 | Type::Void
@@ -198,6 +268,12 @@ impl PartialEq for Type {
                 | Type::Intersection(_)
                 | Type::Conditional(_)
                 | Type::Tuple(_)
+                | Type::Keyof(_)
+                | Type::IndexedAccess(..)
+                | Type::Mapped(_)
+                | Type::Template(_)
+                | Type::Variadic(_)
+                | Type::StringMapping(..)
                 | Type::StringLiteral(_)
                 | Type::NumberLiteral(_)
                 | Type::BooleanLiteral(_)
@@ -224,6 +300,7 @@ impl Hash for Type {
             | Type::Undefined
             | Type::Any
             | Type::Unknown
+            | Type::NonPrimitive
             | Type::Error
             | Type::Never
             | Type::Void => {}
@@ -239,6 +316,21 @@ impl Hash for Type {
             Type::Intersection(members) => members.hash(state),
             Type::Conditional(conditional) => conditional.hash(state),
             Type::Tuple(elements) => elements.hash(state),
+            Type::Variadic(elements) => {
+                1u8.hash(state);
+                elements.hash(state)
+            }
+            Type::Keyof(operand) => operand.hash(state),
+            Type::Mapped(mapped) => mapped.hash(state),
+            Type::Template(template) => template.hash(state),
+            Type::StringMapping(case, operand) => {
+                case.hash(state);
+                operand.hash(state);
+            }
+            Type::IndexedAccess(object, index) => {
+                object.hash(state);
+                index.hash(state);
+            }
             Type::StringLiteral(text) => text.hash(state),
             Type::NumberLiteral(value) => value.to_bits().hash(state),
             Type::BooleanLiteral(value) => value.hash(state),
@@ -301,6 +393,16 @@ impl TypeParameterId {
     // generics::ordered_generic_param_ids.
     pub fn parameter_index(&self) -> u32 {
         self.parameter_index
+    }
+
+    /// Another parameter of the same declaration site, for renaming a binder that an
+    /// argument being substituted under it would otherwise be captured by.
+    pub fn renamed(&self) -> Self {
+        Self {
+            file_id: self.file_id,
+            declaration_span_start: self.declaration_span_start,
+            parameter_index: self.parameter_index.wrapping_add(1 << 16),
+        }
     }
 }
 

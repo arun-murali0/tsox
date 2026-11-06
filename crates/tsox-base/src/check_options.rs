@@ -1,30 +1,89 @@
-// The compiler options the checker's own passes read (E5). Everything else in a tsconfig is
-// for resolution and file selection and never reaches a unit.
-//
-// Problem: the checker had one fixed behavior. The comparison harness runs tsc with a stricter
-// set than `--strict` alone (`allowUnreachableCode: false`, `noUncheckedIndexedAccess`), and
-// a project that says otherwise in its tsconfig got reports it had switched off.
-// Picked: the default is that fixed behavior, so a unit given no options, and a project whose
-// tsconfig leaves a key out (the harness writes an empty one), check exactly as before. A key
-// the tsconfig sets explicitly overrides it.
-// Cost: a key left out is not derived from `strict` the way tsc derives it, so
-// `useUnknownInCatchVariables` follows only an explicit setting.
+/// Options consumed by semantic checking for one source file.
+///
+/// `Default` deliberately preserves tsox's historical comparison-harness profile. That
+/// profile enables `noUncheckedIndexedAccess`, which is stricter than TypeScript's ordinary
+/// defaults. Project configuration must use [`CheckOptions::typescript_defaults`] as its base
+/// and then apply the options from `tsconfig.json`; it must not use this compatibility default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CheckOptions {
-    /// `arr[i]` includes `undefined` (tsc's `noUncheckedIndexedAccess`). On by default.
+    /// TypeScript's umbrella strictness switch.
+    pub strict: bool,
+    /// `noImplicitAny`, enabled by `strict` unless explicitly overridden.
+    pub no_implicit_any: bool,
+    /// `noImplicitThis`, enabled by `strict` unless explicitly overridden.
+    pub no_implicit_this: bool,
+    /// `strictNullChecks`, enabled by `strict` unless explicitly overridden.
+    pub strict_null_checks: bool,
+    /// `strictFunctionTypes`, enabled by `strict` unless explicitly overridden.
+    pub strict_function_types: bool,
+    /// `strictBindCallApply`, enabled by `strict` unless explicitly overridden.
+    pub strict_bind_call_apply: bool,
+    /// `strictPropertyInitialization`, enabled by `strict` unless explicitly overridden.
+    pub strict_property_initialization: bool,
+    /// `alwaysStrict`, enabled by `strict` unless explicitly overridden.
+    pub always_strict: bool,
+    /// `strictBuiltinIteratorReturn`, enabled by `strict` unless explicitly overridden.
+    pub strict_builtin_iterator_return: bool,
+    /// `arr[i]` includes `undefined` (`noUncheckedIndexedAccess`). This is not implied by
+    /// `strict`; it is enabled only by an explicit compiler option in a TypeScript project.
     pub no_unchecked_indexed_access: bool,
-    /// Unreachable code is not an error (tsc's `allowUnreachableCode: true`). Off by default.
+    /// Suppress unreachable-code diagnostics. TypeScript's omitted-option behavior is to
+    /// suppress these diagnostics; an explicit `allowUnreachableCode: false` turns them on.
     pub allow_unreachable_code: bool,
-    /// A catch variable is `unknown` and not `any` (`useUnknownInCatchVariables`). Off by default.
+    /// A catch variable is `unknown` rather than `any`; defaults to the value of `strict`.
     pub use_unknown_in_catch_variables: bool,
+    /// `exactOptionalPropertyTypes`; independent of `strict`.
+    pub exact_optional_property_types: bool,
+    /// `noPropertyAccessFromIndexSignature`; independent of `strict`.
+    pub no_property_access_from_index_signature: bool,
+    /// `noImplicitOverride`; independent of `strict`.
+    pub no_implicit_override: bool,
+    /// `noImplicitReturns`; independent of `strict`.
+    pub no_implicit_returns: bool,
+    /// `noFallthroughCasesInSwitch`; independent of `strict`.
+    pub no_fallthrough_cases_in_switch: bool,
+}
+
+impl CheckOptions {
+    /// The option defaults TypeScript uses when no `tsconfig.json` compiler options are set.
+    ///
+    /// This intentionally differs from `Default`, which is retained as tsox's historical
+    /// comparison-harness profile for direct/single-file callers.
+    pub const fn typescript_defaults() -> Self {
+        Self {
+            strict: false,
+            no_implicit_any: false,
+            no_implicit_this: false,
+            strict_null_checks: false,
+            strict_function_types: false,
+            strict_bind_call_apply: false,
+            strict_property_initialization: false,
+            always_strict: false,
+            strict_builtin_iterator_return: false,
+            no_unchecked_indexed_access: false,
+            allow_unreachable_code: true,
+            use_unknown_in_catch_variables: false,
+            exact_optional_property_types: false,
+            no_property_access_from_index_signature: false,
+            no_implicit_override: false,
+            no_implicit_returns: false,
+            no_fallthrough_cases_in_switch: false,
+        }
+    }
+
+    /// The pre-existing tsox comparison profile. Keep this explicit at call sites that
+    /// deliberately compare against `tsc` with the project's additional strict flags.
+    pub const fn comparison_harness_defaults() -> Self {
+        Self {
+            no_unchecked_indexed_access: true,
+            allow_unreachable_code: false,
+            ..Self::typescript_defaults()
+        }
+    }
 }
 
 impl Default for CheckOptions {
     fn default() -> Self {
-        Self {
-            no_unchecked_indexed_access: true,
-            allow_unreachable_code: false,
-            use_unknown_in_catch_variables: false,
-        }
+        Self::comparison_harness_defaults()
     }
 }

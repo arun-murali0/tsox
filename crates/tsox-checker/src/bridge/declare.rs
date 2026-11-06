@@ -218,6 +218,47 @@ pub fn declare_top_level<'ast>(program: &'ast Program<'ast>, ctx: &mut CheckCont
         ctx.error(message, span);
     }
     declare_values(&items, ctx, program.source_type.is_typescript_definition());
+    resolve_merged_declarations(&items, ctx);
+    // tsc reads every alias, used or not, so an error inside one (`[A, B][2]`) is reported
+    // for an alias nothing refers to.
+    for (item, _) in items.iter().copied() {
+        if let TopLevelItem::Alias(alias) = item
+            && alias.type_parameters.is_none()
+        {
+            let _ = ctx
+                .namespace
+                .resolve(alias.id.name.as_str(), &mut ctx.arena);
+        }
+    }
+}
+
+// tsc checks a merged interface (several `interface A` parts, or a class with an interface of
+// its name) whether or not anything refers to it, so a conflicting property (TS2717, TS2687)
+// is reported for an unused one as well. The conflicts are found when the parts are combined,
+// which otherwise happens only when something first resolves the name.
+fn resolve_merged_declarations<'ast>(
+    items: &[(TopLevelItem<'ast>, bool)],
+    ctx: &mut CheckContext<'ast, '_>,
+) {
+    let mut parts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (item, _) in items.iter().copied() {
+        match item {
+            TopLevelItem::Interface(decl) => {
+                *parts.entry(decl.id.name.to_string()).or_default() += 1
+            }
+            TopLevelItem::Class(class) => {
+                if let Some(id) = &class.id {
+                    *parts.entry(id.name.to_string()).or_default() += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    for (name, count) in parts {
+        if count > 1 {
+            let _ = ctx.namespace.resolve(&name, &mut ctx.arena);
+        }
+    }
 }
 
 // First pass over a statement list: every named type, so the rest can refer to it.
@@ -233,13 +274,31 @@ fn declare_types<'ast>(items: &[(TopLevelItem<'ast>, bool)], ctx: &mut CheckCont
                     decl.type_parameters.as_deref(),
                     decl.id.span,
                 );
+                if let Some(symbol_id) = decl.id.symbol_id.get() {
+                    ctx.symbol_capabilities
+                        .entry(symbol_id)
+                        .or_default()
+                        .has_type = true;
+                }
             }
             TopLevelItem::Interface(decl) => {
                 ctx.namespace.insert_interface(&decl.id.name, decl);
+                if let Some(symbol_id) = decl.id.symbol_id.get() {
+                    ctx.symbol_capabilities
+                        .entry(symbol_id)
+                        .or_default()
+                        .has_type = true;
+                }
             }
             TopLevelItem::Class(class) => {
                 if let Some(id) = &class.id {
                     ctx.namespace.insert_class(&id.name, class);
+                    if let Some(symbol_id) = id.symbol_id.get() {
+                        let spaces = ctx.symbol_capabilities.entry(symbol_id).or_default();
+                        spaces.has_type = true;
+                        spaces.has_value = true;
+                        spaces.value_available = true;
+                    }
                 }
             }
             TopLevelItem::Enum(decl) => declare_enum(decl, ctx),
@@ -285,7 +344,7 @@ fn declare_values<'ast>(
                     if let Some(type_id) =
                         resolve_type_annotation(annotation, &mut ctx.namespace, &mut ctx.arena)
                     {
-                        ctx.symbols.declare(symbol_id, type_id);
+                        ctx.declare_value(symbol_id, &id.name, type_id);
                     }
                 }
             }
@@ -365,10 +424,38 @@ fn declare_namespace_values<'ast>(
 
         let mut properties: Vec<crate::types::PropertyEntry> = Vec::new();
         let mut targets: Vec<oxc_semantic::SymbolId> = Vec::new();
+        let enum_names: std::collections::HashSet<String> = all_members
+            .iter()
+            .filter_map(|(item, _)| match item {
+                TopLevelItem::Enum(decl) => Some(decl.id.name.to_string()),
+                _ => None,
+            })
+            .collect();
         let mut whole = true;
         for block in blocks.iter().copied() {
             match namespace_properties(&namespace_members(block), ambient || block.declare, ctx) {
-                Some(found) => properties.extend(found),
+                Some(found) => {
+                    for property in found {
+                        if let Some(existing) = properties
+                            .iter_mut()
+                            .find(|existing| existing.name == property.name)
+                        {
+                            if enum_names.contains(property.name.as_ref()) {
+                                match merge_enum_value_shapes(
+                                    &mut ctx.arena,
+                                    property.name.as_ref(),
+                                    existing.type_id,
+                                    property.type_id,
+                                ) {
+                                    Some(merged) => existing.type_id = merged,
+                                    None => whole = false,
+                                }
+                            }
+                        } else {
+                            properties.push(property);
+                        }
+                    }
+                }
                 None => whole = false,
             }
             if let Some(symbol) = block.id.symbol_id.get() {
@@ -492,7 +579,25 @@ fn namespace_properties(
                     let BindingPattern::BindingIdentifier(id) = &d.id else {
                         return None;
                     };
-                    add(&id.name, id.symbol_id.get())?;
+                    // No annotation means no type yet. A plain literal initializer is
+                    // enough to know the member's type without checking the body, which
+                    // lets `namespace C { export const tag = 'c' }` merge with `class C`.
+                    let declared = id
+                        .symbol_id
+                        .get()
+                        .and_then(|symbol| ctx.symbols.get(symbol));
+                    let type_id = match declared {
+                        Some(type_id) => type_id,
+                        None => d.init.as_ref().and_then(|init| {
+                            literal_initializer_type(init, v.kind.is_const(), &mut ctx.arena)
+                        })?,
+                    };
+                    properties.push(crate::types::PropertyEntry {
+                        name: id.name.as_str().into(),
+                        type_id,
+                        optional: false,
+                        is_method: false,
+                    });
                 }
             }
             TopLevelItem::Alias(_)
@@ -501,6 +606,43 @@ fn namespace_properties(
         }
     }
     Some(properties)
+}
+
+// The type of a literal initializer: the literal itself for a `const`, its primitive for
+// `let` and `var`. Anything that is not a plain literal returns `None`, so the caller keeps
+// treating the member as one whose type is not known yet.
+fn literal_initializer_type(
+    init: &oxc_ast::ast::Expression<'_>,
+    is_const: bool,
+    arena: &mut crate::arena::TypeArena,
+) -> Option<crate::arena::TypeId> {
+    use oxc_ast::ast::Expression;
+    match init.without_parentheses() {
+        Expression::StringLiteral(text) => Some(if is_const {
+            arena.alloc(Type::StringLiteral(text.value.to_string()))
+        } else {
+            arena.string()
+        }),
+        Expression::TemplateLiteral(template) if template.expressions.is_empty() => {
+            let text = template.quasis.first()?.value.cooked.as_ref()?.to_string();
+            Some(if is_const {
+                arena.alloc(Type::StringLiteral(text))
+            } else {
+                arena.string()
+            })
+        }
+        Expression::NumericLiteral(number) => Some(if is_const {
+            arena.alloc(Type::NumberLiteral(number.value))
+        } else {
+            arena.number()
+        }),
+        Expression::BooleanLiteral(boolean) => Some(if is_const {
+            arena.alloc(Type::BooleanLiteral(boolean.value))
+        } else {
+            arena.boolean()
+        }),
+        _ => None,
+    }
 }
 
 // Signatures of one name written more than once, none of them with a body: `declare
@@ -629,12 +771,12 @@ pub(super) fn declare_function(func: &Function<'_>, ctx: &mut CheckContext<'_, '
         } else {
             ctx.arena.alloc_intersection(all).unwrap_or(function_type)
         };
-        ctx.symbols.declare(symbol_id, callee);
+        ctx.declare_value(symbol_id, &name.name, callee);
     } else if ctx.overload_signatures.contains_key(&symbol_id) {
         ctx.implementation_signatures
             .insert(symbol_id, function_type);
     } else {
-        ctx.symbols.declare(symbol_id, function_type);
+        ctx.declare_value(symbol_id, &name.name, function_type);
     }
 }
 
@@ -800,7 +942,11 @@ fn declare_class_constructor<'a>(
                 type_params: constructor_type_params,
                 is_untyped: constructor_is_untyped,
             }));
-    ctx.symbols.declare(symbol_id, constructor_type);
+    ctx.declare_value(symbol_id, &name.name, constructor_type);
+    let spaces = ctx.symbol_capabilities.entry(symbol_id).or_default();
+    spaces.has_type = true;
+    spaces.has_value = true;
+    spaces.value_available = true;
 }
 
 // The parameters `new C(...)` takes. A class with a constructor takes that one's. A class
@@ -875,11 +1021,62 @@ fn declare_enum(decl: &oxc_ast::ast::TSEnumDeclaration, ctx: &mut CheckContext<'
     // A TypeScript enum is really two separate names sharing one identifier: used
     // in a type position, it means the union of its member literal types; used in
     // a value position, it means an object whose properties are its members. Both
-    // are built from the same resolved member list.
-    let (type_position, value_type) = ctx.arena.build_enum(&decl.id.name, members);
+    // are built from the same resolved member list. Ambient enum declarations can
+    // merge when their members do not collide, so preserve both halves.
+    let previous_enum = match ctx.namespace.resolve(&decl.id.name, &mut ctx.arena) {
+        crate::namespace::Resolution::Resolved(existing) if ctx.arena.is_enum(existing) => {
+            Some(existing)
+        }
+        _ => None,
+    };
+    let (mut type_position, mut value_type) = ctx.arena.build_enum(&decl.id.name, members);
+    if let Some(previous) = previous_enum {
+        let body = ctx.arena.alloc_union(vec![previous, type_position]);
+        let name = ctx.arena.alloc_name(decl.id.name.to_string());
+        type_position = ctx.arena.alloc_named(name, body);
+        ctx.arena.mark_enum(type_position);
+        if let Some(previous_value) = ctx.symbols.get(symbol_id) {
+            if let Some(merged) =
+                merge_enum_value_shapes(&mut ctx.arena, &decl.id.name, previous_value, value_type)
+            {
+                value_type = merged;
+            }
+        }
+    }
     ctx.namespace
         .insert_enum(&decl.id.name, type_position, decl.id.span);
-    ctx.symbols.declare(symbol_id, value_type);
+    ctx.declare_value(symbol_id, &decl.id.name, value_type);
+    let spaces = ctx.symbol_capabilities.entry(symbol_id).or_default();
+    spaces.has_type = true;
+    spaces.has_value = true;
+    spaces.value_available = true;
+}
+
+fn merge_enum_value_shapes(
+    arena: &mut crate::arena::TypeArena,
+    name: &str,
+    previous: crate::arena::TypeId,
+    incoming: crate::arena::TypeId,
+) -> Option<crate::arena::TypeId> {
+    let mut properties = match arena.get(previous) {
+        Type::Object(object) => object.properties.to_vec(),
+        _ => return None,
+    };
+    let incoming = match arena.get(incoming) {
+        Type::Object(object) => object.properties.to_vec(),
+        _ => return None,
+    };
+    for property in incoming {
+        if !properties
+            .iter()
+            .any(|existing| existing.name == property.name)
+        {
+            properties.push(property);
+        }
+    }
+    let object = arena.alloc(Type::Object(crate::types::ObjectType::new(properties)));
+    let name = arena.alloc_name(format!("typeof {name}"));
+    Some(arena.alloc_named(name, object))
 }
 
 fn resolve_enum_members(

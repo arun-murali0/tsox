@@ -261,6 +261,7 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
         Type::Undefined => out.push_str("undefined"),
         Type::Any => out.push_str("any"),
         Type::Unknown => out.push_str("unknown"),
+        Type::NonPrimitive => out.push_str("object"),
         Type::Never => out.push_str("never"),
         Type::Void => out.push_str("void"),
         Type::Error => out.push_str("error"),
@@ -369,6 +370,87 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
                     out.push(')');
                 }
             }
+        }
+
+        Type::Mapped(mapped) => {
+            out.push_str("{ [");
+            out.push('K');
+            out.push_str(" in ");
+            write_type(arena, mapped.constraint, out, depth - 1);
+            if let Some(name) = mapped.name_type {
+                out.push_str(" as ");
+                write_type(arena, name, out, depth - 1);
+            }
+            out.push_str("]");
+            match mapped.optional {
+                crate::types::MappedModifier::Add => out.push('?'),
+                crate::types::MappedModifier::Remove => out.push_str("-?"),
+                crate::types::MappedModifier::Keep => {}
+            }
+            out.push_str(": ");
+            write_type(arena, mapped.value, out, depth - 1);
+            out.push_str("; }");
+        }
+
+        Type::Variadic(elements) => {
+            out.push('[');
+            for (index, element) in elements.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                if element.rest {
+                    out.push_str("...");
+                }
+                write_type(arena, element.type_id, out, depth - 1);
+                if element.optional {
+                    out.push('?');
+                }
+            }
+            out.push(']');
+        }
+        Type::Template(template) => {
+            out.push('`');
+            for (index, text) in template.texts.iter().enumerate() {
+                out.push_str(text);
+                if let Some(&part) = template.types.get(index) {
+                    out.push_str("${");
+                    write_type(arena, part, out, depth - 1);
+                    out.push('}');
+                }
+            }
+            out.push('`');
+        }
+        Type::StringMapping(case, operand) => {
+            out.push_str(match case {
+                crate::types::StringCase::Upper => "Uppercase<",
+                crate::types::StringCase::Lower => "Lowercase<",
+                crate::types::StringCase::Capitalize => "Capitalize<",
+                crate::types::StringCase::Uncapitalize => "Uncapitalize<",
+            });
+            write_type(arena, *operand, out, depth - 1);
+            out.push('>');
+        }
+
+        Type::Keyof(operand) => {
+            out.push_str("keyof ");
+            let parens = matches!(
+                arena.get(*operand),
+                Type::Union(_) | Type::Intersection(_) | Type::Conditional(_)
+            );
+            if parens {
+                out.push('(');
+            }
+            write_type(arena, *operand, out, depth - 1);
+            if parens {
+                out.push(')');
+            }
+        }
+
+        Type::IndexedAccess(object, index) => {
+            write_type(arena, *object, out, depth - 1);
+            out.push('[');
+            write_type(arena, *index, out, depth - 1);
+            out.push(']');
         }
 
         Type::Conditional(conditional) => {

@@ -234,6 +234,9 @@ pub struct TypeArena {
     // arguments, semantic/generics rebuilds the body from this template rather than
     // leaving the application attached to the old symbolic conditional body.
     app_templates: FxHashMap<TypeId, AppTemplate>,
+    // Parameters that are the key binder of some mapped type: one that occurs free in an
+    // argument is waiting for its key to be replaced by a name.
+    mapped_keys: FxHashMap<TypeParameterId, ()>,
 
     // Active recursive App re-instantiations. A changed argument may legitimately make
     // progress (`Flatten<number[][]>` -> `Flatten<number[]>` -> `number`), but a cycle
@@ -293,6 +296,7 @@ impl TypeArena {
             generation: 0,
             decls: Vec::new(),
             app_templates: FxHashMap::default(),
+            mapped_keys: FxHashMap::default(),
             active_app_instantiations: Vec::new(),
             app_bases: FxHashMap::default(),
             body_origins: FxHashMap::default(),
@@ -407,6 +411,14 @@ impl TypeArena {
         self.alloc(Type::App(slot, args, body))
     }
 
+    pub fn register_mapped_key(&mut self, key: TypeParameterId) {
+        self.mapped_keys.insert(key, ());
+    }
+
+    pub fn is_mapped_key(&self, key: TypeParameterId) -> bool {
+        self.mapped_keys.contains_key(&key)
+    }
+
     pub fn register_app_template(
         &mut self,
         application: TypeId,
@@ -423,6 +435,17 @@ impl TypeArena {
 
     /// Enters a recursive application only when its (declaration, arguments) pair is not
     /// already active. Exact repeats are cycles; changed arguments may make finite progress.
+    /// The same application is already being instantiated further up: a knot, not depth.
+    pub fn app_instantiation_active(
+        &self,
+        base: TypeId,
+        bindings: &[(TypeParameterId, TypeId)],
+    ) -> bool {
+        self.active_app_instantiations
+            .iter()
+            .any(|active| active.base == base && active.bindings.as_slice() == bindings)
+    }
+
     pub fn begin_app_instantiation(
         &mut self,
         base: TypeId,
@@ -1467,6 +1490,7 @@ impl TypeArena {
         self.types.truncate(FIXED_SLOTS as usize);
         self.decls.clear();
         self.app_templates.clear();
+        self.mapped_keys.clear();
         self.active_app_instantiations.clear();
         self.decl_params.clear();
         self.decl_names.clear();

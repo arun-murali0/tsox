@@ -1,5 +1,6 @@
 use oxc_ast::ast::LogicalOperator;
 use oxc_semantic::Scoping;
+use oxc_span::GetSpan;
 
 use crate::arena::TypeId;
 use crate::type_annotation::resolve_ts_type;
@@ -106,6 +107,34 @@ pub(super) fn infer_as_expression_type(
     }
     resolve_ts_type(&as_expr.type_annotation, &mut ctx.namespace, &mut ctx.arena)
         .unwrap_or_else(|| ctx.arena.error())
+}
+
+// `expr satisfies T` checks the expression against T, with T as its contextual type, and
+// keeps the expression's own type. A bad object literal is reported on the property that
+// is wrong, like a declaration; otherwise on the whole expression (TS1360).
+pub(super) fn infer_satisfies_expression_type(
+    satisfies: &oxc_ast::ast::TSSatisfiesExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> TypeId {
+    let expected = resolve_ts_type(
+        &satisfies.type_annotation,
+        &mut ctx.namespace,
+        &mut ctx.arena,
+    );
+    ctx.contextual = expected;
+    let inner = infer_expression_type(&satisfies.expression, scoping, ctx);
+    let Some(expected) = expected else {
+        return inner;
+    };
+    if !ctx.semantic().is_assignable(inner, expected)
+        && !super::elaborate::elaborate_mismatch(&satisfies.expression, inner, expected, ctx)
+    {
+        let message =
+            crate::diagnostic_messages::messages::does_not_satisfy(&ctx.arena, inner, expected);
+        ctx.error(message, satisfies.expression.span());
+    }
+    inner
 }
 
 fn is_const_assertion(annotation: &oxc_ast::ast::TSType) -> bool {

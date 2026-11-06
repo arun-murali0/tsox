@@ -10,9 +10,11 @@
 // that line now, where before only review did.
 
 pub mod check_options;
+pub mod compiler_options;
 pub mod diagnostic_codes;
 pub mod diagnostic_view;
 pub mod diagnostics;
+mod dom_only_globals;
 pub mod error;
 pub mod file_id;
 pub mod fxhash;
@@ -26,3 +28,4 @@ pub mod scratchpad;
 pub mod source_depth;
 pub mod stable_hash;
 pub mod stack_guard;
+pub mod standard_lib;

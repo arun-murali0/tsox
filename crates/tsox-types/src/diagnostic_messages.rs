@@ -66,6 +66,26 @@ pub mod messages {
     /// The code and text for `actual` not being assignable to `expected`, reported
     /// under `plain` when no missing property replaces it. Used where a caller reports
     /// a mismatch of its own kind (a property of an object literal, an arrow body).
+    pub fn tuple_index_out_of_range(text: String) -> DiagnosticMessage {
+        DiagnosticMessage::new(DiagnosticCode::TupleIndexOutOfRange, text)
+    }
+
+    pub fn does_not_satisfy(
+        arena: &TypeArena,
+        actual: TypeId,
+        expected: TypeId,
+    ) -> DiagnosticMessage {
+        use crate::type_display::{display_source_type, display_type};
+        DiagnosticMessage::new(
+            DiagnosticCode::SatisfiesMismatch,
+            format!(
+                "Type '{}' does not satisfy the expected type '{}'.",
+                display_source_type(arena, actual, expected),
+                display_type(arena, expected)
+            ),
+        )
+    }
+
     pub fn assignability(
         arena: &TypeArena,
         actual: TypeId,
@@ -542,6 +562,15 @@ pub mod messages {
         )
     }
 
+    pub fn import_type_only_value(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImportTypeOnlyValue,
+            format!(
+                "'{name}' cannot be used as a value because it was imported using 'import type'."
+            ),
+        )
+    }
+
     pub fn unresolved_identifier(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnresolvedIdentifier,
@@ -737,6 +766,45 @@ pub mod messages {
         )
     }
 
+    pub fn namespace_export_mismatch(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::NamespaceExportMismatch,
+            format!(
+                "Individual declarations in merged declaration '{name}' must be all exported or all local."
+            ),
+        )
+    }
+
+    pub fn namespace_merge_order() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::NamespaceMergeOrder,
+            "A namespace declaration cannot be located prior to a class or function with which it is merged.",
+        )
+    }
+
+    pub fn property_declarations_must_have_identical_modifiers(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PropertyDeclarationsMustHaveIdenticalModifiers,
+            format!("All declarations of '{name}' must have identical modifiers."),
+        )
+    }
+
+    pub fn subsequent_property_declaration_must_match(
+        arena: &TypeArena,
+        name: &str,
+        existing: TypeId,
+        incoming: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::SubsequentPropertyDeclarationMustMatch,
+            format!(
+                "Subsequent property declarations must have the same type.  Property '{name}' must be of type '{}', but here has type '{}'.",
+                display_type(arena, existing),
+                display_type(arena, incoming),
+            ),
+        )
+    }
+
     // An operand that may be null or undefined where a number is needed. tsc names the
     // operand when it is a plain name or a chain of property accesses (`'o.v' is
     // possibly 'undefined'.`, TS18047-9) and says "Object" for any other expression
@@ -775,6 +843,13 @@ pub mod messages {
         )
     }
 
+    pub fn enum_multiple_declarations_require_initializer() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::EnumMultipleDeclarationsRequireInitializer,
+            "In an enum with multiple declarations, only one declaration can omit an initializer for its first enum element.",
+        )
+    }
+
     pub fn type_is_not_generic(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::TypeIsNotGeneric,
@@ -796,6 +871,13 @@ pub mod messages {
         DiagnosticMessage::new(
             DiagnosticCode::UnreachableCode,
             "Unreachable code detected.",
+        )
+    }
+
+    pub fn fallthrough_case_in_switch() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::FallthroughCaseInSwitch,
+            "Fallthrough case in switch.",
         )
     }
 

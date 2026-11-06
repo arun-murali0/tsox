@@ -80,6 +80,20 @@ fn is_subtype_uncached(
     match (arena.get(sub), arena.get(sup)) {
         (_, Type::Unknown) => true,
 
+        // `object` holds every non-primitive value and nothing else.
+        (
+            Type::Object(_)
+            | Type::Array(_)
+            | Type::Tuple(_)
+            | Type::Function(_)
+            | Type::NonPrimitive,
+            Type::NonPrimitive,
+        ) => true,
+        (Type::Intersection(members), Type::NonPrimitive) => members
+            .iter()
+            .any(|&member| is_subtype_inner(arena, member, sup, seen, binders)),
+        (Type::NonPrimitive, Type::Object(object)) => object.properties.is_empty(),
+
         // An intersection whose members disagree about a discriminant has no values, so
         // it is `never` and a subtype of everything. It is still an intersection node
         // (see TypeArena::intersection_reduces_to_never for why), which is why this is
@@ -122,6 +136,14 @@ fn is_subtype_uncached(
         (Type::NumberLiteral(a), Type::NumberLiteral(b)) => a == b,
         (Type::BooleanLiteral(a), Type::BooleanLiteral(b)) => a == b,
         (Type::StringLiteral(_), Type::String) => true,
+        (Type::Template(_) | Type::StringMapping(..), Type::String) => true,
+        (Type::StringLiteral(text), Type::Template(template)) => {
+            crate::semantic::generics::match_template(arena, template, text).is_some()
+        }
+        (Type::StringLiteral(text), Type::StringMapping(case, inner)) => {
+            crate::semantic::generics::apply_string_case(*case, text) == *text
+                && matches!(arena.get(*inner), Type::String)
+        }
         (Type::NumberLiteral(_), Type::Number) => true,
         (Type::BooleanLiteral(_), Type::Boolean) => true,
 

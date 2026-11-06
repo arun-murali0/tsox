@@ -159,6 +159,12 @@ pub struct AmbientExports {
     pub complete: bool,
     /// Global names (see `UnitOutput::globals`) whose declaration could not be carried over.
     pub unmodelled: Vec<String>,
+    /// The type parameters (name, has a default) of the generic ones among `unmodelled`.
+    pub unmodelled_generics: Vec<(String, Vec<(String, bool)>)>,
+    /// Of `unmodelled`, the names dropped as types only and the names dropped with a runtime
+    /// side. A name that is only in the first has no value.
+    pub unmodelled_types: Vec<String>,
+    pub unmodelled_values: Vec<String>,
     /// `true` for a script's globals when only the names were listed (`unmodelled`), not the
     /// declarations. The project builds the declarations in a later run if another file uses
     /// one of the names.
@@ -254,6 +260,9 @@ impl Worker {
                             exports: ambient.decls,
                             export_names: ambient.names,
                             unmodelled: Vec::new(),
+                            unmodelled_generics: Vec::new(),
+                            unmodelled_types: Vec::new(),
+                            unmodelled_values: Vec::new(),
                             names_only: false,
                             augmentation: false,
                         })
@@ -269,6 +278,9 @@ impl Worker {
                             specifier: String::new(),
                             complete: true,
                             unmodelled: table.global_unmodelled,
+                            unmodelled_generics: table.global_generics,
+                            unmodelled_types: table.global_unmodelled_types,
+                            unmodelled_values: table.global_unmodelled_values,
                             names_only: table.global_names_only,
                             exports: table.global_decls,
                             export_names: table.global_names,
@@ -284,6 +296,9 @@ impl Worker {
                             exports: augmentation.decls,
                             export_names: augmentation.names,
                             unmodelled: Vec::new(),
+                            unmodelled_generics: Vec::new(),
+                            unmodelled_types: Vec::new(),
+                            unmodelled_values: Vec::new(),
                             names_only: false,
                             augmentation: true,
                         })

@@ -151,10 +151,24 @@ fn bind_project_globals<'ast>(
         if own.contains(&name) && !own_interfaces.contains(&name) {
             continue;
         }
-        // A name the standard library provides is bound to nothing here: a project file that
-        // only adds members to it (`interface Window { app: App }`) would otherwise stand in
-        // for the whole type and make every real member look missing.
-        if crate::lib_global_types::is_lib_global_type(&name) {
+        // A name this file declares in its own top-level scope is not a global to bind: oxc
+        // leaves a value-position read of a type-only symbol (a local alias or interface, an
+        // `import type`) unresolved, and binding the project's copy on top of the local one
+        // would collide with it.
+        if !own_interfaces.contains(&name)
+            && scoping.get_root_binding(name.as_str().into()).is_some()
+        {
+            continue;
+        }
+        // Without a configured project library set, keep the historical built-in fallback
+        // used by standalone and comparison-harness checks. With a tsconfig attached, the
+        // selected .d.ts providers are authoritative: bind their real portable declarations
+        // instead of treating a registry hit as an opaque, pre-known name. This also makes
+        // `lib: []` and `noLib` meaningful: an unselected global type is no longer silently
+        // accepted merely because its name occurs in the generated registry.
+        if !source.requires_registered_global_types()
+            && crate::lib_global_types::is_lib_global_type(&name)
+        {
             continue;
         }
         let keys = source.global_decls(&name);
@@ -179,10 +193,61 @@ fn bind_project_globals<'ast>(
         if keys.is_empty() {
             if source.global_name_unmodelled(&name) {
                 ctx.namespace.mark_unmodelled_global(&name);
+                if source.global_type_only_unmodelled(&name) {
+                    ctx.namespace.mark_unmodelled_type_only(&name);
+                }
+                if let Some(params) = source.global_generic_params(&name) {
+                    ctx.namespace.mark_unmodelled_generic(&name, params);
+                }
             }
             continue;
         }
-        bind_global_name(ctx, source, &name, &keys);
+        if crate::lib_global_types::is_lib_global_type(&name) {
+            bind_global_type_name(ctx, source, &name, &keys);
+            // Some standard-library names have both a type declaration and a runtime
+            // binding: `Array` has `interface Array<T>` plus `var Array`, `Date` has its
+            // instance interface plus constructor value, and `Promise` has both sides.
+            // Phase 3.2 registered only the type side. Register the value side separately
+            // so a type declaration never becomes an expression binding by accident.
+            bind_global_value_name(ctx, source, &name, &keys);
+        } else {
+            bind_global_name(ctx, source, &name, &keys);
+        }
+        // Part of the name was dropped. If it was the runtime side (`declare var Error:
+        // ErrorConstructor`), the value exists but its type is not known, so a use reads as
+        // unknown instead of as a type used as a value. A value that did bind is found first.
+        if source.global_name_unmodelled(&name) {
+            ctx.namespace.mark_unmodelled_global(&name);
+            if source.global_type_only_unmodelled(&name) {
+                ctx.namespace.mark_unmodelled_type_only(&name);
+            }
+        }
+    }
+}
+
+// Standard-library names in lib_global_types are type-side declarations. Register the
+// actual portable type declarations here, but leave their value-side globals (for example
+// `Math`, `Date`, and `Promise`) to the following global-value phase. This avoids turning a
+// library type name into an expression binding merely because its declaration file also
+// declares a runtime value with the same spelling.
+fn bind_global_type_name(
+    ctx: &mut CheckContext<'_, '_>,
+    source: &dyn ImportSource,
+    name: &str,
+    keys: &[DeclKey],
+) {
+    let provider: &dyn DeclProvider = source;
+    for &key in keys {
+        let Some(decl) = provider.decl(key) else {
+            continue;
+        };
+        if decl
+            .kind
+            .symbol_spaces()
+            .contains(crate::keys::SymbolSpaces::TYPE)
+        {
+            bind_key_as(ctx, source, key, name, None, true);
+        }
     }
 }
 
@@ -236,18 +301,52 @@ fn bind_global_name<'ast>(
     keys: &[DeclKey],
 ) {
     let provider: &dyn DeclProvider = source;
+    for &key in keys {
+        let Some(decl) = provider.decl(key) else {
+            continue;
+        };
+        if decl
+            .kind
+            .symbol_spaces()
+            .contains(crate::keys::SymbolSpaces::TYPE)
+        {
+            bind_key_as(ctx, source, key, name, None, false);
+        }
+    }
+    bind_global_value_name(ctx, source, name, keys);
+}
+
+// Binds only the runtime/value side of a global name. Keeping this separate from the type
+// side matters for merged declarations: an interface is visible in annotations but is not
+// by itself a JavaScript value; a class, enum, constructor variable, function or namespace
+// contributes a value only through its corresponding portable value declaration.
+fn bind_global_value_name(
+    ctx: &mut CheckContext<'_, '_>,
+    source: &dyn ImportSource,
+    name: &str,
+    keys: &[DeclKey],
+) {
+    let provider: &dyn DeclProvider = source;
     let mut value: Option<crate::arena::TypeId> = None;
     let mut functions: Vec<crate::arena::TypeId> = Vec::new();
     for &key in keys {
         let Some(decl) = provider.decl(key) else {
             continue;
         };
+        if !decl
+            .kind
+            .symbol_spaces()
+            .contains(crate::keys::SymbolSpaces::VALUE)
+        {
+            continue;
+        }
         match decl.kind {
-            DeclKind::Interface | DeclKind::Class | DeclKind::Alias => {
-                bind_key_as(ctx, source, key, name, None, false);
+            DeclKind::Var => {
+                if value.is_none() {
+                    value = ctx.importer.import_decl(&mut ctx.arena, provider, key);
+                }
             }
             DeclKind::Enum => {
-                bind_key_as(ctx, source, key, name, None, false);
                 if value.is_none()
                     && let Some((_, enum_value)) =
                         ctx.importer.import_enum(&mut ctx.arena, provider, key)
@@ -255,17 +354,12 @@ fn bind_global_name<'ast>(
                     value = Some(enum_value);
                 }
             }
-            DeclKind::Var => {
-                if value.is_none() {
-                    value = ctx.importer.import_decl(&mut ctx.arena, provider, key);
-                }
-            }
             DeclKind::Function => {
                 if let Some(function) = ctx.importer.import_decl(&mut ctx.arena, provider, key) {
                     functions.push(function);
                 }
             }
-            DeclKind::Namespace => {}
+            DeclKind::Interface | DeclKind::Class | DeclKind::Alias | DeclKind::Namespace => {}
         }
     }
     let value = match (value, functions.len()) {
@@ -296,36 +390,36 @@ fn bind_global_namespace<'ast>(
         let Some(decl) = provider.decl(*key) else {
             continue;
         };
-        match decl.kind {
-            DeclKind::Interface | DeclKind::Class | DeclKind::Alias | DeclKind::Enum => {
-                let qualified = format!("{prefix}{name}");
-                bind_key_as(ctx, source, *key, &qualified, None, false);
-            }
-            DeclKind::Function | DeclKind::Var | DeclKind::Namespace => {
-                if !seen_values.insert(name.clone()) {
-                    continue;
-                }
-                let value_type = match decl.kind {
-                    DeclKind::Function | DeclKind::Var => {
-                        ctx.importer.import_decl(&mut ctx.arena, provider, *key)
-                    }
-                    DeclKind::Namespace => None,
-                    _ => None,
-                };
-                if let Some(type_id) = value_type {
-                    properties.push(PropertyEntry {
-                        name: name.as_str().into(),
-                        type_id,
-                        optional: false,
-                        is_method: false,
-                    });
-                }
-            }
+        let spaces = decl.kind.symbol_spaces();
+        if spaces.contains(crate::keys::SymbolSpaces::TYPE) {
+            let qualified = format!("{prefix}{name}");
+            bind_key_as(ctx, source, *key, &qualified, None, true);
         }
-        // An enum has both a type-side declaration and a value-side object. The latter
-        // is represented by the same portable enum declaration and is rebuilt here.
-        if decl.kind == DeclKind::Enum && seen_values.insert(name.clone()) {
-            if let Some((_, type_id)) = ctx.importer.import_enum(&mut ctx.arena, provider, *key) {
+        if spaces.contains(crate::keys::SymbolSpaces::VALUE) {
+            let value_type = match decl.kind {
+                DeclKind::Function | DeclKind::Var => {
+                    if seen_values.insert(name.clone()) {
+                        ctx.importer.import_decl(&mut ctx.arena, provider, *key)
+                    } else {
+                        None
+                    }
+                }
+                DeclKind::Enum => {
+                    if seen_values.insert(name.clone()) {
+                        ctx.importer
+                            .import_enum(&mut ctx.arena, provider, *key)
+                            .map(|(_, value)| value)
+                    } else {
+                        None
+                    }
+                }
+                // Class values are exported as a companion `Var` declaration, so a
+                // `Class` declaration contributes only the instance-side shape here.
+                DeclKind::Class | DeclKind::Interface | DeclKind::Alias | DeclKind::Namespace => {
+                    None
+                }
+            };
+            if let Some(type_id) = value_type {
                 properties.push(PropertyEntry {
                     name: name.as_str().into(),
                     type_id,
@@ -383,6 +477,10 @@ fn report_reference_directives<'ast>(
         let message = match directive.kind {
             DirectiveKind::Types => messages::type_definition_not_found(&directive.written),
             DirectiveKind::Path => messages::referenced_file_not_found(&directive.written),
+            // Library references are resolved by project module discovery against the bundled
+            // TypeScript library directory. Their invalid-name diagnostic is added with the
+            // project/configuration diagnostics in a later semantic phase.
+            DirectiveKind::Lib => continue,
         };
         ctx.error(message, span);
     }
@@ -517,9 +615,41 @@ fn bind_declaration<'ast>(
             ImportDeclarationSpecifier::ImportNamespaceSpecifier(spec) => {
                 if !whole_declaration_is_type {
                     bind_namespace_object(ctx, source, specifier, &spec.local);
+                } else {
+                    bind_namespace_type_names(ctx, source, specifier, &spec.local);
                 }
             }
         }
+    }
+}
+
+// `import type * as ns` has a type-side namespace surface (`ns.Foo`) but deliberately
+// has no runtime object binding. Bind the qualified type exports and remember the local
+// symbol so a value-space read of `ns` reports TS1361.
+fn bind_namespace_type_names<'ast>(
+    ctx: &mut CheckContext<'ast, '_>,
+    source: &dyn ImportSource,
+    specifier: &str,
+    local: &oxc_ast::ast::BindingIdentifier<'_>,
+) {
+    let provider: &dyn DeclProvider = source;
+    for (name, key) in source.export_all(specifier) {
+        let Some(decl) = provider.decl(key) else {
+            continue;
+        };
+        if decl
+            .kind
+            .symbol_spaces()
+            .contains(crate::keys::SymbolSpaces::TYPE)
+        {
+            let qualified = format!("{}.{name}", local.name);
+            bind_key_as(ctx, source, key, &qualified, None, true);
+        }
+    }
+    ctx.type_only_value_names.insert(local.name.to_string());
+    if let Some(symbol_id) = local.symbol_id.get() {
+        let spaces = ctx.symbol_capabilities.entry(symbol_id).or_default();
+        spaces.has_value = true;
     }
 }
 
@@ -544,10 +674,11 @@ fn bind_namespace_object<'ast>(
         let Some(decl) = provider.decl(key) else {
             continue;
         };
-        if matches!(
-            decl.kind,
-            DeclKind::Interface | DeclKind::Class | DeclKind::Alias | DeclKind::Enum
-        ) {
+        if decl
+            .kind
+            .symbol_spaces()
+            .contains(crate::keys::SymbolSpaces::TYPE)
+        {
             let qualified = format!("{}.{name}", local.name);
             bind_key_as(ctx, source, key, &qualified, None, false);
         }
@@ -577,15 +708,23 @@ fn module_object<'ast>(
         let Some(decl) = provider.decl(key) else {
             continue;
         };
-        let type_id = match decl.kind {
-            DeclKind::Function | DeclKind::Var => {
-                ctx.importer.import_decl(&mut ctx.arena, provider, key)
+        let type_id = if !decl
+            .kind
+            .symbol_spaces()
+            .contains(crate::keys::SymbolSpaces::VALUE)
+        {
+            None
+        } else {
+            match decl.kind {
+                DeclKind::Function | DeclKind::Var => {
+                    ctx.importer.import_decl(&mut ctx.arena, provider, key)
+                }
+                DeclKind::Enum => ctx
+                    .importer
+                    .import_enum(&mut ctx.arena, provider, key)
+                    .map(|(_, value)| value),
+                _ => None,
             }
-            DeclKind::Enum => ctx
-                .importer
-                .import_enum(&mut ctx.arena, provider, key)
-                .map(|(_, value)| value),
-            _ => None,
         };
         let Some(type_id) = type_id else {
             continue;
@@ -846,11 +985,27 @@ fn bind_key_as<'ast>(
     }
     // Remembered before the kind is looked at, so that a name this file only passes on
     // (`import { X } from "./a"; export { X }`) still finds the declaration.
-    if !(type_only && matches!(decl.kind, DeclKind::Function | DeclKind::Var)) {
+    let spaces = decl.kind.symbol_spaces();
+    let has_type_space = spaces.contains(crate::keys::SymbolSpaces::TYPE);
+    let has_value_space = spaces.contains(crate::keys::SymbolSpaces::VALUE);
+    if has_type_space || (!type_only && has_value_space) {
         ctx.imported_names
             .entry(name.to_string())
             .or_default()
             .push(key);
+    }
+
+    // Record each imported declaration's two namespaces by lexical SymbolId. A type-only
+    // import can retain its type side while deliberately making its value side unavailable;
+    // ordinary interface imports have a type side but no value side at all.
+    if symbol.is_some() && type_only && has_value_space {
+        ctx.type_only_value_names.insert(name.to_string());
+    }
+    if let Some(symbol_id) = symbol {
+        let imported = ctx.symbol_capabilities.entry(symbol_id).or_default();
+        imported.has_type |= has_type_space;
+        imported.has_value |= has_value_space;
+        imported.value_available |= has_value_space && !type_only;
     }
     match decl.kind {
         DeclKind::Interface | DeclKind::Class | DeclKind::Alias => {

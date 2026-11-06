@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::project::ProjectFiles;
 use crate::types::FileId;
+use tsox_base::compiler_options::EffectiveCompilerOptions;
 
 use super::config::ProjectConfig;
 use super::discovery::{ModuleRequest, ModuleRequestKind, scan_module_requests};
@@ -85,8 +86,9 @@ struct ConfigInput {
     // `typeRoots` is set; it holds back a missing-package report unless the type entries are
     // loaded (`with_type_entries_loaded`).
     type_roots_set: bool,
-    // The compiler options the checker reads, taken from the configuration when attached.
-    options: crate::CheckOptions,
+    // The effective compiler environment. All fields are part of the project's semantic
+    // identity, including options not yet consumed by the checker (for example `lib`).
+    options: EffectiveCompilerOptions,
 }
 
 impl ModuleGraph {
@@ -182,6 +184,11 @@ impl ModuleGraph {
                 failed = scan.parse_failed;
                 declares_ambient = scan.declares_ambient_modules;
                 for request in scan.requests {
+                    // TypeScript's `noLib` disables the `lib` compiler option and explicit
+                    // triple-slash library references alike.
+                    if request.kind == ModuleRequestKind::LibraryReference && resolver.no_lib() {
+                        continue;
+                    }
                     let target = resolve_request(resolver, &path, &request)
                         .map(|resolved| files.intern(resolved));
                     file_edges.push(ModuleEdge {
@@ -233,7 +240,15 @@ impl ModuleGraph {
 
         // order[new] is the discovery position of the file that gets the id `new`.
         let mut order: Vec<usize> = (0..paths.len()).collect();
-        order.sort_by(|&a, &b| paths[a].cmp(paths[b]));
+        // The bundled standard-library files come first, then the project's files in path
+        // order. A project can sit anywhere in the file system relative to the library
+        // directory, so sorting them together would let a new project file shift the ids of
+        // the libraries and rerun everything that reads them.
+        let library_directory = tsox_base::standard_lib::library_directory();
+        order.sort_by(|&a, &b| {
+            let is_project = |path: &Path| !path.starts_with(&library_directory);
+            (is_project(paths[a]), paths[a]).cmp(&(is_project(paths[b]), paths[b]))
+        });
 
         let mut new_position = vec![0; order.len()];
         for (new, &old) in order.iter().enumerate() {
@@ -384,17 +399,23 @@ impl ModuleGraph {
             files,
             hides_bare_specifiers,
             type_roots_set: has("typeRoots"),
-            options: config.check_options(),
+            options: config.effective_compiler_options(),
         });
         self
     }
 
-    /// The compiler options the checker reads, as the attached configuration sets them; the
-    /// defaults when none was attached.
+    /// The effective compiler environment for this graph. A graph without an attached
+    /// tsconfig keeps the historical comparison-harness defaults for compatibility.
+    pub fn compiler_options(&self) -> EffectiveCompilerOptions {
+        self.config.as_ref().map_or_else(
+            EffectiveCompilerOptions::comparison_harness_defaults,
+            |config| config.options.clone(),
+        )
+    }
+
+    /// The compiler options consumed by the current checker passes.
     pub fn check_options(&self) -> crate::CheckOptions {
-        self.config
-            .as_ref()
-            .map_or_else(crate::CheckOptions::default, |config| config.options)
+        self.compiler_options().check
     }
 
     /// Whether any config file recorded by `with_config` has changed or gone since. False
@@ -443,6 +464,13 @@ impl ModuleGraph {
     /// Whether `with_type_entries_loaded` was called.
     pub fn type_entries_loaded(&self) -> bool {
         self.type_entries_loaded
+    }
+
+    /// Whether this graph has an effective project configuration attached. This differs
+    /// from `tsconfig_applied`: a caller can attach a config after building the graph with a
+    /// resolver that did not itself read it.
+    pub fn has_config(&self) -> bool {
+        self.config.is_some()
     }
 
     /// Whether the resolver that built this graph applied a `tsconfig.json`.
@@ -525,6 +553,16 @@ impl ModuleGraph {
         self.states.get(index_of(id)).and_then(FileState::text)
     }
 
+    /// The discovery source, its original file state, and its content hash. Later stages
+    /// that need an owned source input can clone the `Arc` and state instead of reading the
+    /// file again. `None` has the same meaning as `source`: the file was not scanned or its
+    /// bytes were not valid UTF-8.
+    pub fn source_with_state(&self, id: FileId) -> Option<(Arc<str>, FileState, u64)> {
+        let state = self.states.get(index_of(id))?;
+        let (text, hash) = state.cached_source()?;
+        Some((text, state.clone(), hash))
+    }
+
     /// Whether the parser reported a syntax error in `id`. Such a file may have fewer
     /// edges than its source suggests.
     pub fn has_syntax_errors(&self, id: FileId) -> bool {
@@ -563,20 +601,22 @@ impl ModuleGraph {
             .is_some_and(|path| is_typescript(path) && !in_node_modules(path))
     }
 
-    /// A declaration file inside `node_modules`: checked so that what it exports can be
-    /// imported, but never reported on, since checking someone else's package is not this
-    /// project's job.
+    /// A declaration file supplied by a dependency or by the bundled TypeScript standard
+    /// library: checked so that its declarations can be imported, but never reported as one
+    /// of this project's own source files.
     pub fn is_dependency_declaration(&self, id: FileId) -> bool {
         self.files.path(id).is_some_and(|path| {
-            in_node_modules(path)
-                && path
-                    .file_name()
+            let is_declaration =
+                path.file_name()
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| {
                         name.ends_with(".d.ts")
                             || name.ends_with(".d.mts")
                             || name.ends_with(".d.cts")
-                    })
+                    });
+            is_declaration
+                && (in_node_modules(path)
+                    || path.starts_with(tsox_base::standard_lib::library_directory()))
         })
     }
 
@@ -651,6 +691,9 @@ fn resolve_request(
     from: &Path,
     request: &ModuleRequest,
 ) -> Option<PathBuf> {
+    if request.kind == ModuleRequestKind::LibraryReference {
+        return tsox_base::standard_lib::resolve_library_reference(&request.specifier).ok();
+    }
     let mode = resolve_mode(resolver, from, request.kind);
     if request.is_type {
         return resolver

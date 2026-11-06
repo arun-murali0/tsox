@@ -110,6 +110,19 @@ pub struct NamespaceStats {
     pub instantiation_misses: u64,
 }
 
+/// A conflicting property encountered while merging interface declarations.
+/// The type resolver records it; the checker bridge drains it into a TS2717 diagnostic.
+#[derive(Clone, Debug)]
+pub struct InterfacePropertyIssue {
+    pub name: String,
+    pub existing: TypeId,
+    pub incoming: TypeId,
+    pub modifier_mismatch: bool,
+    pub span: Span,
+    /// TS2687 is reported on both declarations; TS2717 is reported only on the later one.
+    pub related_span: Option<Span>,
+}
+
 pub struct TypeNamespace<'a> {
     // The file whose names this namespace resolves. Every generic parameter the
     // namespace declares carries it (see TypeParameterId), so two files checked against
@@ -124,6 +137,11 @@ pub struct TypeNamespace<'a> {
     // Project globals this file uses whose declaration could not be carried over. They
     // exist, so they are not reported as missing, but they have no type here.
     unmodelled_globals: std::collections::HashSet<String>,
+    // Of those, the ones that are only a type: nothing declares a value of that name.
+    unmodelled_type_only: std::collections::HashSet<String>,
+    // The type parameters (name, has a default) of project globals that are generic but whose
+    // body could not be carried over, so a reference can still be checked for its argument count.
+    unmodelled_generics: std::collections::HashMap<String, Vec<(String, bool)>>,
 
     // The namespaces the checker is currently inside, as full prefixes, outermost first.
     // A declaration registered now is stored under its qualified name (`N.I`), and an
@@ -198,21 +216,23 @@ pub struct TypeNamespace<'a> {
     // here and reported as a warning once checking finishes, the same way
     // implicit_any_params is.
     unresolved_constraints: Vec<(String, Span)>,
+    // `[A, B][2]`: the message and where it goes, written when the access is read.
+    tuple_index_issues: Vec<(Span, String)>,
 
-    // Real TypeScript merges multiple `interface Foo { ... }` declarations for
-    // the same name into one shape; declaring the same name as a class or a type
-    // alias twice, by contrast, is a real error. Rather than change
-    // DeclKind::Interface to hold a Vec (which would cost DeclKind its Copy
-    // derive, and every one of its several by-value `entry.kind` reads elsewhere
-    // in this file would need reworking to match by reference instead), the
-    // first `interface Foo` for a name is kept exactly where it already was, in
-    // entries as DeclKind::Interface(decl), and every declaration after the
-    // first is appended here instead. resolve() below folds this in when the
-    // kind is Interface, alongside decl itself, so nothing else has to know two
-    // tables exist. A class or alias with a colliding name is unaffected: it
-    // still just overwrites in entries -- a separate limitation that interface
-    // merging does not address.
+    // Real TypeScript merges multiple `interface Foo` declarations for the same
+    // name into one shape. The first declaration stays in `entries` as
+    // DeclKind::Interface(decl); subsequent parts live here so DeclKind can remain
+    // Copy and resolution can fold them together without changing every entry read.
     merged_interface_parts: FxHashMap<String, Vec<&'a TSInterfaceDeclaration<'a>>>,
+
+    // A class and an interface with the same name contribute to one instance type.
+    // As with interface/interface merging, the class remains the primary entry and
+    // these declarations are folded into its resolved object shape on demand.
+    class_interface_parts: FxHashMap<String, Vec<&'a TSInterfaceDeclaration<'a>>>,
+
+    // Conflicting members found while folding merged interfaces. Resolution itself
+    // cannot publish diagnostics, so these are drained by bridge::publish.
+    interface_property_issues: Vec<InterfacePropertyIssue>,
 
     // Names declared twice in a way TypeScript rejects, one entry per declaration
     // involved: the first declaration once, then every later one. tsc reports the
@@ -231,6 +251,8 @@ pub struct TypeNamespace<'a> {
     // and which names have already had that first declaration reported (a third
     // declaration must not report the first one again).
     declaration_spans: FxHashMap<String, Span>,
+    // Library names this checker answers from its own prelude instead (see prelude.rs).
+    prelude_overrides: Vec<String>,
     // Inside a namespace a declaration is either exported (one symbol across every block
     // of the namespace) or local to its own block. Kept per name: (exported, block).
     declaration_visibility: FxHashMap<String, (bool, u32)>,
@@ -295,6 +317,18 @@ struct RecursiveAliasReferenceFinder<'n> {
 }
 
 impl<'ast> Visit<'ast> for RecursiveAliasReferenceFinder<'_> {
+    // A body such as `number[][]...[]` a million levels deep nests as deep as it is long,
+    // and this walk recurses with it. Past the stack budget it stops and records the cut,
+    // which the unit reports once (TSR9102); the answer for the rest of the body is "no
+    // reference found", the same as for a type this walk does not look into.
+    fn visit_ts_type(&mut self, it: &TSType<'ast>) {
+        if crate::stack_guard::exhausted() {
+            crate::stack_guard::note_cut();
+            return;
+        }
+        walk::walk_ts_type(self, it);
+    }
+
     fn visit_ts_type_reference(&mut self, reference: &TSTypeReference<'ast>) {
         if let TSTypeName::IdentifierReference(identifier) = &reference.type_name {
             let short_name = self.name.rsplit('.').next().unwrap_or(self.name);
@@ -355,6 +389,56 @@ fn has_guarded_self_reference(body: &TSType<'_>, name: &str) -> bool {
     finder.found
 }
 
+fn class_member_span(class: &Class<'_>, name: &str) -> Option<Span> {
+    class.body.body.iter().find_map(|element| match element {
+        ClassElement::PropertyDefinition(property)
+            if static_member_name(&property.key).as_deref() == Some(name) && !property.r#static =>
+        {
+            Some(property.span())
+        }
+        ClassElement::MethodDefinition(method)
+            if static_member_name(&method.key).as_deref() == Some(name)
+                && !method.r#static
+                && method.kind != MethodDefinitionKind::Constructor =>
+        {
+            Some(method.span())
+        }
+        _ => None,
+    })
+}
+
+fn interface_member_span(part: &TSInterfaceDeclaration<'_>, name: &str) -> Option<Span> {
+    part.body.body.iter().find_map(|member| match member {
+        TSSignature::TSPropertySignature(property)
+            if static_member_name(&property.key).as_deref() == Some(name) =>
+        {
+            Some(property.span())
+        }
+        TSSignature::TSMethodSignature(method)
+            if static_member_name(&method.key).as_deref() == Some(name) =>
+        {
+            Some(method.span())
+        }
+        _ => None,
+    })
+}
+
+fn interface_member_spans(part: &TSInterfaceDeclaration<'_>) -> Vec<(String, Span)> {
+    part.body
+        .body
+        .iter()
+        .filter_map(|member| match member {
+            TSSignature::TSPropertySignature(property) => {
+                Some((static_member_name(&property.key)?, property.span()))
+            }
+            TSSignature::TSMethodSignature(method) => {
+                Some((static_member_name(&method.key)?, method.span()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn binding_fingerprint(bindings: &[(TypeParameterId, TypeId)]) -> u64 {
     let mut hasher = FxHasher::default();
     bindings.hash(&mut hasher);
@@ -372,12 +456,17 @@ impl<'a> TypeNamespace<'a> {
             entries: FxHashMap::default(),
             depth_cut: false,
             unmodelled_globals: std::collections::HashSet::new(),
+            unmodelled_type_only: std::collections::HashSet::new(),
+            unmodelled_generics: std::collections::HashMap::new(),
             scope: Vec::new(),
             active_type_params: Vec::new(),
             merged_interface_parts: FxHashMap::default(),
+            class_interface_parts: FxHashMap::default(),
+            interface_property_issues: Vec::new(),
             declaration_collisions: Vec::new(),
             too_complex: Vec::new(),
             declaration_spans: FxHashMap::default(),
+            prelude_overrides: Vec::new(),
             declaration_visibility: FxHashMap::default(),
             scope_blocks: Vec::new(),
             scope_exported: Vec::new(),
@@ -390,6 +479,7 @@ impl<'a> TypeNamespace<'a> {
             imported_generics: FxHashMap::default(),
             implicit_any_params: Vec::new(),
             unresolved_constraints: Vec::new(),
+            tuple_index_issues: Vec::new(),
             type_argument_issues: Vec::new(),
             constraint_violations: Vec::new(),
             instantiations: FxHashMap::default(),
@@ -580,7 +670,7 @@ impl<'a> TypeNamespace<'a> {
         NamespaceStats {
             entries: self.entries.len(),
             type_parameters: self.type_param_cache.len(),
-            merged_interfaces: self.merged_interface_parts.len(),
+            merged_interfaces: self.merged_interface_parts.len() + self.class_interface_parts.len(),
             instantiations: self.instantiations.values().map(Vec::len).sum(),
             instantiation_hits: self.instantiation_hits,
             instantiation_misses: self.instantiation_misses,
@@ -591,6 +681,44 @@ impl<'a> TypeNamespace<'a> {
     /// over.
     pub fn mark_unmodelled_global(&mut self, name: &str) {
         self.unmodelled_globals.insert(name.to_owned());
+    }
+
+    /// Records that an unmodelled global is only a type: it has no runtime value, so a use
+    /// of it as a value is an error and not an unknown.
+    pub fn mark_unmodelled_type_only(&mut self, name: &str) {
+        self.unmodelled_type_only.insert(name.to_owned());
+    }
+
+    /// True when `name` is an unmodelled project global with no runtime value.
+    pub fn is_unmodelled_type_only(&self, name: &str) -> bool {
+        self.unmodelled_type_only.contains(name)
+    }
+
+    /// Records the type parameters of a generic global whose body could not be carried over.
+    /// Nothing is known about its type, but a reference to it still has to give the right
+    /// number of type arguments.
+    pub fn mark_unmodelled_generic(&mut self, name: &str, params: Vec<(String, bool)>) {
+        self.unmodelled_generics.insert(name.to_owned(), params);
+    }
+
+    /// The `(required, total)` type argument counts of an unmodelled generic global.
+    pub fn unmodelled_generic_arity(&self, name: &str) -> Option<(usize, usize)> {
+        let params = self.unmodelled_generics.get(name)?;
+        Some((
+            params
+                .iter()
+                .filter(|(_, has_default)| !has_default)
+                .count(),
+            params.len(),
+        ))
+    }
+
+    /// An unmodelled generic global written with its parameter list (`Map<K, V>`), as tsc
+    /// prints it in a diagnostic.
+    pub fn unmodelled_generic_display(&self, name: &str) -> Option<String> {
+        let params = self.unmodelled_generics.get(name)?;
+        let names: Vec<&str> = params.iter().map(|(param, _)| param.as_str()).collect();
+        Some(format!("{name}<{}>", names.join(", ")))
     }
 
     /// True when `name` is a project global whose declaration could not be carried over.
@@ -680,6 +808,16 @@ impl<'a> TypeNamespace<'a> {
 
     pub fn take_implicit_any_params(&mut self) -> Vec<(String, Span)> {
         std::mem::take(&mut self.implicit_any_params)
+    }
+
+    pub fn note_tuple_index_issue(&mut self, span: Span, message: String) {
+        if !self.tuple_index_issues.iter().any(|(s, _)| *s == span) {
+            self.tuple_index_issues.push((span, message));
+        }
+    }
+
+    pub fn take_tuple_index_issues(&mut self) -> Vec<(Span, String)> {
+        std::mem::take(&mut self.tuple_index_issues)
     }
 
     pub fn take_unresolved_constraints(&mut self) -> Vec<(String, Span)> {
@@ -946,13 +1084,14 @@ impl<'a> TypeNamespace<'a> {
         std::mem::take(&mut self.declaration_collisions)
     }
 
+    pub fn take_interface_property_issues(&mut self) -> Vec<InterfacePropertyIssue> {
+        std::mem::take(&mut self.interface_property_issues)
+    }
+
     // Records `name` as declared twice when what is already registered under it cannot
-    // legally coexist with the new declaration. TypeScript allows an interface to merge
-    // with another interface or with a class, and an enum with another enum; this
-    // checker does not model the last two merges (the later declaration still replaces
-    // the earlier entry), so flagging them would report an error tsc does not. Only
-    // pairs that are an error in TypeScript are recorded: an alias on either side, two
-    // classes, or an enum against anything but an enum.
+    // legally coexist with the new declaration. Interfaces merge with interfaces and
+    // classes; enums merge with enums; aliases and repeated classes remain errors. Enum
+    // and class/interface merge shapes are handled separately by their registration paths.
     //
     // Problem: two blocks of one namespace share a registered name, so a class that is not
     // exported from the second block (`namespace A { export class P {} }` then
@@ -1039,24 +1178,53 @@ impl<'a> TypeNamespace<'a> {
         );
     }
 
+    /// Answers `name` from the prelude's alias even though a loaded library declares it,
+    /// unless this file declares the name itself. For a library alias written in terms
+    /// the checker does not model (`Awaited` asks a `Promise` for its `then`), which would
+    /// otherwise reduce to the wrong type. Done once per name.
+    pub fn override_with_prelude_alias(
+        &mut self,
+        name: &str,
+        body: &'a TSType<'a>,
+        type_parameters: Option<&'a oxc_ast::ast::TSTypeParameterDeclaration<'a>>,
+    ) {
+        if self.declaration_spans.contains_key(name)
+            || self.prelude_overrides.iter().any(|n| n == name)
+        {
+            return;
+        }
+        self.prelude_overrides.push(name.to_string());
+        let qualified = self.qualify(name);
+        self.entries.insert(
+            qualified,
+            TypeEntry {
+                kind: DeclKind::TypeAlias(body, type_parameters),
+                resolved: None,
+                resolving: false,
+                scope: self.scope.clone(),
+            },
+        );
+    }
+
     pub fn insert_interface(&mut self, name: &str, decl: &'a TSInterfaceDeclaration<'a>) {
         let qualified = self.qualify(name);
         let name = qualified.as_str();
-        // A second (or later) `interface Foo` for a name already holding one is
-        // declaration merging, not a redeclaration: it adds to the first part
-        // rather than replacing it. See the doc comment on
-        // merged_interface_parts for why this is stored separately instead of
-        // changing what DeclKind::Interface itself holds.
-        let already_an_interface = matches!(
-            self.entries.get(name),
-            Some(entry) if matches!(entry.kind, DeclKind::Interface(_))
-        );
-        if already_an_interface {
-            self.merged_interface_parts
-                .entry(name.to_string())
-                .or_default()
-                .push(decl);
-            return;
+        match self.entries.get(name).map(|entry| entry.kind) {
+            Some(DeclKind::Interface(_)) => {
+                self.merged_interface_parts
+                    .entry(name.to_string())
+                    .or_default()
+                    .push(decl);
+                return;
+            }
+            Some(DeclKind::Class(_)) => {
+                self.class_interface_parts
+                    .entry(name.to_string())
+                    .or_default()
+                    .push(decl);
+                return;
+            }
+            _ => {}
         }
         self.note_collision(name, NewKind::Interface, decl.id.span);
         self.remember_declaration(name, decl.id.span);
@@ -1075,6 +1243,21 @@ impl<'a> TypeNamespace<'a> {
         let qualified = self.qualify(name);
         let name = qualified.as_str();
         let span = class.id.as_ref().map_or_else(|| class.span(), |id| id.span);
+
+        // The interface may have appeared before its class. Move its first and
+        // subsequent declarations to the class augmentation list before replacing
+        // the primary entry; otherwise the interface's members disappear.
+        if let Some(DeclKind::Interface(first)) = self.entries.get(name).map(|entry| entry.kind) {
+            let parts = self
+                .class_interface_parts
+                .entry(name.to_string())
+                .or_default();
+            parts.push(first);
+            if let Some(merged) = self.merged_interface_parts.remove(name) {
+                parts.extend(merged);
+            }
+        }
+
         self.note_collision(name, NewKind::Class, span);
         self.remember_declaration(name, span);
         self.entries.insert(
@@ -1455,44 +1638,18 @@ impl<'a> TypeNamespace<'a> {
 
         let scope = self.push_decl_type_params(arena, type_params);
 
-        let resolved =
-            match kind {
-                DeclKind::TypeAlias(body, _) => resolve_ts_type(body, self, arena),
-                DeclKind::Interface(decl) => {
-                    // Declaration merging: every part's members are resolved
-                    // together as one shape, decl's own first, then each merged
-                    // part's in the order they were declared. A property name
-                    // repeated across parts is not specially detected -- it hits
-                    // resolve_object_members' existing duplicate-name check, the
-                    // same one that already applies within a single interface, and
-                    // makes the whole merged interface unresolvable, which is safe
-                    // (if imprecise) rather than silently picking one.
-                    let merged = self.merged_interface_parts.get(name);
-                    let members: Vec<&TSSignature> =
-                        decl.body
-                            .body
-                            .iter()
-                            .chain(merged.into_iter().flat_map(|parts| {
-                                parts.iter().flat_map(|part| part.body.body.iter())
-                            }))
-                            .collect();
-                    let bases: Vec<&oxc_ast::ast::TSInterfaceHeritage> =
-                        decl.extends
-                            .iter()
-                            .chain(merged.into_iter().flat_map(|parts| {
-                                parts.iter().flat_map(|part| part.extends.iter())
-                            }))
-                            .collect();
-                    let own = resolve_object_members(&members, self, arena);
-                    match own {
-                        Some(own) if bases.is_empty() => Some(own),
-                        Some(own) => self.with_interface_bases(own, &bases, arena),
-                        None => None,
-                    }
+        let resolved = match kind {
+            DeclKind::TypeAlias(body, _) => resolve_ts_type(body, self, arena),
+            DeclKind::Interface(decl) => {
+                let mut parts = vec![decl];
+                if let Some(merged) = self.merged_interface_parts.get(name) {
+                    parts.extend(merged.iter().copied());
                 }
-                DeclKind::Class(class) => self.resolve_class(class, arena),
-                DeclKind::Resolved => None,
-            };
+                self.resolve_merged_interface_shape(&parts, Vec::new(), FxHashMap::default(), arena)
+            }
+            DeclKind::Class(class) => self.resolve_class_with_interfaces(name, class, arena),
+            DeclKind::Resolved => None,
+        };
         self.pop_type_params(scope);
 
         let Some(entry) = self.entries.get_mut(name) else {
@@ -1561,6 +1718,183 @@ impl<'a> TypeNamespace<'a> {
         let resolved = self.resolve_class(class, arena);
         self.pop_type_params(scope);
         resolved
+    }
+
+    fn resolve_class_with_interfaces(
+        &mut self,
+        name: &str,
+        class: &'a Class<'a>,
+        arena: &mut TypeArena,
+    ) -> Option<TypeId> {
+        let Some(mut parts) = self.class_interface_parts.get(name).cloned() else {
+            return self.resolve_class(class, arena);
+        };
+        parts.sort_by_key(|part| part.span().start);
+        let class_start = class
+            .id
+            .as_ref()
+            .map_or_else(|| class.span().start, |id| id.span.start);
+        let before: Vec<_> = parts
+            .iter()
+            .copied()
+            .filter(|part| part.span().start < class_start)
+            .collect();
+        let after: Vec<_> = parts
+            .iter()
+            .copied()
+            .filter(|part| part.span().start >= class_start)
+            .collect();
+
+        // Keep declaration order when reporting a conflict: if the interface came
+        // first, a conflicting class member is the subsequent declaration (and vice
+        // versa). This also preserves method overload order across the merge.
+        let mut properties = if before.is_empty() {
+            Vec::new()
+        } else {
+            let before_shape = self.resolve_merged_interface_shape(
+                &before,
+                Vec::new(),
+                FxHashMap::default(),
+                arena,
+            )?;
+            match arena.get(before_shape) {
+                Type::Object(object) => object.properties.to_vec(),
+                _ => return None,
+            }
+        };
+        let mut property_spans = FxHashMap::default();
+        for part in &before {
+            for (member, span) in interface_member_spans(part) {
+                property_spans.entry(member).or_insert(span);
+            }
+        }
+
+        let class_shape = self.resolve_class(class, arena)?;
+        let class_properties = match arena.get(class_shape) {
+            Type::Object(object) => object.properties.to_vec(),
+            _ => return None,
+        };
+        if before.is_empty() {
+            properties = class_properties;
+            for property in &properties {
+                if let Some(span) = class_member_span(class, &property.name) {
+                    property_spans.insert(property.name.to_string(), span);
+                }
+            }
+        } else {
+            for incoming in &class_properties {
+                if let Some(existing) = properties
+                    .iter_mut()
+                    .find(|existing| existing.name == incoming.name)
+                {
+                    if existing.is_method && incoming.is_method {
+                        if let Ok(overload) =
+                            arena.alloc_intersection(vec![existing.type_id, incoming.type_id])
+                        {
+                            existing.type_id = overload;
+                        }
+                    } else if existing.optional != incoming.optional
+                        || !arena.structurally_equal(existing.type_id, incoming.type_id)
+                    {
+                        let span = class_member_span(class, &incoming.name).unwrap_or(class.span());
+                        if !self
+                            .interface_property_issues
+                            .iter()
+                            .any(|issue| issue.span.start == span.start)
+                        {
+                            self.interface_property_issues.push(InterfacePropertyIssue {
+                                name: incoming.name.to_string(),
+                                existing: existing.type_id,
+                                incoming: incoming.type_id,
+                                modifier_mismatch: existing.optional != incoming.optional,
+                                span,
+                                related_span: if existing.optional != incoming.optional {
+                                    property_spans.get(incoming.name.as_ref()).copied()
+                                } else {
+                                    None
+                                },
+                            });
+                        }
+                    }
+                } else {
+                    properties.push(incoming.clone());
+                    if let Some(span) = class_member_span(class, &incoming.name) {
+                        property_spans.insert(incoming.name.to_string(), span);
+                    }
+                }
+            }
+        }
+
+        self.resolve_merged_interface_shape(&after, properties, property_spans, arena)
+    }
+
+    // Resolve each declaration part independently, then merge its properties into
+    // the accumulated shape. Keeping parts separate permits identical properties to
+    // merge and method declarations to form an overload intersection; the old
+    // resolve_object_members(all_members) path rejected every repeated name.
+    fn resolve_merged_interface_shape(
+        &mut self,
+        parts: &[&'a TSInterfaceDeclaration<'a>],
+        mut properties: Vec<PropertyEntry>,
+        mut property_spans: FxHashMap<String, Span>,
+        arena: &mut TypeArena,
+    ) -> Option<TypeId> {
+        for part in parts {
+            let members: Vec<&TSSignature> = part.body.body.iter().collect();
+            let own = resolve_object_members(&members, self, arena)?;
+            let bases: Vec<&oxc_ast::ast::TSInterfaceHeritage> = part.extends.iter().collect();
+            let shape = if bases.is_empty() {
+                own
+            } else {
+                self.with_interface_bases(own, &bases, arena)?
+            };
+            let incoming_properties = match arena.get(shape) {
+                Type::Object(object) => object.properties.to_vec(),
+                _ => return None,
+            };
+            for incoming in &incoming_properties {
+                let incoming_span =
+                    interface_member_span(part, &incoming.name).unwrap_or_else(|| part.span());
+                if let Some(existing) = properties
+                    .iter_mut()
+                    .find(|existing| existing.name == incoming.name)
+                {
+                    if existing.is_method && incoming.is_method {
+                        if let Ok(overload) =
+                            arena.alloc_intersection(vec![existing.type_id, incoming.type_id])
+                        {
+                            existing.type_id = overload;
+                        }
+                    } else if existing.optional != incoming.optional
+                        || !arena.structurally_equal(existing.type_id, incoming.type_id)
+                    {
+                        if !self
+                            .interface_property_issues
+                            .iter()
+                            .any(|issue| issue.span.start == incoming_span.start)
+                        {
+                            let modifier_mismatch = existing.optional != incoming.optional;
+                            self.interface_property_issues.push(InterfacePropertyIssue {
+                                name: incoming.name.to_string(),
+                                existing: existing.type_id,
+                                incoming: incoming.type_id,
+                                modifier_mismatch,
+                                span: incoming_span,
+                                related_span: if modifier_mismatch {
+                                    property_spans.get(incoming.name.as_ref()).copied()
+                                } else {
+                                    None
+                                },
+                            });
+                        }
+                    }
+                } else {
+                    properties.push(incoming.clone());
+                    property_spans.insert(incoming.name.to_string(), incoming_span);
+                }
+            }
+        }
+        Some(arena.alloc(Type::Object(ObjectType::new(properties))))
     }
 
     // Builds a class's structural shape by first copying the parent's own already

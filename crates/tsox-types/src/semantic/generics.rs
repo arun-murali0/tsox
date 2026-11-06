@@ -137,6 +137,54 @@ fn collect_conditional_infer_candidates(
         return;
     }
 
+    // Inferring from a union takes each member in turn (tsc infers from every
+    // constituent of a union source), which is how `(A | B) extends (k: infer I) => void`
+    // sees both functions. A pattern that is itself an infer parameter takes the union
+    // whole, and a pattern union is matched below as one.
+    if let Type::Union(members) = arena.get(actual).clone()
+        && !matches!(
+            arena.get(pattern),
+            Type::Union(_) | Type::GenericParameter(..)
+        )
+    {
+        for member in members {
+            collect_conditional_infer_candidates(
+                arena,
+                pattern,
+                member,
+                infer_params,
+                locked,
+                variance,
+                out,
+                seen,
+            );
+        }
+        return;
+    }
+
+    if let Type::Template(template) = arena.get(pattern).clone()
+        && let Type::StringLiteral(text) = arena.get(actual).clone()
+    {
+        if let Some(captures) = match_template(arena, &template, &text) {
+            for (&part, capture) in template.types.iter().zip(captures) {
+                if let Type::GenericParameter(id, _, _) = arena.get(part).clone()
+                    && infer_params.contains(&id)
+                    && !locked.contains(&id)
+                {
+                    let literal = arena.alloc(Type::StringLiteral(capture));
+                    match out
+                        .iter_mut()
+                        .find(|(candidate_id, _, _)| *candidate_id == id)
+                    {
+                        Some((_, covariant, _)) => covariant.push(literal),
+                        None => out.push((id, vec![literal], Vec::new())),
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     match arena.get(pattern).clone() {
         Type::GenericParameter(id, _, _) if infer_params.contains(&id) && !locked.contains(&id) => {
             let candidate = out
@@ -179,6 +227,97 @@ fn collect_conditional_infer_candidates(
                 );
             }
         }
+        Type::Variadic(pattern_elements) => {
+            // `[unknown, ...infer R]`: leading elements by position, then the spread takes
+            // what is left of the actual tuple (less any elements fixed after it).
+            if let Type::Tuple(actual_elements) = arena.get(actual).clone() {
+                let spread_at = pattern_elements.iter().position(|e| e.rest);
+                let fixed_before = spread_at.unwrap_or(pattern_elements.len());
+                for (index, pattern_element) in
+                    pattern_elements.iter().take(fixed_before).enumerate()
+                {
+                    let Some(actual_element) = actual_elements.get(index) else {
+                        break;
+                    };
+                    if actual_element.rest {
+                        break;
+                    }
+                    collect_conditional_infer_candidates(
+                        arena,
+                        pattern_element.type_id,
+                        actual_element.type_id,
+                        infer_params,
+                        locked,
+                        variance,
+                        out,
+                        seen,
+                    );
+                }
+                if let Some(at) = spread_at {
+                    let after = pattern_elements.len() - at - 1;
+                    if actual_elements.len() >= at + after {
+                        let middle: Vec<crate::types::TupleElement> =
+                            actual_elements[at..actual_elements.len() - after].to_vec();
+                        let operand = pattern_elements[at].type_id;
+                        let middle_type = arena.alloc_tuple(middle);
+                        collect_conditional_infer_candidates(
+                            arena,
+                            operand,
+                            middle_type,
+                            infer_params,
+                            locked,
+                            variance,
+                            out,
+                            seen,
+                        );
+                        for (offset, pattern_element) in
+                            pattern_elements[at + 1..].iter().enumerate()
+                        {
+                            let actual_element =
+                                &actual_elements[actual_elements.len() - after + offset];
+                            collect_conditional_infer_candidates(
+                                arena,
+                                pattern_element.type_id,
+                                actual_element.type_id,
+                                infer_params,
+                                locked,
+                                variance,
+                                out,
+                                seen,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Type::Tuple(pattern_elements) => {
+            // `[infer H, ...]`: the elements before a rest element are matched by
+            // position. A rest element, and anything after it, stands for a variable
+            // number of elements and gives nothing to match by position.
+            if let Type::Tuple(actual_elements) = arena.get(actual).clone() {
+                for (index, pattern_element) in pattern_elements.iter().enumerate() {
+                    if pattern_element.rest {
+                        break;
+                    }
+                    let Some(actual_element) = actual_elements.get(index) else {
+                        break;
+                    };
+                    if actual_element.rest {
+                        break;
+                    }
+                    collect_conditional_infer_candidates(
+                        arena,
+                        pattern_element.type_id,
+                        actual_element.type_id,
+                        infer_params,
+                        locked,
+                        variance,
+                        out,
+                        seen,
+                    );
+                }
+            }
+        }
         Type::Object(pattern_object) => {
             if let Type::Object(actual_object) = arena.get(actual).clone() {
                 for property in pattern_object.properties.iter() {
@@ -209,10 +348,30 @@ fn collect_conditional_infer_candidates(
                         nested_locked.push(parameter.id);
                     }
                 }
-                let count = pattern_function
-                    .params
-                    .len()
-                    .max(actual_function.params.len());
+                // `(...args: infer P)`: the rest parameter stands for every parameter of the
+                // other signature from its position on, so P is the tuple of those.
+                let tuple_rest = rest_parameter_standing_for_tuple(arena, &pattern_function.params);
+                if let Some(rest) = tuple_rest {
+                    let rest_type = pattern_function.params[rest].type_id;
+                    let remaining =
+                        remaining_parameters_as_tuple(arena, &actual_function.params, rest);
+                    collect_conditional_infer_candidates(
+                        arena,
+                        rest_type,
+                        remaining,
+                        infer_params,
+                        &nested_locked,
+                        variance.reversed(),
+                        out,
+                        seen,
+                    );
+                }
+                let count = tuple_rest.unwrap_or(
+                    pattern_function
+                        .params
+                        .len()
+                        .max(actual_function.params.len()),
+                );
                 for position in 0..count {
                     if let (Some(pattern_param), Some(actual_param)) = (
                         crate::subtyping::param_type_at(arena, &pattern_function.params, position),
@@ -294,6 +453,9 @@ fn bound_keeps_literals(arena: &TypeArena, bound: TypeId) -> bool {
         Type::Union(members) => members
             .iter()
             .any(|&member| is_primitive_or_literal(member)),
+        // `K extends keyof T`: a key is a string literal, so the argument keeps its
+        // literal type, as it does under a bound that is itself a literal union.
+        Type::Keyof(_) => true,
         _ => is_primitive_or_literal(bound),
     }
 }
@@ -1559,6 +1721,34 @@ impl Substitution<'_> {
                         .copied()
                         .zip(rewritten_arguments.iter().copied())
                         .collect();
+                    // An argument that still mentions a binder this rewrite is standing under
+                    // (`DP<T[K]>` inside `[K in keyof T]`) cannot be expanded yet: it is
+                    // expanded when that key is replaced by a name. The application is kept
+                    // with its new arguments until then.
+                    if rewritten_arguments.iter().any(|&argument| {
+                        free_generic_params(arena, argument)
+                            .iter()
+                            .any(|&(id, _)| self.preserve.contains(&id) || arena.is_mapped_key(id))
+                    }) {
+                        let application = arena.alloc_app(slot, rewritten_arguments, body);
+                        arena.register_app_template(
+                            application,
+                            template.base,
+                            template.parameters.clone(),
+                        );
+                        return application;
+                    }
+                    // Met again with the very bindings it is being instantiated with: the
+                    // declaration reaches itself, and the application stands for that knot.
+                    if arena.app_instantiation_active(template.base, &bindings) {
+                        let application = arena.alloc_app(slot, rewritten_arguments, body);
+                        arena.register_app_template(
+                            application,
+                            template.base,
+                            template.parameters.clone(),
+                        );
+                        return application;
+                    }
                     if !arena.begin_app_instantiation(template.base, &bindings) {
                         crate::stack_guard::note_cut();
                         return arena.error();
@@ -1745,9 +1935,290 @@ impl Substitution<'_> {
                     },
                 )
             }
+            // `keyof T` and `T[K]` are reduced as soon as substitution leaves them nothing
+            // generic; until then the rebuilt node stays symbolic.
+            Type::Mapped(mapped) => {
+                // A binding that mentions this very key (`DP<T[K]>` inside `DP`'s own
+                // `[K in ...]`) would be captured by it, so the binder is renamed first.
+                let mut mapped = mapped;
+                let captured = self.bindings.iter().any(|&(_, bound)| {
+                    free_generic_params(arena, bound)
+                        .iter()
+                        .any(|&(id, _)| id == mapped.key)
+                });
+                if captured
+                    && let Some(&(_, node)) = free_generic_params(arena, mapped.value)
+                        .iter()
+                        .chain(
+                            free_generic_params(arena, mapped.name_type.unwrap_or(mapped.value))
+                                .iter(),
+                        )
+                        .find(|&&(id, _)| id == mapped.key)
+                    && let Type::GenericParameter(_, name, bound) = arena.get(node).clone()
+                {
+                    let fresh = mapped.key.renamed();
+                    arena.register_mapped_key(fresh);
+                    let fresh_node = arena.alloc(Type::GenericParameter(fresh, name, bound));
+                    let rename = [(mapped.key, fresh_node)];
+                    mapped.value = substitute_bound_type_params(arena, mapped.value, &rename);
+                    mapped.name_type = mapped
+                        .name_type
+                        .map(|name| substitute_bound_type_params(arena, name, &rename));
+                    mapped.key = fresh;
+                }
+                let constraint = self.rewrite(arena, mapped.constraint, cut);
+                let source = mapped.source.map(|source| self.rewrite(arena, source, cut));
+                // The key is a binder of the name and the value, not of the constraint,
+                // and what is rewritten under it is not the same rewrite as outside it.
+                self.preserve.push(mapped.key);
+                let outer_rewrites = std::mem::take(&mut self.rewritten);
+                let name_type = mapped.name_type.map(|name| self.rewrite(arena, name, cut));
+                let value = self.rewrite(arena, mapped.value, cut);
+                self.rewritten = outer_rewrites;
+                self.preserve.pop();
+                reduce_mapped(
+                    arena,
+                    crate::types::MappedType {
+                        key: mapped.key,
+                        constraint,
+                        source,
+                        name_type,
+                        value,
+                        optional: mapped.optional,
+                    },
+                )
+            }
+            Type::Keyof(operand) => {
+                let operand = self.rewrite(arena, operand, cut);
+                reduce_keyof(arena, operand)
+            }
+            Type::Variadic(elements) => {
+                let rewritten: Vec<crate::types::TupleElement> = elements
+                    .iter()
+                    .map(|element| crate::types::TupleElement {
+                        type_id: self.rewrite(arena, element.type_id, cut),
+                        optional: element.optional,
+                        rest: element.rest,
+                    })
+                    .collect();
+                reduce_variadic(arena, rewritten)
+            }
+            Type::StringMapping(case, operand) => {
+                let operand = self.rewrite(arena, operand, cut);
+                reduce_string_mapping(arena, case, operand)
+            }
+            Type::Template(template) => {
+                let types: Vec<TypeId> = template
+                    .types
+                    .iter()
+                    .map(|&part| self.rewrite(arena, part, cut))
+                    .collect();
+                reduce_template(arena, template.texts, types)
+            }
+            Type::IndexedAccess(object, index) => {
+                let object = self.rewrite(arena, object, cut);
+                let index = self.rewrite(arena, index, cut);
+                reduce_indexed_access(arena, object, index)
+            }
             _ => original,
         }
     }
+}
+
+/// The names a mapped type's constraint stands for, or `None` while it is generic or is
+/// not a plain set of literal keys (`string`, `number`).
+fn mapped_key_names(arena: &TypeArena, constraint: TypeId) -> Option<Vec<String>> {
+    fn collect(arena: &TypeArena, id: TypeId, out: &mut Vec<String>) -> Option<()> {
+        match arena.get(id) {
+            Type::StringLiteral(name) => {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+            Type::NumberLiteral(n) => {
+                let name = if n.fract() == 0.0 {
+                    format!("{n:.0}")
+                } else {
+                    n.to_string()
+                };
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+            Type::Union(members) => {
+                for &member in members {
+                    collect(arena, member, out)?;
+                }
+            }
+            Type::Never => {}
+            _ => return None,
+        }
+        Some(())
+    }
+    let mut names = Vec::new();
+    collect(arena, constraint, &mut names)?;
+    Some(names)
+}
+
+fn without_undefined(arena: &mut TypeArena, id: TypeId) -> TypeId {
+    match arena.get(id).clone() {
+        Type::Union(members) => {
+            let kept: Vec<TypeId> = members
+                .into_iter()
+                .filter(|&m| !matches!(arena.get(m), Type::Undefined))
+                .collect();
+            match kept.len() {
+                0 => arena.never(),
+                1 => kept[0],
+                _ => arena.alloc_union(kept),
+            }
+        }
+        Type::Undefined => arena.never(),
+        _ => id,
+    }
+}
+
+/// Expands `{ [K in constraint]: value }` into an object once the constraint is a known
+/// set of keys; until then the symbolic node is kept. A homomorphic one over a tuple or an
+/// array maps the elements instead.
+pub fn reduce_mapped(arena: &mut TypeArena, mapped: crate::types::MappedType) -> TypeId {
+    use crate::types::MappedModifier;
+    let generic = |arena: &TypeArena, id: TypeId| {
+        free_generic_params(arena, id)
+            .iter()
+            .any(|(param, _)| *param != mapped.key)
+    };
+    if generic(arena, mapped.constraint)
+        || mapped.source.is_some_and(|source| generic(arena, source))
+    {
+        return arena.alloc(Type::Mapped(mapped));
+    }
+
+    // A homomorphic mapped type over a primitive is that primitive.
+    if let Some(source) = mapped.source
+        && mapped.name_type.is_none()
+        && matches!(
+            arena.get(source),
+            Type::Number
+                | Type::String
+                | Type::Boolean
+                | Type::Null
+                | Type::Undefined
+                | Type::Void
+                | Type::StringLiteral(_)
+                | Type::NumberLiteral(_)
+                | Type::BooleanLiteral(_)
+        )
+    {
+        return source;
+    }
+
+    // A homomorphic mapped type over a tuple or an array maps each element.
+    if let Some(source) = mapped.source
+        && mapped.name_type.is_none()
+    {
+        match arena.get(source).clone() {
+            Type::Array(element) => {
+                let number = arena.alloc(Type::Number);
+                let _ = element;
+                let value =
+                    substitute_bound_type_params(arena, mapped.value, &[(mapped.key, number)]);
+                return arena.alloc(Type::Array(value));
+            }
+            Type::Tuple(elements) => {
+                let mut mapped_elements = Vec::with_capacity(elements.len());
+                for (position, element) in elements.iter().enumerate() {
+                    let key = arena.alloc(Type::NumberLiteral(position as f64));
+                    let value =
+                        substitute_bound_type_params(arena, mapped.value, &[(mapped.key, key)]);
+                    mapped_elements.push(crate::types::TupleElement {
+                        type_id: value,
+                        optional: match mapped.optional {
+                            MappedModifier::Add => true,
+                            MappedModifier::Remove => false,
+                            MappedModifier::Keep => element.optional,
+                        },
+                        rest: element.rest,
+                    });
+                }
+                return arena.alloc_tuple(mapped_elements);
+            }
+            _ => {}
+        }
+    }
+
+    let Some(names) = mapped_key_names(arena, mapped.constraint) else {
+        return arena.alloc(Type::Mapped(mapped));
+    };
+    let source_properties = mapped.source.and_then(|source| match arena.get(source) {
+        Type::Object(object) => Some(object.properties.clone()),
+        _ => None,
+    });
+    let mut properties: Vec<PropertyEntry> = Vec::with_capacity(names.len());
+    for name in names {
+        let key = arena.alloc(Type::StringLiteral(name.clone()));
+        let original = source_properties
+            .as_ref()
+            .and_then(|all| all.iter().find(|p| &*p.name == name.as_str()));
+        // `as` renames the key (or drops it with `never`).
+        let final_names: Vec<String> = match mapped.name_type {
+            None => vec![name.clone()],
+            Some(name_type) => {
+                let renamed = substitute_bound_type_params(arena, name_type, &[(mapped.key, key)]);
+                match mapped_key_names(arena, renamed) {
+                    Some(names) => names,
+                    None => return arena.alloc(Type::Mapped(mapped)),
+                }
+            }
+        };
+        let mut value = substitute_bound_type_params(arena, mapped.value, &[(mapped.key, key)]);
+        let optional = match mapped.optional {
+            MappedModifier::Add => true,
+            MappedModifier::Remove => false,
+            MappedModifier::Keep => original.is_some_and(|p| p.optional),
+        };
+        if mapped.optional == MappedModifier::Remove && original.is_some_and(|p| p.optional) {
+            value = without_undefined(arena, value);
+        }
+        for final_name in final_names {
+            properties.push(PropertyEntry {
+                name: final_name.into(),
+                type_id: value,
+                optional,
+                is_method: false,
+            });
+        }
+    }
+    arena.alloc(Type::Object(ObjectType::new(properties)))
+}
+
+/// `keyof operand`: the union of the property names when they are all known, otherwise
+/// the symbolic node (the operand is still generic, or has index signatures).
+pub fn reduce_keyof(arena: &mut TypeArena, operand: TypeId) -> TypeId {
+    if let Some(keys) = crate::type_annotation::concrete_keys(arena, operand) {
+        let members: Vec<TypeId> = keys
+            .iter()
+            .map(|key| arena.alloc(Type::StringLiteral(key.to_string())))
+            .collect();
+        return match members.len() {
+            0 => arena.never(),
+            1 => members[0],
+            _ => arena.alloc_union(members),
+        };
+    }
+    arena.alloc(Type::Keyof(operand))
+}
+
+/// `object[index]`: the property's type when both sides are concrete, otherwise the
+/// symbolic node.
+pub fn reduce_indexed_access(arena: &mut TypeArena, object: TypeId, index: TypeId) -> TypeId {
+    if !contains_type_param(arena, object)
+        && !contains_type_param(arena, index)
+        && let Some(reduced) = crate::type_annotation::indexed_access(arena, object, index)
+    {
+        return reduced;
+    }
+    arena.alloc(Type::IndexedAccess(object, index))
 }
 
 // The free type parameters of a type: every GenericParameter reachable from it that is not
@@ -1848,6 +2319,16 @@ fn parts_of(arena: &TypeArena, type_id: TypeId) -> SmallVec<[TypeId; 8]> {
                 conditional.false_type,
             ]);
         }
+        Type::Keyof(operand) | Type::StringMapping(_, operand) => parts.push(*operand),
+        Type::Variadic(elements) => parts.extend(elements.iter().map(|e| e.type_id)),
+        Type::Template(template) => parts.extend(template.types.iter().copied()),
+        Type::Mapped(mapped) => {
+            parts.push(mapped.constraint);
+            parts.extend(mapped.source);
+            parts.extend(mapped.name_type);
+            parts.push(mapped.value);
+        }
+        Type::IndexedAccess(object, index) => parts.extend([*object, *index]),
         _ => {}
     }
     parts
@@ -1903,6 +2384,10 @@ fn free_generic_params(arena: &TypeArena, type_id: TypeId) -> Rc<[FreeParam]> {
             }
             if let Type::Conditional(conditional) = arena.get(nodes[index]) {
                 free.retain(|(id, _)| !conditional.infer_params.contains(id));
+            }
+            // The key of a mapped type is bound inside it.
+            if let Type::Mapped(mapped) = arena.get(nodes[index]) {
+                free.retain(|(id, _)| *id != mapped.key);
             }
             if !same_free_set(arena, &free, &sets[index]) {
                 changed = true;
@@ -2332,4 +2817,205 @@ mod tests {
             node
         );
     }
+}
+
+pub fn apply_string_case(case: crate::types::StringCase, text: &str) -> String {
+    use crate::types::StringCase::*;
+    match case {
+        Upper => text.to_uppercase(),
+        Lower => text.to_lowercase(),
+        Capitalize | Uncapitalize => {
+            let mut chars = text.chars();
+            match chars.next() {
+                Some(first) => {
+                    let head: String = if case == Capitalize {
+                        first.to_uppercase().collect()
+                    } else {
+                        first.to_lowercase().collect()
+                    };
+                    head + chars.as_str()
+                }
+                None => String::new(),
+            }
+        }
+    }
+}
+
+/// `Uppercase<S>` and friends: applied to every literal of `operand`, kept symbolic for
+/// anything else.
+pub fn reduce_string_mapping(
+    arena: &mut TypeArena,
+    case: crate::types::StringCase,
+    operand: TypeId,
+) -> TypeId {
+    match arena.get(operand).clone() {
+        Type::StringLiteral(text) => {
+            arena.alloc(Type::StringLiteral(apply_string_case(case, &text)))
+        }
+        Type::Union(members) => {
+            let mapped: Vec<TypeId> = members
+                .into_iter()
+                .map(|member| reduce_string_mapping(arena, case, member))
+                .collect();
+            arena.alloc_union(mapped)
+        }
+        Type::Never | Type::Any => operand,
+        _ => arena.alloc(Type::StringMapping(case, operand)),
+    }
+}
+
+fn literal_texts(arena: &TypeArena, id: TypeId, out: &mut Vec<String>) -> Option<()> {
+    match arena.get(id) {
+        Type::StringLiteral(text) => out.push(text.clone()),
+        Type::NumberLiteral(value) => out.push(if value.fract() == 0.0 && value.abs() < 1e15 {
+            format!("{}", *value as i64)
+        } else {
+            format!("{value}")
+        }),
+        Type::BooleanLiteral(value) => out.push(value.to_string()),
+        Type::Null => out.push("null".into()),
+        Type::Undefined => out.push("undefined".into()),
+        Type::Union(members) => {
+            for &member in members {
+                literal_texts(arena, member, out)?;
+            }
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
+/// `` `a${X}b` ``: every placeholder a literal (or union of literals) gives the union of the
+/// strings; any other placeholder keeps the type as a pattern.
+pub fn reduce_template(arena: &mut TypeArena, texts: Vec<String>, types: Vec<TypeId>) -> TypeId {
+    let mut options: Vec<Vec<String>> = Vec::with_capacity(types.len());
+    let mut all_literal = true;
+    for &part in &types {
+        if matches!(arena.get(part), Type::Never) {
+            return arena.never();
+        }
+        let mut list = Vec::new();
+        if literal_texts(arena, part, &mut list).is_none() {
+            all_literal = false;
+            break;
+        }
+        options.push(list);
+    }
+    let total: usize = options.iter().map(Vec::len).product();
+    if all_literal && total <= 10_000 {
+        let mut results = vec![texts[0].clone()];
+        for (index, list) in options.iter().enumerate() {
+            let mut next = Vec::with_capacity(results.len() * list.len());
+            for prefix in &results {
+                for item in list {
+                    next.push(format!("{prefix}{item}{}", texts[index + 1]));
+                }
+            }
+            results = next;
+        }
+        let members: Vec<TypeId> = results
+            .into_iter()
+            .map(|text| arena.alloc(Type::StringLiteral(text)))
+            .collect();
+        return arena.alloc_union(members);
+    }
+    arena.alloc(Type::Template(crate::types::TemplateType { texts, types }))
+}
+
+/// The text each placeholder of `template` covers when `text` matches it, shortest
+/// match first for every placeholder but the last.
+pub fn match_template(
+    arena: &TypeArena,
+    template: &crate::types::TemplateType,
+    text: &str,
+) -> Option<Vec<String>> {
+    let first = &template.texts[0];
+    let mut rest = text.strip_prefix(first.as_str())?;
+    let mut captures = Vec::with_capacity(template.types.len());
+    for (index, &part) in template.types.iter().enumerate() {
+        let next = &template.texts[index + 1];
+        let last = index + 1 == template.types.len();
+        let capture = if last {
+            let body = rest.strip_suffix(next.as_str())?;
+            rest = "";
+            body
+        } else if next.is_empty() {
+            // Nothing separates this placeholder from the next: it takes one character.
+            let width = rest.chars().next().map_or(0, char::len_utf8);
+            let body = &rest[..width];
+            rest = &rest[width..];
+            body
+        } else {
+            let at = rest.find(next.as_str())?;
+            let body = &rest[..at];
+            rest = &rest[at + next.len()..];
+            body
+        };
+        if !placeholder_accepts(arena, part, capture) {
+            return None;
+        }
+        captures.push(capture.to_string());
+    }
+    rest.is_empty().then_some(captures)
+}
+
+fn placeholder_accepts(arena: &TypeArena, part: TypeId, capture: &str) -> bool {
+    match arena.get(part) {
+        Type::Number => capture.parse::<f64>().is_ok() && !capture.is_empty(),
+        Type::Boolean => capture == "true" || capture == "false",
+        Type::StringLiteral(text) => text == capture,
+        Type::StringMapping(case, _) => apply_string_case(*case, capture) == capture,
+        _ => true,
+    }
+}
+
+/// `[...A, ...B]` with every operand known: the plain tuple. An operand still generic, or a
+/// shape a tuple cannot hold (a rest element that is not last), keeps the variadic node.
+pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleElement>) -> TypeId {
+    let mut flat: Vec<crate::types::TupleElement> = Vec::with_capacity(elements.len());
+    for element in &elements {
+        if !element.rest {
+            flat.push(*element);
+            continue;
+        }
+        // A reference still pointing at its own declaration has no body to read yet.
+        if matches!(arena.raw(element.type_id), Type::Ref(_))
+            && arena.declared_body(element.type_id).is_none()
+        {
+            return arena.alloc(Type::Variadic(elements));
+        }
+        match arena.get(element.type_id).clone() {
+            Type::Tuple(inner) => flat.extend(inner),
+            Type::Array(item) => flat.push(crate::types::TupleElement {
+                type_id: item,
+                optional: false,
+                rest: true,
+            }),
+            // An operand that inference could not fix reads as its `unknown[]` constraint.
+            Type::Any | Type::Never | Type::Unknown => flat.push(crate::types::TupleElement {
+                type_id: if matches!(arena.get(element.type_id), Type::Unknown) {
+                    arena.any()
+                } else {
+                    element.type_id
+                },
+                optional: false,
+                rest: true,
+            }),
+            _ => return arena.alloc(Type::Variadic(elements)),
+        }
+    }
+    let rest_count = flat.iter().filter(|e| e.rest).count();
+    let mut seen_optional = false;
+    let mut valid = rest_count <= 1 && (rest_count == 0 || flat.last().is_some_and(|e| e.rest));
+    for element in &flat {
+        if element.optional {
+            seen_optional = true;
+        } else if seen_optional && !element.rest {
+            valid = false;
+        }
+    }
+    if !valid {
+        return arena.alloc(Type::Variadic(elements));
+    }
+    arena.alloc_tuple(flat)
 }
