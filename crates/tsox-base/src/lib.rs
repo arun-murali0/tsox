@@ -14,6 +14,7 @@ pub mod compiler_options;
 pub mod diagnostic_codes;
 pub mod diagnostic_view;
 pub mod diagnostics;
+mod dom_only_globals;
 pub mod error;
 pub mod file_id;
 pub mod fxhash;

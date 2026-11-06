@@ -23,6 +23,8 @@ struct Options {
     flat: bool,
     cycles: bool,
     partial: bool,
+    // Load the DOM-family libraries up front instead of only when the project can see them.
+    eager_libs: bool,
     // Check through the query layer (`IncrementalProject`): slower on a first run, much faster
     // on every later one. `--watch` implies it.
     incremental: bool,
@@ -317,19 +319,42 @@ fn check_with_modules(
         ),
         None => (ModuleResolver::new(), None),
     };
-    let mut entries = if let Some(config) = config {
-        config
-            .project_entries_with_standard_libraries(&resolver)
+    // The DOM-family library files are most of the default library. They are left out of the
+    // first graph, and the project is read once to see whether it can observe any of their
+    // globals; only then is the graph built again with them. `--eager-libs` skips the
+    // shortcut and loads everything first, as before.
+    let defer_dom = config.is_some_and(|config| config.selects_dom_libraries())
+        && !options.eager_libs
+        && std::env::var_os("TSOX_EAGER_LIBS").is_none();
+    let entries_for = |with_dom: bool| -> Result<Vec<PathBuf>, String> {
+        let mut entries = if let Some(config) = config {
+            if with_dom {
+                config.project_entries_with_standard_libraries(&resolver)
+            } else {
+                config.project_entries_deferring_dom(&resolver)
+            }
             .map_err(|error| error.to_string())?
-    } else {
-        files.to_vec()
+        } else {
+            files.to_vec()
+        };
+        for path in &mut entries {
+            *path = fs::canonicalize(&*path)
+                .map_err(|error| format!("could not resolve {}: {error}", path.display()))?;
+        }
+        Ok(entries)
     };
-    for path in &mut entries {
-        *path = fs::canonicalize(&*path)
-            .map_err(|error| format!("could not resolve {}: {error}", path.display()))?;
-    }
     let loaded_type_entries = config.is_some();
-    let mut graph = ModuleGraph::build(&entries, &resolver).map_err(|error| error.to_string())?;
+    let mut graph = if defer_dom {
+        let lean = ModuleGraph::build(&entries_for(false)?, &resolver)
+            .map_err(|error| error.to_string())?;
+        if tsox::project_needs_dom_libraries(&lean) {
+            ModuleGraph::build(&entries_for(true)?, &resolver).map_err(|error| error.to_string())?
+        } else {
+            lean
+        }
+    } else {
+        ModuleGraph::build(&entries_for(true)?, &resolver).map_err(|error| error.to_string())?
+    };
     if let (Some(config), Some(root)) = (config, root) {
         graph = graph.with_root(root).with_config(config);
         if loaded_type_entries {
@@ -446,6 +471,7 @@ fn parse_options(args: &[String]) -> Option<Options> {
         flat: args.iter().any(|arg| arg == "--flat"),
         cycles: args.iter().any(|arg| arg == "--cycles"),
         partial: args.iter().any(|arg| arg == "--partial"),
+        eager_libs: args.iter().any(|arg| arg == "--eager-libs"),
         incremental: args
             .iter()
             .any(|arg| arg == "--incremental" || arg == "--watch"),
@@ -502,7 +528,7 @@ fn print_help() {
     println!(
         "tsox: a from-scratch TypeScript type checker (experimental CLI)\n\n\
          USAGE:\n    \
-         tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--tsc-codes]\n    \
+         tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--eager-libs] [--tsc-codes]\n    \
          [--incremental | --watch]\n\n\
          OPTIONS:\n    \
          --project <path>    Read the tsconfig.json at <path> and check the files its\n                         \

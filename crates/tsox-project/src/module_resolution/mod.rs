@@ -7,6 +7,7 @@
 // change detection and the parallel driver.
 pub mod check;
 mod config;
+mod demand_dom;
 mod discovery;
 mod error;
 mod graph;
@@ -25,6 +26,7 @@ pub use check::{
     check_project_cancellable,
 };
 pub use config::{ConfigError, Json, ProjectConfig, parse_jsonc};
+pub use demand_dom::project_needs_dom_libraries;
 pub use discovery::{ModuleRequest, ModuleRequestKind, ModuleScan, scan_module_requests};
 pub use error::ModuleError;
 pub use graph::{ModuleEdge, ModuleGraph};

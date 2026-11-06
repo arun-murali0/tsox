@@ -90,6 +90,57 @@ impl StandardLibrarySet {
     }
 }
 
+/// Library names that only declare browser and host globals: `lib.dom.d.ts` and the files that
+/// extend or accompany it. They are 84% of the bytes of the default ES2020 set and nothing in
+/// the ES libraries refers to them.
+const DOM_FAMILY: &[&str] = &[
+    "dom",
+    "dom.iterable",
+    "dom.asynciterable",
+    "webworker.importscripts",
+    "scripthost",
+];
+
+/// True for a library file that declares DOM or host globals (see [`DOM_FAMILY`]).
+///
+/// The `*.full` files, `lib.d.ts` (named `default`) and `lib.es6.d.ts` are included: they hold
+/// only `/// <reference lib>` lines, and their DOM references would bring the DOM files back
+/// through the module graph. Their ES references are listed on their own in the order manifests.
+pub fn is_dom_family_library(name: &str) -> bool {
+    DOM_FAMILY.contains(&name) || name.ends_with(".full") || name == "default" || name == "es6"
+}
+
+/// True when `name` is a global that only the DOM-family libraries declare: no ES library
+/// declares it. A project that never uses such a name, and never declares one, does not need
+/// those files to be loaded to get the same diagnostics.
+pub fn is_dom_only_global(name: &str) -> bool {
+    crate::dom_only_globals::DOM_ONLY_GLOBALS
+        .binary_search(&name)
+        .is_ok()
+}
+
+impl StandardLibrarySet {
+    /// This set without the DOM-family files. A file listed in the order manifests keeps its
+    /// place, so what is left is still dependency-first.
+    pub fn without_dom_family(&self) -> Self {
+        Self {
+            files: self
+                .files
+                .iter()
+                .filter(|file| !is_dom_family_library(&file.name))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// True when at least one DOM-family file is part of this set.
+    pub fn has_dom_family(&self) -> bool {
+        self.files
+            .iter()
+            .any(|file| is_dom_family_library(&file.name))
+    }
+}
+
 /// Errors selecting or reading a bundled standard-library declaration.
 #[derive(Debug)]
 pub enum StandardLibraryError {
@@ -290,7 +341,43 @@ fn parse_order_manifest(source: &str) -> Result<Vec<String>, StandardLibraryErro
 
 #[cfg(test)]
 mod tests {
-    use super::{StandardLibraryError, StandardLibrarySet};
+    #[test]
+    fn dom_only_globals_are_sorted_and_cover_the_known_cases() {
+        use crate::dom_only_globals::DOM_ONLY_GLOBALS;
+        assert!(DOM_ONLY_GLOBALS.windows(2).all(|pair| pair[0] < pair[1]));
+        for name in [
+            "document",
+            "window",
+            "HTMLElement",
+            "setTimeout",
+            "console",
+            "URL",
+        ] {
+            assert!(super::is_dom_only_global(name), "{name}");
+        }
+        for name in ["Array", "Promise", "Map", "Symbol", "Record", "Date"] {
+            assert!(!super::is_dom_only_global(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn deferring_dom_keeps_the_es_files_in_order() {
+        let set = StandardLibrarySet::for_options(&options(ScriptTarget::Es2020)).unwrap();
+        assert!(set.has_dom_family());
+        let lean = set.without_dom_family();
+        assert!(!lean.has_dom_family());
+        assert!(!lean.is_empty());
+        let kept: Vec<&str> = set
+            .files()
+            .iter()
+            .map(|file| file.name.as_str())
+            .filter(|name| !super::is_dom_family_library(name))
+            .collect();
+        let lean_names: Vec<&str> = lean.files().iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(kept, lean_names);
+    }
+
+    use super::{StandardLibraryError, StandardLibrarySet, is_dom_only_global};
     use crate::compiler_options::{EffectiveCompilerOptions, ScriptTarget};
 
     fn options(target: ScriptTarget) -> EffectiveCompilerOptions {
@@ -374,5 +461,60 @@ mod tests {
             StandardLibrarySet::for_options(&options),
             Err(StandardLibraryError::UnknownLibrary(name)) if name == "not-a-real-lib"
         ));
+    }
+
+    #[test]
+    fn deferring_dom_drops_the_dom_family_and_the_full_roots_only() {
+        let set = StandardLibrarySet::for_options(&options(ScriptTarget::Es2020)).unwrap();
+        assert!(set.has_dom_family());
+        let lean = set.without_dom_family();
+        assert!(!lean.has_dom_family());
+        assert!(has_file(&lean, "lib.es5.d.ts"));
+        assert!(has_file(&lean, "lib.es2020.bigint.d.ts"));
+        assert!(!has_file(&lean, "lib.dom.d.ts"));
+        assert!(!has_file(&lean, "lib.es2020.full.d.ts"));
+        assert_eq!(lean.files().len() + 6, set.files().len());
+    }
+
+    #[test]
+    fn dom_only_globals_are_sorted_and_exclude_es_names() {
+        assert!(is_dom_only_global("document"));
+        assert!(is_dom_only_global("HTMLElement"));
+        assert!(!is_dom_only_global("Promise"));
+        assert!(!is_dom_only_global("Array"));
+        assert!(!is_dom_only_global("Date"));
+    }
+}
+
+#[cfg(test)]
+mod dom_family_tests {
+    use super::*;
+
+    #[test]
+    fn dom_only_names_are_found_and_es_names_are_not() {
+        assert!(is_dom_only_global("document"));
+        assert!(is_dom_only_global("HTMLElement"));
+        assert!(!is_dom_only_global("Array"));
+        assert!(!is_dom_only_global("Promise"));
+    }
+
+    #[test]
+    fn the_name_list_is_sorted_and_free_of_duplicates() {
+        let list = crate::dom_only_globals::DOM_ONLY_GLOBALS;
+        assert!(list.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn dropping_the_dom_family_keeps_the_es_files_in_order() {
+        let options = EffectiveCompilerOptions::default();
+        let full = StandardLibrarySet::for_options(&options).unwrap();
+        let lean = full.without_dom_family();
+        assert!(full.has_dom_family() && !lean.has_dom_family());
+        let kept: Vec<_> = full
+            .files()
+            .iter()
+            .filter(|file| !is_dom_family_library(&file.name))
+            .collect();
+        assert_eq!(lean.files().iter().collect::<Vec<_>>(), kept);
     }
 }

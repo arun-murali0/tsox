@@ -647,9 +647,40 @@ impl ProjectConfig {
         &self,
         resolver: &ModuleResolver,
     ) -> Result<Vec<PathBuf>, tsox_base::standard_lib::StandardLibraryError> {
-        let libraries = tsox_base::standard_lib::StandardLibrarySet::for_options(
+        self.project_entries_for_libraries(resolver, true)
+    }
+
+    /// The same entries as [`Self::project_entries_with_standard_libraries`], but without the
+    /// DOM-family library files. They are 84% of the default library bytes, and a project that
+    /// uses none of their globals gets the same diagnostics without them (see
+    /// `project_needs_dom_libraries`). A `/// <reference lib="dom">` in a project file still
+    /// pulls them in through the graph.
+    pub fn project_entries_deferring_dom(
+        &self,
+        resolver: &ModuleResolver,
+    ) -> Result<Vec<PathBuf>, tsox_base::standard_lib::StandardLibraryError> {
+        self.project_entries_for_libraries(resolver, false)
+    }
+
+    /// True when the selected libraries include DOM-family files, so deferring them changes
+    /// the entry list.
+    pub fn selects_dom_libraries(&self) -> bool {
+        tsox_base::standard_lib::StandardLibrarySet::for_options(&self.effective_compiler_options())
+            .map(|set| set.has_dom_family())
+            .unwrap_or(false)
+    }
+
+    fn project_entries_for_libraries(
+        &self,
+        resolver: &ModuleResolver,
+        include_dom: bool,
+    ) -> Result<Vec<PathBuf>, tsox_base::standard_lib::StandardLibraryError> {
+        let mut libraries = tsox_base::standard_lib::StandardLibrarySet::for_options(
             &self.effective_compiler_options(),
         )?;
+        if !include_dom {
+            libraries = libraries.without_dom_family();
+        }
         let mut entries = Vec::new();
         for path in libraries
             .paths()
