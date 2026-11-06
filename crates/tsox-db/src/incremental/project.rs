@@ -1095,7 +1095,20 @@ impl IncrementalProject {
                 .path(id)
                 .ok_or_else(|| format!("no path for file {index}"))?
                 .to_path_buf();
-            let (text, valid, state) = read_source(&path, buffers);
+            // Module discovery already read and hashed every scannable UTF-8 source.
+            // Reuse that exact snapshot so a project build does not read the same library
+            // or source file a second time. Keep the original fingerprint as well: taking a
+            // new one here could make text from an older graph look current after a write.
+            // An open editor buffer still wins over the file on disk.
+            let reusable = if buffers.contains_key(&path) {
+                None
+            } else {
+                graph.source_with_state(id)
+            };
+            let (text, valid, state) = match reusable {
+                Some((text, state, hash)) => (text, true, Some((state, hash))),
+                None => read_source(&path, buffers),
+            };
             let kind = if graph.is_dependency_declaration(id) {
                 SourceKind::Dependency
             } else {
@@ -1481,3 +1494,42 @@ fn read_file(path: &Path) -> (Arc<str>, bool, Option<(FileState, u64)>) {
 
 #[allow(dead_code)]
 fn unused(_: &Checked) {}
+
+#[cfg(test)]
+mod source_reuse_tests {
+    use super::{Database, IncrementalProject};
+    use crate::types::FileId;
+    use std::collections::BTreeMap;
+    use tsox_project::module_resolution::{ModuleGraph, ModuleResolver};
+
+    #[test]
+    fn bundle_reuses_discovery_source_without_reading_the_file_again() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("tsox-bundle-source-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("input.ts");
+        let source = "export const value: string = 'cached';";
+        std::fs::write(&path, source).unwrap();
+
+        let graph = ModuleGraph::build(&[path.clone()], &ModuleResolver::new()).unwrap();
+        // If bundle_for tries to read the source again, it will see a missing file instead
+        // of the exact source and file state already captured by module discovery.
+        std::fs::remove_file(&path).unwrap();
+
+        let mut db = Database::new();
+        let (bundle, states, _, unreadable, missing) =
+            IncrementalProject::bundle_for(&mut db, graph, &BTreeMap::new()).unwrap();
+
+        assert_eq!(bundle.graph.source(FileId::new(0)), Some(source));
+        assert!(states.contains_key(&path));
+        assert!(!unreadable[&path]);
+        assert!(!missing.contains(&path));
+
+        drop(bundle);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}

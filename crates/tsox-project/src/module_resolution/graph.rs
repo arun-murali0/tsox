@@ -553,6 +553,16 @@ impl ModuleGraph {
         self.states.get(index_of(id)).and_then(FileState::text)
     }
 
+    /// The discovery source, its original file state, and its content hash. Later stages
+    /// that need an owned source input can clone the `Arc` and state instead of reading the
+    /// file again. `None` has the same meaning as `source`: the file was not scanned or its
+    /// bytes were not valid UTF-8.
+    pub fn source_with_state(&self, id: FileId) -> Option<(Arc<str>, FileState, u64)> {
+        let state = self.states.get(index_of(id))?;
+        let (text, hash) = state.cached_source()?;
+        Some((text, state.clone(), hash))
+    }
+
     /// Whether the parser reported a syntax error in `id`. Such a file may have fewer
     /// edges than its source suggests.
     pub fn has_syntax_errors(&self, id: FileId) -> bool {

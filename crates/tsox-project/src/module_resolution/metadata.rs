@@ -91,6 +91,15 @@ impl FileState {
         self.text.as_ref().map(|text| &*text.0)
     }
 
+    /// The source text and hash captured by module discovery, if it was valid UTF-8.
+    /// Cloning the `Arc` lets later stages reuse the same allocation without reading or
+    /// copying the file again.
+    pub fn cached_source(&self) -> Option<(Arc<str>, u64)> {
+        self.text
+            .as_ref()
+            .map(|text| (Arc::clone(&text.0), self.hash))
+    }
+
     // An unreadable file is reported as changed. Calling it unchanged would keep stale
     // results for a file that may be gone; calling it changed only costs a re-check.
     pub fn is_unchanged(&self, path: &Path) -> bool {
