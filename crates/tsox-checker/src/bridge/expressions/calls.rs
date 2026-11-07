@@ -178,7 +178,12 @@ pub(super) fn infer_new_expression_type(
             span: new_expr.span(),
             callee_name: &callee_name,
             is_new: true,
-            callee_is_declaration: true,
+            // A class is a declaration whose parameters are its own; a constructor typed as
+            // `new () => T` returns a parameter of the enclosing function, which is fixed.
+            callee_is_declaration: !matches!(
+                ctx.arena.get(callee_type),
+                Type::Function(f) if matches!(ctx.arena.get(f.return_type), Type::GenericParameter(..))
+            ),
             explicit_type_args: &explicit_type_args,
         },
         scoping,

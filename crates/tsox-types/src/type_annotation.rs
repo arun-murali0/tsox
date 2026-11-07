@@ -258,6 +258,29 @@ pub fn resolve_ts_type(
             resolve_object_members(&members, namespace, arena)
         }
 
+        // Problem: `new (...args: any[]) => T` was unresolvable, so every generic taking a
+        // class constructor (`make<T>(c: Ctor<T>)`) went unchecked.
+        // Picked: a constructor type is the same signature as a function type. A class value
+        // is already declared as a function returning its instance (declare_class_constructor),
+        // so inference and assignment through it work without a second kind of type.
+        // Cost: a plain function is accepted where a constructor is wanted, and a constructor
+        // type can be called without `new`; both can only miss an error.
+        TSType::TSConstructorType(ctor) => {
+            let scope = namespace.push_decl_type_params(arena, ctor.type_parameters.as_deref());
+            namespace.note_implicit_any_params(&ctor.params);
+            let params = resolve_params_with_any_fallback(&ctor.params, namespace, arena);
+            let return_type = resolve_type_annotation(&ctor.return_type, namespace, arena);
+            let type_params =
+                resolve_function_type_params(ctor.type_parameters.as_deref(), namespace, arena);
+            namespace.pop_type_params(scope);
+            Some(arena.alloc(Type::Function(crate::types::FunctionType {
+                params,
+                return_type: return_type?,
+                type_params,
+                is_untyped: false,
+            })))
+        }
+
         TSType::TSFunctionType(func_type) => {
             let scope =
                 namespace.push_decl_type_params(arena, func_type.type_parameters.as_deref());
