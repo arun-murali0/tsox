@@ -70,6 +70,67 @@ pub mod messages {
         DiagnosticMessage::new(DiagnosticCode::TupleIndexOutOfRange, text)
     }
 
+    pub fn class_incorrectly_extends(
+        arena: &TypeArena,
+        class_name: &str,
+        base: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ClassIncorrectlyExtends,
+            format!(
+                "Class '{class_name}' incorrectly extends base class '{}'.",
+                crate::type_display::display_type(arena, base)
+            ),
+        )
+    }
+
+    pub fn interface_incorrectly_extends(
+        arena: &TypeArena,
+        name: &str,
+        base: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::InterfaceIncorrectlyExtends,
+            format!(
+                "Interface '{name}' incorrectly extends interface '{}'.",
+                crate::type_display::display_type(arena, base)
+            ),
+        )
+    }
+
+    pub fn property_not_assignable_to_index(
+        arena: &TypeArena,
+        property: &str,
+        property_type: TypeId,
+        index_kind: &str,
+        index_type: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PropertyNotAssignableToIndex,
+            format!(
+                "Property '{property}' of type '{}' is not assignable to '{index_kind}' index type '{}'.",
+                crate::type_display::display_type(arena, property_type),
+                crate::type_display::display_type(arena, index_type)
+            ),
+        )
+    }
+
+    pub fn missing_override_modifier(base_class: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::MissingOverrideModifier,
+            format!(
+                "This member must have an 'override' modifier because it overrides a member in the base class '{base_class}'."
+            ),
+        )
+    }
+
+    pub fn duplicate_index_signature(index_kind: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::DuplicateIndexSignature,
+            format!("Duplicate index signature for type '{index_kind}'."),
+        )
+    }
+
     pub fn readonly_assignment(property: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::ReadonlyAssignment,

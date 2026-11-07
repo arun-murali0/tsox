@@ -46,6 +46,11 @@ pub enum DiagnosticCode {
     ClassImplementsMismatch,
     ClassPropertyIncompatible,
     ReadonlyAssignment,
+    ClassIncorrectlyExtends,
+    InterfaceIncorrectlyExtends,
+    PropertyNotAssignableToIndex,
+    DuplicateIndexSignature,
+    MissingOverrideModifier,
 
     // 1100s: calls
     NotCallable,
@@ -159,6 +164,11 @@ impl DiagnosticCode {
             ClassImplementsMismatch => "TSR1023",
             ClassPropertyIncompatible => "TSR1024",
             ReadonlyAssignment => "TSR1025",
+            ClassIncorrectlyExtends => "TSR1026",
+            InterfaceIncorrectlyExtends => "TSR1027",
+            PropertyNotAssignableToIndex => "TSR1028",
+            DuplicateIndexSignature => "TSR1029",
+            MissingOverrideModifier => "TSR1030",
 
             NotCallable => "TSR1101",
             ArgumentArityMismatch => "TSR1102",
@@ -269,6 +279,11 @@ impl DiagnosticCode {
             ClassImplementsMismatch => 2420,
             ClassPropertyIncompatible => 2416,
             ReadonlyAssignment => 2540,
+            ClassIncorrectlyExtends => 2415,
+            InterfaceIncorrectlyExtends => 2430,
+            PropertyNotAssignableToIndex => 2411,
+            DuplicateIndexSignature => 2374,
+            MissingOverrideModifier => 4114,
 
             NotCallable => 2349,
             NotConstructor => 2351,
