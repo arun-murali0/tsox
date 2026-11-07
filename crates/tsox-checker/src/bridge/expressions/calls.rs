@@ -1156,10 +1156,13 @@ fn check_callable(
     // `(...args: T)` with `T extends unknown[]`: the parameter stands for every argument
     // from its position on, so T is inferred as the tuple of their types rather than
     // matched against them one by one.
-    let tuple_rest_index = function_type
-        .params
-        .iter()
-        .position(|p| p.rest && matches!(ctx.arena.get(p.type_id), Type::GenericParameter(..)));
+    let tuple_rest_index = function_type.params.iter().position(|p| {
+        p.rest
+            && matches!(
+                ctx.arena.get(p.type_id),
+                Type::GenericParameter(..) | Type::Variadic(..)
+            )
+    });
     let mut inference = GenericInferenceSession::new(bindings, locked);
     for (index, arg_type) in arg_types.iter().enumerate() {
         if tuple_rest_index.is_some_and(|rest| index >= rest) {

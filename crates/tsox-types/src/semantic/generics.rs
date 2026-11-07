@@ -761,6 +761,29 @@ fn infer_type_param_bindings_uncached(
                 preserve_literals,
             );
         }
+        // `[...T, number]` against `[string, number]`: the fixed elements around the spread
+        // match by position and T takes what lies between them.
+        Type::Variadic(param_elements) => {
+            let Type::Tuple(arg_elements) = arena.get(arg_type).clone() else {
+                return;
+            };
+            let Some((pairs, spread)) = variadic_split(arena, &param_elements, &arg_elements)
+            else {
+                return;
+            };
+            for (wanted, actual) in pairs.into_iter().chain(std::iter::once(spread)) {
+                infer_type_param_bindings_inner(
+                    arena,
+                    wanted,
+                    actual,
+                    bindings,
+                    locked,
+                    cache,
+                    seen,
+                    preserve_literals,
+                );
+            }
+        }
         // `[T, U]` against `[string, number]`: element by element, a rest element taking
         // every argument element past the fixed ones. Against an array it matches nothing,
         // since an array promises no particular element at any position.
@@ -1130,6 +1153,20 @@ fn collect_inference_candidates_inner(
                 cache,
                 seen,
             );
+        }
+        Type::Variadic(param_elements) => {
+            let Type::Tuple(arg_elements) = arena.get(arg_type).clone() else {
+                return;
+            };
+            let Some((pairs, spread)) = variadic_split(arena, &param_elements, &arg_elements)
+            else {
+                return;
+            };
+            for (wanted, actual) in pairs.into_iter().chain(std::iter::once(spread)) {
+                collect_inference_candidates_inner(
+                    arena, wanted, actual, locked, variance, false, out, cache, seen,
+                );
+            }
         }
         // `[T, U]` against `[string, number]`: element by element, a rest element taking
         // every argument element past the fixed ones. Against an array it matches nothing,
@@ -3173,4 +3210,35 @@ fn index_inference_sources(param: &ObjectType, arg: &ObjectType) -> Vec<(TypeId,
         }
     }
     pairs
+}
+
+/// A variadic parameter tuple with exactly one generic spread, matched against an argument
+/// tuple: the (parameter, argument) pairs of the fixed elements before and after the spread,
+/// and the spread operand with the tuple of the argument elements between them.
+fn variadic_split(
+    arena: &mut TypeArena,
+    param: &[crate::types::TupleElement],
+    arg: &[crate::types::TupleElement],
+) -> Option<(Vec<(TypeId, TypeId)>, (TypeId, TypeId))> {
+    let mut spreads = param.iter().enumerate().filter(|(_, e)| e.rest);
+    let (at, spread) = spreads.next()?;
+    if spreads.next().is_some() {
+        return None;
+    }
+    let after = param.len() - at - 1;
+    if arg.len() < at + after || arg.iter().any(|e| e.rest) {
+        return None;
+    }
+    let mut pairs = Vec::new();
+    for index in 0..at {
+        pairs.push((param[index].type_id, arg[index].type_id));
+    }
+    for offset in 0..after {
+        pairs.push((
+            param[at + 1 + offset].type_id,
+            arg[arg.len() - after + offset].type_id,
+        ));
+    }
+    let middle = arena.alloc_tuple(arg[at..arg.len() - after].to_vec());
+    Some((pairs, (spread.type_id, middle)))
 }
