@@ -43,6 +43,8 @@ pub enum DiagnosticCode {
     ObjectPossiblyNullOrUndefined,
     SatisfiesMismatch,
     TupleIndexOutOfRange,
+    ClassImplementsMismatch,
+    ClassPropertyIncompatible,
 
     // 1100s: calls
     NotCallable,
@@ -152,6 +154,8 @@ impl DiagnosticCode {
             ObjectPossiblyNullOrUndefined => "TSR1020",
             SatisfiesMismatch => "TSR1021",
             TupleIndexOutOfRange => "TSR1022",
+            ClassImplementsMismatch => "TSR1023",
+            ClassPropertyIncompatible => "TSR1024",
 
             NotCallable => "TSR1101",
             ArgumentArityMismatch => "TSR1102",
@@ -258,6 +262,8 @@ impl DiagnosticCode {
             ObjectPossiblyNullOrUndefined => 2533,
             SatisfiesMismatch => 1360,
             TupleIndexOutOfRange => 2493,
+            ClassImplementsMismatch => 2420,
+            ClassPropertyIncompatible => 2416,
 
             NotCallable => 2349,
             NotConstructor => 2351,

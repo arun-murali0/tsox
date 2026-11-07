@@ -70,6 +70,35 @@ pub mod messages {
         DiagnosticMessage::new(DiagnosticCode::TupleIndexOutOfRange, text)
     }
 
+    pub fn class_property_incompatible(
+        arena: &TypeArena,
+        property: &str,
+        class_name: &str,
+        interface: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ClassPropertyIncompatible,
+            format!(
+                "Property '{property}' in type '{class_name}' is not assignable to the same property in base type '{}'.",
+                crate::type_display::display_type(arena, interface)
+            ),
+        )
+    }
+
+    pub fn class_incorrectly_implements(
+        arena: &TypeArena,
+        class_name: &str,
+        interface: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ClassImplementsMismatch,
+            format!(
+                "Class '{class_name}' incorrectly implements interface '{}'.",
+                crate::type_display::display_type(arena, interface)
+            ),
+        )
+    }
+
     pub fn does_not_satisfy(
         arena: &TypeArena,
         actual: TypeId,

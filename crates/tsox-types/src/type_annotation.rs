@@ -568,7 +568,7 @@ pub fn resolve_interface_base(
 
 // A reference to a declared type by `name`, with the type arguments the source gave it:
 // shared by `Box<T>` and `import("x").Box<T>`, which differ only in how the name is found.
-fn resolve_named_reference(
+pub fn resolve_named_reference(
     name: &str,
     type_arguments: Option<&oxc_ast::ast::TSTypeParameterInstantiation<'_>>,
     span: oxc_span::Span,
