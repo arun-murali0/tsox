@@ -36,6 +36,7 @@ pub struct PProp {
     pub name: Box<str>,
     pub optional: bool,
     pub is_method: bool,
+    pub readonly: bool,
     pub ty: u32,
 }
 
@@ -287,6 +288,7 @@ impl<'a, R: KeyResolver> Exporter<'a, R> {
                         name: (&*p.name).into(),
                         optional: p.optional,
                         is_method: p.is_method,
+                        readonly: p.readonly,
                         ty: self.emit(p.type_id)?,
                     });
                 }
@@ -1030,6 +1032,7 @@ impl Importer {
                             type_id: ids[p.ty as usize],
                             optional: p.optional,
                             is_method: p.is_method,
+                            readonly: p.readonly,
                         })
                         .collect();
                     arena.alloc(Type::Object(ObjectType::new(props)))
@@ -1177,6 +1180,7 @@ mod tests {
             type_id,
             optional: false,
             is_method: false,
+            readonly: false,
         }
     }
 

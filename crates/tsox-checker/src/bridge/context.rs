@@ -146,6 +146,8 @@ pub struct CheckContext<'ast, 'src> {
     pub contextual: Option<TypeId>,
     /// Set while the operand of `as const` is inferred: literals are kept, arrays become tuples.
     pub const_context: bool,
+    /// Inside a class constructor body, where `this.x = v` may initialise a readonly field.
+    pub in_constructor: bool,
 
     // The type of each branch of every conditional expression checked so far, by the
     // expression's start offset. tsc reports a ternary that does not fit its target
@@ -446,6 +448,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             call_return_context: None,
             contextual: None,
             const_context: false,
+            in_constructor: false,
             conditional_arms: std::collections::HashMap::new(),
             jump_frames: Vec::new(),
             pending_loop_label: None,

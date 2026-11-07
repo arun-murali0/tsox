@@ -1194,6 +1194,7 @@ impl TypeArena {
                 type_id: self.alloc_named(enum_name, type_id),
                 optional: false,
                 is_method: false,
+                readonly: false,
             })
             .collect();
         // ObjectType::new sorts by name, which the merge-join in
@@ -1627,6 +1628,7 @@ mod tests {
             type_id,
             optional,
             is_method: false,
+            readonly: false,
         }
     }
 
@@ -1739,6 +1741,7 @@ mod tests {
             type_id: number,
             optional: false,
             is_method: false,
+            readonly: false,
         }])));
         let declaration = arena.alloc_name("Box");
         let application = arena.alloc_app(declaration, vec![number], body);
@@ -2200,6 +2203,7 @@ mod tests {
             type_id: number,
             optional: false,
             is_method: false,
+            readonly: false,
         }])));
         let wide = arena.alloc_name("Wide");
         let named = arena.alloc_named(wide, object);
@@ -2280,12 +2284,14 @@ mod tests {
                 type_id: left,
                 optional: false,
                 is_method: false,
+                readonly: false,
             }])));
             right = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
                 name: "next".into(),
                 type_id: right,
                 optional: false,
                 is_method: false,
+                readonly: false,
             }])));
         }
         assert!(arena.structurally_equal(left, right));
@@ -2543,6 +2549,7 @@ mod tests {
             type_id: function,
             optional: false,
             is_method,
+            readonly: false,
         };
 
         // The intern key agrees they differ (always held) ...
@@ -2599,6 +2606,7 @@ mod intersection_tests {
             type_id,
             optional: false,
             is_method: false,
+            readonly: false,
         }
     }
 

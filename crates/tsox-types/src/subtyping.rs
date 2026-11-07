@@ -777,6 +777,7 @@ mod tests {
                 type_id: number,
                 optional: false,
                 is_method: false,
+                readonly: false,
             },
         ])));
         let array = arena.alloc(Type::Array(number));
@@ -1144,6 +1145,7 @@ mod tests {
                 type_id,
                 optional,
                 is_method: false,
+                readonly: false,
             })
             .collect();
         Type::Object(ObjectType::new(properties))
@@ -1385,6 +1387,7 @@ mod intersection_relation_tests {
                 type_id,
                 optional,
                 is_method: false,
+                readonly: false,
             })
             .collect();
         arena.alloc(Type::Object(ObjectType::new(entries)))

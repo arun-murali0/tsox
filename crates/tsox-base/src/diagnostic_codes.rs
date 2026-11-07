@@ -45,6 +45,7 @@ pub enum DiagnosticCode {
     TupleIndexOutOfRange,
     ClassImplementsMismatch,
     ClassPropertyIncompatible,
+    ReadonlyAssignment,
 
     // 1100s: calls
     NotCallable,
@@ -157,6 +158,7 @@ impl DiagnosticCode {
             TupleIndexOutOfRange => "TSR1022",
             ClassImplementsMismatch => "TSR1023",
             ClassPropertyIncompatible => "TSR1024",
+            ReadonlyAssignment => "TSR1025",
 
             NotCallable => "TSR1101",
             ArgumentArityMismatch => "TSR1102",
@@ -266,6 +268,7 @@ impl DiagnosticCode {
             TupleIndexOutOfRange => 2493,
             ClassImplementsMismatch => 2420,
             ClassPropertyIncompatible => 2416,
+            ReadonlyAssignment => 2540,
 
             NotCallable => 2349,
             NotConstructor => 2351,

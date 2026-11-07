@@ -256,6 +256,7 @@ mod tests {
                 type_id: arena.number(),
                 optional: false,
                 is_method: false,
+                readonly: false,
             }]))
         };
         let target = {

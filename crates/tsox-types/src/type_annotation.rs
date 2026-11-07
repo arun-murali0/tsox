@@ -899,7 +899,7 @@ fn resolve_builtin_generic(
             let slot = arena.builtin_slot("Record");
             Some(arena.alloc_app(slot, vec![key, value], body))
         }
-        "Partial" | "Required" | "Pick" | "Omit" => {
+        "Partial" | "Required" | "Readonly" | "Pick" | "Omit" => {
             let target = first_type_argument(namespace, arena)??;
             let selected = if matches!(name, "Pick" | "Omit") {
                 let argument = reference.type_arguments.as_ref()?.params.get(1)?;
@@ -929,6 +929,9 @@ fn resolve_builtin_generic(
                     }
                     if name == "Required" {
                         property.optional = false;
+                    }
+                    if name == "Readonly" {
+                        property.readonly = true;
                     }
                     Some(property)
                 })
@@ -1228,6 +1231,7 @@ pub fn resolve_object_members(
                     type_id,
                     optional: property.optional,
                     is_method: false,
+                    readonly: property.readonly,
                 }
             }
             TSSignature::TSMethodSignature(method) => {
@@ -1347,6 +1351,7 @@ fn resolve_method_signature(
         type_id: function,
         optional: method.optional,
         is_method: true,
+        readonly: false,
     })
 }
 
@@ -1449,6 +1454,13 @@ fn resolve_mapped_arm(
         Some(Modifier::Minus) => crate::types::MappedModifier::Remove,
         Some(_) => crate::types::MappedModifier::Add,
     };
+    let readonly = match mapped.readonly {
+        None => crate::types::MappedModifier::Keep,
+        Some(oxc_ast::ast::TSMappedTypeModifierOperator::Minus) => {
+            crate::types::MappedModifier::Remove
+        }
+        Some(_) => crate::types::MappedModifier::Add,
+    };
     arena.register_mapped_key(key);
     Some(crate::semantic::generics::reduce_mapped(
         arena,
@@ -1459,6 +1471,7 @@ fn resolve_mapped_arm(
             name_type,
             value,
             optional,
+            readonly,
         },
     ))
 }

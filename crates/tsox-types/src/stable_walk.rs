@@ -181,6 +181,7 @@ impl<'a, R: KeyResolver> StableHasher<'a, R> {
                         name: &p.name,
                         optional: p.optional,
                         is_method: p.is_method,
+                        readonly: p.readonly,
                         ty,
                     })
                     .collect();
@@ -272,6 +273,7 @@ mod tests {
             type_id,
             optional: false,
             is_method: false,
+            readonly: false,
         }
     }
 

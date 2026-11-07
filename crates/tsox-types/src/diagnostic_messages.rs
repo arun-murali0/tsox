@@ -70,6 +70,13 @@ pub mod messages {
         DiagnosticMessage::new(DiagnosticCode::TupleIndexOutOfRange, text)
     }
 
+    pub fn readonly_assignment(property: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ReadonlyAssignment,
+            format!("Cannot assign to '{property}' because it is a read-only property."),
+        )
+    }
+
     pub fn class_property_incompatible(
         arena: &TypeArena,
         property: &str,

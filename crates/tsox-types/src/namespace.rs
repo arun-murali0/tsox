@@ -1994,7 +1994,14 @@ impl<'a> TypeNamespace<'a> {
                             _ => arena.any(),
                         },
                     };
-                    upsert_property(&mut properties, name, type_id, prop.optional, false);
+                    upsert_property(
+                        &mut properties,
+                        name,
+                        type_id,
+                        prop.optional,
+                        false,
+                        prop.readonly,
+                    );
                 }
                 ClassElement::MethodDefinition(method)
                     if !method.r#static && method.kind == MethodDefinitionKind::Method =>
@@ -2031,7 +2038,7 @@ impl<'a> TypeNamespace<'a> {
                         type_params,
                         is_untyped,
                     }));
-                    upsert_property(&mut properties, name, method_type, false, true);
+                    upsert_property(&mut properties, name, method_type, false, true, false);
                 }
 
                 // Problem: `get total(): number { ... }` was dropped without a word, so
@@ -2052,7 +2059,7 @@ impl<'a> TypeNamespace<'a> {
                         Some(rt) => resolve_type_annotation(rt, self, arena)?,
                         None => arena.any(),
                     };
-                    upsert_property(&mut properties, name, type_id, false, false);
+                    upsert_property(&mut properties, name, type_id, false, false, false);
                 }
                 ClassElement::MethodDefinition(method)
                     if !method.r#static && method.kind == MethodDefinitionKind::Set =>
@@ -2074,7 +2081,7 @@ impl<'a> TypeNamespace<'a> {
                             Some(annotation) => resolve_type_annotation(annotation, self, arena)?,
                             None => arena.any(),
                         };
-                        upsert_property(&mut properties, name, type_id, false, false);
+                        upsert_property(&mut properties, name, type_id, false, false, false);
                     }
                 }
 
@@ -2102,6 +2109,7 @@ impl<'a> TypeNamespace<'a> {
                             type_id,
                             param.optional,
                             false,
+                            param.readonly,
                         );
                     }
                 }
@@ -2120,9 +2128,11 @@ fn upsert_property(
     type_id: TypeId,
     optional: bool,
     is_method: bool,
+    readonly: bool,
 ) {
     match properties.iter_mut().find(|p| *p.name == *name) {
         Some(existing) => {
+            existing.readonly = readonly;
             existing.type_id = type_id;
             existing.optional = optional;
             existing.is_method = is_method;
@@ -2132,6 +2142,7 @@ fn upsert_property(
             type_id,
             optional,
             is_method,
+            readonly,
         }),
     }
 }

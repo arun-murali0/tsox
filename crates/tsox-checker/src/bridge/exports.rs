@@ -424,6 +424,7 @@ fn re_export_namespace(
             type_id: value,
             optional: false,
             is_method: false,
+            readonly: false,
         });
     }
     let body = ctx.arena.alloc(Type::Object(ObjectType::new(properties)));

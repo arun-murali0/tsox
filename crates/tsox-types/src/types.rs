@@ -48,6 +48,8 @@ pub struct MappedType {
     pub name_type: Option<TypeId>,
     pub value: TypeId,
     pub optional: MappedModifier,
+    /// `readonly`, `+readonly` or `-readonly` before the binder.
+    pub readonly: MappedModifier,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -531,6 +533,10 @@ pub struct PropertyEntry {
     // ones of a function-typed property contravariantly, and which rule applies
     // follows the *target* property's declaration (see subtyping::object_is_subtype).
     pub is_method: bool,
+
+    // Declared `readonly`, or made so by a mapped type's `readonly` modifier. It changes
+    // what may be written, never what is assignable.
+    pub readonly: bool,
 }
 
 pub fn widen(arena: &TypeArena, type_id: TypeId) -> TypeId {

@@ -140,9 +140,11 @@ pub(super) fn check_class_declaration(
                 // Like a function declaration, a constructor body starts with no
                 // narrowing and leaves none behind.
                 let outer_narrow = std::mem::take(&mut ctx.narrow);
+                ctx.in_constructor = true;
                 for body_stmt in &ctor_body.statements {
                     check_statement(body_stmt, scoping, ctx);
                 }
+                ctx.in_constructor = false;
                 ctx.narrow = outer_narrow;
             }
         }
