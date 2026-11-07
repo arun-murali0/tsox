@@ -186,6 +186,9 @@ pub struct ExportTable {
     pub dropped_generics: Vec<(String, Vec<(String, bool)>)>,
     /// `dropped_generics` of a script's or a `declare global` block's declarations.
     pub global_generics: Vec<(String, Vec<(String, bool)>)>,
+    /// The globals declared `const` in a script or a `declare global` block, which another file
+    /// cannot assign to (TS2588).
+    pub global_consts: Vec<String>,
     /// Dropped names that are only types (an interface or an alias) and dropped names that
     /// have a runtime side (a variable, function, class, enum or namespace). A name left
     /// without a value is type-only: using it as a value is TS2693, not an unknown type.
@@ -424,7 +427,7 @@ fn re_export_namespace(
             type_id: value,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         });
     }
     let body = ctx.arena.alloc(Type::Object(ObjectType::new(properties)));
@@ -552,6 +555,7 @@ pub fn collect_exports<'ast>(
         table.global_decls = std::mem::take(&mut table.decls);
         table.global_unmodelled = table.dropped_names.clone();
         table.global_generics = table.dropped_generics.clone();
+        table.global_consts = const_variable_names(&program.body);
         table.global_unmodelled_types = table.dropped_type_names.clone();
         table.global_unmodelled_values = table.dropped_value_names.clone();
     }
@@ -568,7 +572,7 @@ pub fn collect_exports<'ast>(
 }
 
 // Whether the file has `import` or `export` syntax, which makes it a module and not a script.
-fn is_external_module(program: &Program<'_>) -> bool {
+pub(super) fn is_external_module(program: &Program<'_>) -> bool {
     program.body.iter().any(|stmt| {
         matches!(
             stmt,
@@ -589,6 +593,24 @@ fn is_external_module(program: &Program<'_>) -> bool {
 // them at the top level of the file's namespace, so resolving a name here finds them, and
 // each block gets a module key of its own so its declarations cannot collide with the
 // file's exports.
+// The names of the `const` variables among a list of statements, whether or not each is
+// `declare`d: the globals of a script, or of a `declare global` block, that cannot be written to.
+fn const_variable_names(statements: &[Statement<'_>]) -> Vec<String> {
+    let mut names = Vec::new();
+    for (item, _) in super::declare::items_in(statements) {
+        if let super::declare::TopLevelItem::Variable(decl) = item {
+            if matches!(decl.kind, oxc_ast::ast::VariableDeclarationKind::Const) {
+                for declarator in &decl.declarations {
+                    if let oxc_ast::ast::BindingPattern::BindingIdentifier(id) = &declarator.id {
+                        names.push(id.name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
 fn collect_global_blocks<'ast>(
     program: &'ast Program<'ast>,
     scoping: &Scoping,
@@ -606,6 +628,9 @@ fn collect_global_blocks<'ast>(
         let collected = collect_in(&block.body.body, true, true, scoping, ctx, key);
         table.global_unmodelled.extend(collected.dropped_names);
         table.global_generics.extend(collected.dropped_generics);
+        table
+            .global_consts
+            .extend(const_variable_names(&block.body.body));
         table
             .global_unmodelled_types
             .extend(collected.dropped_type_names);
@@ -731,7 +756,7 @@ fn collect_in<'ast>(
     let mut export_assignment: Option<&'ast Expression<'ast>> = None;
     let mut export_assignment_type: Option<TypeId> = None;
     // `export * from "./a"`: the source as written.
-    let mut stars: Vec<String> = Vec::new();
+    let mut stars: Vec<(String, oxc_span::Span)> = Vec::new();
     // `export * as ns from "./a"` also carries type names under `ns.Name`, not just
     // the namespace object's value properties.
     let mut namespace_stars: Vec<(String, String)> = Vec::new();
@@ -879,7 +904,7 @@ fn collect_in<'ast>(
                     );
                     namespace_stars.push((alias, source));
                 } else {
-                    stars.push(all.source.value.to_string());
+                    stars.push((all.source.value.to_string(), all.span));
                 }
             }
             Statement::TSInterfaceDeclaration(d) => push_item(
@@ -1315,7 +1340,10 @@ fn collect_in<'ast>(
     // first star wins over a later one. The re-exported declarations are another unit's,
     // found through the provider under the key they already have. A star over a module
     // whose own list is partial, or that is not known, is partial too.
-    for source in stars {
+    // The module a name first came from through a `export *`, for TS2308 when a later one brings
+    // the same name from another declaration.
+    let mut star_origin: std::collections::HashMap<String, (String, DeclKey)> = Default::default();
+    for (source, star_span) in stars {
         let imports = ctx.imports;
         let known = imports.map(|i| i.module_exports(&source));
         if let Some(reason) = star_reason(
@@ -1330,8 +1358,30 @@ fn collect_in<'ast>(
             .flat_map(|key| written[key].1.iter().cloned())
             .chain(table.names.iter().map(|(name, _)| name.clone()))
             .collect();
+        // A class or enum is exported under one name twice (its type and its value), so the
+        // same name coming again from the same star is not a second declaration.
         for (name, key) in imports.map(|i| i.export_all(&source)).unwrap_or_default() {
+            if let Some((first_source, first_key)) = star_origin
+                .get(&name)
+                .filter(|(first_source, _)| *first_source != source)
+            {
+                // TS2308: two `export *` bring one name from different declarations. The first
+                // one stays; the later one has to be named to choose.
+                if *first_key != key {
+                    ctx.error(
+                        crate::diagnostic_messages::messages::export_star_ambiguity(
+                            first_source,
+                            &name,
+                        ),
+                        star_span,
+                    );
+                }
+                continue;
+            }
             if !local.contains(&name) {
+                star_origin
+                    .entry(name.clone())
+                    .or_insert_with(|| (source.clone(), key));
                 table.names.push((name, key));
             }
         }

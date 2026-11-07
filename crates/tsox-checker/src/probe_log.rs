@@ -38,6 +38,8 @@ pub enum ProbeCall {
     GlobalNameUnmodelled(String),
     GlobalGenericParams(String),
     GlobalTypeOnlyUnmodelled(String),
+    GlobalMembers(String),
+    GlobalNameIsConst(String),
 }
 
 /// A question and a fingerprint of the answer it got.
@@ -94,6 +96,8 @@ fn answer_of(call: &ProbeCall, source: &dyn ImportSource) -> u128 {
         ProbeCall::GlobalTypeOnlyUnmodelled(name) => {
             fp_bool(source.global_type_only_unmodelled(name))
         }
+        ProbeCall::GlobalMembers(root) => fp_strings(&source.global_members(root)),
+        ProbeCall::GlobalNameIsConst(name) => fp_bool(source.global_name_is_const(name)),
     }
 }
 
@@ -138,6 +142,12 @@ fn fp_namespaces(namespaces: &[GlobalNamespace]) -> u128 {
         namespace.members.hash(&mut hasher);
         namespace.export_assignment.hash(&mut hasher);
     }
+    hasher.digest128()
+}
+
+fn fp_strings(values: &[String]) -> u128 {
+    let mut hasher = Xxh3::new();
+    values.hash(&mut hasher);
     hasher.digest128()
 }
 
@@ -298,6 +308,24 @@ impl ImportSource for RecordingImports<'_> {
         let answer = self.inner.global_type_only_unmodelled(name);
         self.note(
             || ProbeCall::GlobalTypeOnlyUnmodelled(name.to_string()),
+            || fp_bool(answer),
+        );
+        answer
+    }
+
+    fn global_members(&self, root: &str) -> Vec<String> {
+        let answer = self.inner.global_members(root);
+        self.note(
+            || ProbeCall::GlobalMembers(root.to_string()),
+            || fp_strings(&answer),
+        );
+        answer
+    }
+
+    fn global_name_is_const(&self, name: &str) -> bool {
+        let answer = self.inner.global_name_is_const(name);
+        self.note(
+            || ProbeCall::GlobalNameIsConst(name.to_string()),
             || fp_bool(answer),
         );
         answer

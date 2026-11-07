@@ -142,6 +142,8 @@ pub struct TypeNamespace<'a> {
     // The type parameters (name, has a default) of project globals that are generic but whose
     // body could not be carried over, so a reference can still be checked for its argument count.
     unmodelled_generics: std::collections::HashMap<String, Vec<(String, bool)>>,
+    // Project globals declared `const`: a write to one is TS2588 even from another file.
+    const_globals: std::collections::HashSet<String>,
 
     // The namespaces the checker is currently inside, as full prefixes, outermost first.
     // A declaration registered now is stored under its qualified name (`N.I`), and an
@@ -458,6 +460,7 @@ impl<'a> TypeNamespace<'a> {
             unmodelled_globals: std::collections::HashSet::new(),
             unmodelled_type_only: std::collections::HashSet::new(),
             unmodelled_generics: std::collections::HashMap::new(),
+            const_globals: std::collections::HashSet::new(),
             scope: Vec::new(),
             active_type_params: Vec::new(),
             merged_interface_parts: FxHashMap::default(),
@@ -692,6 +695,16 @@ impl<'a> TypeNamespace<'a> {
     /// True when `name` is an unmodelled project global with no runtime value.
     pub fn is_unmodelled_type_only(&self, name: &str) -> bool {
         self.unmodelled_type_only.contains(name)
+    }
+
+    /// Records that the project declares `name` globally with `const`.
+    pub fn mark_const_global(&mut self, name: &str) {
+        self.const_globals.insert(name.to_owned());
+    }
+
+    /// True when `name` is a project global declared `const`.
+    pub fn is_const_global(&self, name: &str) -> bool {
+        self.const_globals.contains(name)
     }
 
     /// Records the type parameters of a generic global whose body could not be carried over.
@@ -1406,10 +1419,19 @@ impl<'a> TypeNamespace<'a> {
                 }
                 None => {
                     self.resolving_constraints.push(id);
+                    // The parameter is in scope inside its own bound (`T extends Cmp<T>`),
+                    // as an unconstrained stand-in until the bound has been resolved.
+                    let prior = self.entries.remove(&name);
+                    let stand_in = arena.alloc(Type::GenericParameter(id, name.clone(), None));
+                    self.insert_resolved(&name, stand_in);
                     let constraint = param
                         .constraint
                         .as_ref()
                         .and_then(|c| crate::type_annotation::resolve_ts_type(c, self, arena));
+                    self.entries.remove(&name);
+                    if let Some(prior) = prior {
+                        self.entries.insert(name.clone(), prior);
+                    }
                     self.resolving_constraints.pop();
                     // A constraint may name a parameter declared later in the same list
                     // (`<T extends U, U>`), which is not in scope yet. Stand in an
@@ -1987,7 +2009,14 @@ impl<'a> TypeNamespace<'a> {
                     // every error that involved the class.
                     let type_id = match &prop.type_annotation {
                         Some(annotation) => resolve_type_annotation(annotation, self, arena)?,
+                        // A readonly field keeps the literal type, as a `const` does.
                         None => match &prop.value {
+                            Some(Expression::NumericLiteral(n)) if prop.readonly => {
+                                arena.alloc(Type::NumberLiteral(n.value))
+                            }
+                            Some(Expression::StringLiteral(v)) if prop.readonly => {
+                                arena.alloc(Type::StringLiteral(v.value.to_string()))
+                            }
                             Some(Expression::NumericLiteral(_)) => arena.number(),
                             Some(Expression::StringLiteral(_)) => arena.string(),
                             Some(Expression::BooleanLiteral(_)) => arena.boolean(),
@@ -2000,7 +2029,7 @@ impl<'a> TypeNamespace<'a> {
                         type_id,
                         prop.optional,
                         false,
-                        prop.readonly,
+                        member_modifiers(class, self.file_id, prop.accessibility, prop.readonly),
                     );
                 }
                 ClassElement::MethodDefinition(method)
@@ -2038,7 +2067,14 @@ impl<'a> TypeNamespace<'a> {
                         type_params,
                         is_untyped,
                     }));
-                    upsert_property(&mut properties, name, method_type, false, true, false);
+                    upsert_property(
+                        &mut properties,
+                        name,
+                        method_type,
+                        false,
+                        true,
+                        member_modifiers(class, self.file_id, method.accessibility, false),
+                    );
                 }
 
                 // Problem: `get total(): number { ... }` was dropped without a word, so
@@ -2059,7 +2095,23 @@ impl<'a> TypeNamespace<'a> {
                         Some(rt) => resolve_type_annotation(rt, self, arena)?,
                         None => arena.any(),
                     };
-                    upsert_property(&mut properties, name, type_id, false, false, false);
+                    let has_setter = class.body.body.iter().any(|other| {
+                        matches!(
+                            other,
+                            ClassElement::MethodDefinition(setter)
+                                if !setter.r#static
+                                    && setter.kind == MethodDefinitionKind::Set
+                                    && static_member_name(&setter.key).as_deref() == Some(name.as_str())
+                        )
+                    });
+                    upsert_property(
+                        &mut properties,
+                        name,
+                        type_id,
+                        false,
+                        false,
+                        member_modifiers(class, self.file_id, method.accessibility, !has_setter),
+                    );
                 }
                 ClassElement::MethodDefinition(method)
                     if !method.r#static && method.kind == MethodDefinitionKind::Set =>
@@ -2081,7 +2133,14 @@ impl<'a> TypeNamespace<'a> {
                             Some(annotation) => resolve_type_annotation(annotation, self, arena)?,
                             None => arena.any(),
                         };
-                        upsert_property(&mut properties, name, type_id, false, false, false);
+                        upsert_property(
+                            &mut properties,
+                            name,
+                            type_id,
+                            false,
+                            false,
+                            member_modifiers(class, self.file_id, method.accessibility, false),
+                        );
                     }
                 }
 
@@ -2109,7 +2168,12 @@ impl<'a> TypeNamespace<'a> {
                             type_id,
                             param.optional,
                             false,
-                            param.readonly,
+                            member_modifiers(
+                                class,
+                                self.file_id,
+                                param.accessibility,
+                                param.readonly,
+                            ),
                         );
                     }
                 }
@@ -2120,6 +2184,133 @@ impl<'a> TypeNamespace<'a> {
 
         Some(arena.alloc(Type::Object(ObjectType::new(properties))))
     }
+
+    // Problem: a class's value was only its constructor, so `Widget.create()` and every other
+    // `static` member reported "Property does not exist": a false error on common code.
+    // Picked: the static members become an object type that rides next to the constructor in the
+    // value's type (see `declare_class_constructor`), so they cross files with the value. A
+    // member this checker cannot type is kept as `any` instead of being dropped, so a static
+    // the source plainly declares is never reported missing. `None` when the class has none.
+    // Cost: a static inherited from a base class is still not offered, and an unannotated
+    // `static readonly` field is `any` where tsc keeps its literal type.
+    pub fn resolve_class_statics(
+        &mut self,
+        class: &'a Class<'a>,
+        arena: &mut TypeArena,
+    ) -> Option<TypeId> {
+        let mut properties: Vec<PropertyEntry> = Vec::new();
+        for element in &class.body.body {
+            match element {
+                ClassElement::PropertyDefinition(prop) if prop.r#static => {
+                    let Some(name) = static_member_name(&prop.key) else {
+                        continue;
+                    };
+                    let type_id = match &prop.type_annotation {
+                        Some(annotation) => resolve_type_annotation(annotation, self, arena)
+                            .unwrap_or_else(|| arena.any()),
+                        None if prop.readonly => arena.any(),
+                        None => match &prop.value {
+                            Some(Expression::NumericLiteral(_)) => arena.number(),
+                            Some(Expression::StringLiteral(_)) => arena.string(),
+                            Some(Expression::BooleanLiteral(_)) => arena.boolean(),
+                            _ => arena.any(),
+                        },
+                    };
+                    upsert_property(
+                        &mut properties,
+                        name,
+                        type_id,
+                        prop.optional,
+                        false,
+                        member_modifiers(class, self.file_id, prop.accessibility, prop.readonly),
+                    );
+                }
+                ClassElement::MethodDefinition(method)
+                    if method.r#static && method.kind == MethodDefinitionKind::Method =>
+                {
+                    let Some(name) = static_member_name(&method.key) else {
+                        continue;
+                    };
+                    let method_scope = self.push_type_params(arena, &method.value);
+                    let return_type = method
+                        .value
+                        .return_type
+                        .as_ref()
+                        .and_then(|rt| resolve_type_annotation(rt, self, arena));
+                    let (params, is_untyped) =
+                        match resolve_function_params(&method.value.params, self, arena) {
+                            Some(params) => (params, false),
+                            None => (Vec::new(), true),
+                        };
+                    let type_params = crate::type_annotation::resolve_function_type_params(
+                        method.value.type_parameters.as_deref(),
+                        self,
+                        arena,
+                    );
+                    self.pop_type_params(method_scope);
+                    let method_type = match return_type {
+                        Some(return_type) => {
+                            arena.alloc(Type::Function(crate::types::FunctionType {
+                                params,
+                                return_type,
+                                type_params,
+                                is_untyped,
+                            }))
+                        }
+                        None => arena.any(),
+                    };
+                    upsert_property(
+                        &mut properties,
+                        name,
+                        method_type,
+                        false,
+                        true,
+                        member_modifiers(class, self.file_id, method.accessibility, false),
+                    );
+                }
+                ClassElement::MethodDefinition(method)
+                    if method.r#static
+                        && matches!(
+                            method.kind,
+                            MethodDefinitionKind::Get | MethodDefinitionKind::Set
+                        ) =>
+                {
+                    let Some(name) = static_member_name(&method.key) else {
+                        continue;
+                    };
+                    let type_id = match (&method.kind, &method.value.return_type) {
+                        (MethodDefinitionKind::Get, Some(rt)) => {
+                            resolve_type_annotation(rt, self, arena)
+                        }
+                        (MethodDefinitionKind::Set, _) => method
+                            .value
+                            .params
+                            .items
+                            .first()
+                            .and_then(|param| param.type_annotation.as_ref())
+                            .and_then(|annotation| {
+                                resolve_type_annotation(annotation, self, arena)
+                            }),
+                        _ => None,
+                    }
+                    .unwrap_or_else(|| arena.any());
+                    upsert_property(
+                        &mut properties,
+                        name,
+                        type_id,
+                        false,
+                        false,
+                        member_modifiers(class, self.file_id, method.accessibility, false),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if properties.is_empty() {
+            return None;
+        }
+        Some(arena.alloc(Type::Object(ObjectType::new(properties))))
+    }
 }
 
 fn upsert_property(
@@ -2128,22 +2319,58 @@ fn upsert_property(
     type_id: TypeId,
     optional: bool,
     is_method: bool,
-    readonly: bool,
+    modifiers: crate::types::PropModifiers,
 ) {
     match properties.iter_mut().find(|p| *p.name == *name) {
         Some(existing) => {
-            existing.readonly = readonly;
             existing.type_id = type_id;
             existing.optional = optional;
             existing.is_method = is_method;
+            existing.modifiers = modifiers;
         }
         None => properties.push(PropertyEntry {
             name: name.into(),
             type_id,
             optional,
             is_method,
-            readonly,
+            modifiers,
         }),
+    }
+}
+
+/// The identity of a class declaration, which a `private` or `protected` member records as its
+/// declaring class. A class is told from another by its file and where its declaration starts.
+pub fn class_identity(file: FileId, class: &Class<'_>) -> u64 {
+    (u64::from(file.index()) << 32) | u64::from(class.span.start)
+}
+
+// The modifiers of one member of `class`: its accessibility keyword, `readonly`, and (for a
+// `private` or `protected` member) the class that declared it.
+fn member_modifiers(
+    class: &Class<'_>,
+    file: FileId,
+    accessibility: Option<oxc_ast::ast::TSAccessibility>,
+    readonly: bool,
+) -> crate::types::PropModifiers {
+    use crate::types::Access;
+    use oxc_ast::ast::TSAccessibility;
+    let access = match accessibility {
+        Some(TSAccessibility::Private) => Access::Private,
+        Some(TSAccessibility::Protected) => Access::Protected,
+        _ => Access::Public,
+    };
+    let declaring_class = (access != Access::Public).then(|| {
+        let name: std::sync::Arc<str> = class
+            .id
+            .as_ref()
+            .map_or("(Anonymous class)", |id| id.name.as_str())
+            .into();
+        (class_identity(file, class), name)
+    });
+    crate::types::PropModifiers {
+        readonly,
+        access,
+        declaring_class,
     }
 }
 

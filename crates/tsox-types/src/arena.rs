@@ -626,6 +626,27 @@ impl TypeArena {
     // when a Ref reads as an empty object, and a decision that read it would be written
     // into the intern table under an id nothing invalidates. What needs a body is
     // answered later and on demand, see intersection_reduces_to_never.
+    /// The modifiers (`readonly`, accessibility, declaring class) of the property `name` of an
+    /// object type, looking through an intersection (a class value, a merged namespace). `None`
+    /// when the type is not one with such a named property.
+    pub fn property_modifiers(
+        &self,
+        type_id: TypeId,
+        name: &str,
+    ) -> Option<crate::types::PropModifiers> {
+        match self.get(type_id) {
+            Type::Object(object) => object
+                .properties
+                .iter()
+                .find(|property| &*property.name == name)
+                .map(|property| property.modifiers.clone()),
+            Type::Intersection(members) => members
+                .iter()
+                .find_map(|member| self.property_modifiers(*member, name)),
+            _ => None,
+        }
+    }
+
     pub fn alloc_intersection(&mut self, members: Vec<TypeId>) -> Result<TypeId, TooComplex> {
         // `never` ends it, and a nested intersection is spread into its members in place.
         let mut flat: Vec<TypeId> = Vec::with_capacity(members.len());
@@ -1194,7 +1215,7 @@ impl TypeArena {
                 type_id: self.alloc_named(enum_name, type_id),
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             })
             .collect();
         // ObjectType::new sorts by name, which the merge-join in
@@ -1493,6 +1514,10 @@ impl TypeArena {
         self.app_templates.clear();
         self.mapped_keys.clear();
         self.active_app_instantiations.clear();
+        self.app_bases.clear();
+        self.body_origins.clear();
+        self.app_conditionals.clear();
+        self.enum_name_slots.clear();
         self.decl_params.clear();
         self.decl_names.clear();
         self.variance_cache.get_mut().clear();
@@ -1628,7 +1653,7 @@ mod tests {
             type_id,
             optional,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }
     }
 
@@ -1741,7 +1766,7 @@ mod tests {
             type_id: number,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }])));
         let declaration = arena.alloc_name("Box");
         let application = arena.alloc_app(declaration, vec![number], body);
@@ -2203,7 +2228,7 @@ mod tests {
             type_id: number,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }])));
         let wide = arena.alloc_name("Wide");
         let named = arena.alloc_named(wide, object);
@@ -2226,6 +2251,26 @@ mod tests {
             TypeId(FIXED_SLOTS),
             "ids restart right after the primitives"
         );
+    }
+
+    #[test]
+    fn clear_drops_application_and_enum_metadata() {
+        let mut arena = TypeArena::new();
+        let application = DeclSlot(0);
+        let body = TypeId(FIXED_SLOTS);
+
+        let number = arena.number();
+        arena.app_bases.insert(application, number);
+        arena.body_origins.insert(body, application);
+        arena.app_conditionals.insert(application, true);
+        arena.enum_name_slots.push(application);
+
+        arena.clear();
+
+        assert!(arena.app_bases.is_empty());
+        assert!(arena.body_origins.is_empty());
+        assert!(arena.app_conditionals.is_empty());
+        assert!(arena.enum_name_slots.is_empty());
     }
 
     #[test]
@@ -2284,14 +2329,14 @@ mod tests {
                 type_id: left,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             }])));
             right = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
                 name: "next".into(),
                 type_id: right,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             }])));
         }
         assert!(arena.structurally_equal(left, right));
@@ -2549,7 +2594,7 @@ mod tests {
             type_id: function,
             optional: false,
             is_method,
-            readonly: false,
+            modifiers: Default::default(),
         };
 
         // The intern key agrees they differ (always held) ...
@@ -2606,7 +2651,7 @@ mod intersection_tests {
             type_id,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }
     }
 

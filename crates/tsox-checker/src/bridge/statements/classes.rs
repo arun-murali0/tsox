@@ -111,6 +111,10 @@ pub(super) fn check_class_declaration(
     };
 
     let outer_class_instance = ctx.current_class_instance.replace(instance_type);
+    ctx.current_class_ids.push(crate::namespace::class_identity(
+        ctx.namespace.file_id(),
+        class,
+    ));
 
     // Pushes the class's own `<T, ...>` scope for the check-time pass over the body.
     // resolve_class resolved the class at declare time, but that scope is gone by
@@ -140,11 +144,11 @@ pub(super) fn check_class_declaration(
                 // Like a function declaration, a constructor body starts with no
                 // narrowing and leaves none behind.
                 let outer_narrow = std::mem::take(&mut ctx.narrow);
-                ctx.in_constructor = true;
+                let outer_in_constructor = std::mem::replace(&mut ctx.in_constructor, true);
                 for body_stmt in &ctor_body.statements {
                     check_statement(body_stmt, scoping, ctx);
                 }
-                ctx.in_constructor = false;
+                ctx.in_constructor = outer_in_constructor;
                 ctx.narrow = outer_narrow;
             }
         }
@@ -280,6 +284,7 @@ pub(super) fn check_class_declaration(
     }
 
     ctx.namespace.pop_type_params(type_param_scope);
+    ctx.current_class_ids.pop();
     ctx.current_class_instance = outer_class_instance;
 }
 

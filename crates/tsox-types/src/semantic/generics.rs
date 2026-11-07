@@ -1925,7 +1925,7 @@ impl Substitution<'_> {
                         type_id: self.rewrite(arena, p.type_id, cut),
                         optional: p.optional,
                         is_method: p.is_method,
-                        readonly: p.readonly,
+                        modifiers: p.modifiers.clone(),
                     });
                 }
                 let rebuilt = self.rewrite_indexes(arena, object.with_properties(properties), cut);
@@ -2279,18 +2279,20 @@ pub fn reduce_mapped(arena: &mut TypeArena, mapped: crate::types::MappedType) ->
         if mapped.optional == MappedModifier::Remove && original.is_some_and(|p| p.optional) {
             value = without_undefined(arena, value);
         }
-        let readonly = match mapped.readonly {
-            MappedModifier::Add => true,
-            MappedModifier::Remove => false,
-            MappedModifier::Keep => original.is_some_and(|p| p.readonly),
-        };
         for final_name in final_names {
             properties.push(PropertyEntry {
                 name: final_name.into(),
                 type_id: value,
                 optional,
                 is_method: false,
-                readonly,
+                modifiers: crate::types::PropModifiers {
+                    readonly: match mapped.readonly {
+                        MappedModifier::Add => true,
+                        MappedModifier::Remove => false,
+                        MappedModifier::Keep => original.is_some_and(|p| p.modifiers.readonly),
+                    },
+                    ..Default::default()
+                },
             });
         }
     }
@@ -2815,7 +2817,7 @@ mod tests {
             type_id,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }
     }
 
@@ -3205,7 +3207,7 @@ pub fn reduce_record(arena: &mut TypeArena, key: TypeId, value: TypeId) -> Optio
             type_id: value,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         })
         .collect();
     Some(arena.alloc(Type::Object(ObjectType::new(properties))))

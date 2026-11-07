@@ -131,13 +131,6 @@ pub mod messages {
         )
     }
 
-    pub fn readonly_assignment(property: &str) -> DiagnosticMessage {
-        DiagnosticMessage::new(
-            DiagnosticCode::ReadonlyAssignment,
-            format!("Cannot assign to '{property}' because it is a read-only property."),
-        )
-    }
-
     pub fn class_property_incompatible(
         arena: &TypeArena,
         property: &str,
@@ -883,6 +876,115 @@ pub mod messages {
         DiagnosticMessage::new(
             DiagnosticCode::PropertyDeclarationsMustHaveIdenticalModifiers,
             format!("All declarations of '{name}' must have identical modifiers."),
+        )
+    }
+
+    pub fn global_augmentation_outside_module() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::GlobalAugmentationOutsideModule,
+            "Augmentations for the global scope can only be directly nested in external modules or ambient module declarations.".to_string(),
+        )
+    }
+
+    pub fn invalid_module_name_in_augmentation(specifier: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::InvalidModuleNameInAugmentation,
+            format!("Invalid module name in augmentation, module '{specifier}' cannot be found."),
+        )
+    }
+
+    pub fn ambient_module_relative_name() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AmbientModuleRelativeName,
+            "Ambient module declaration cannot specify relative module name.".to_string(),
+        )
+    }
+
+    pub fn ambient_initializer() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AmbientInitializer,
+            "Initializers are not allowed in ambient contexts.".to_string(),
+        )
+    }
+
+    pub fn ambient_implementation() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AmbientImplementation,
+            "An implementation cannot be declared in ambient contexts.".to_string(),
+        )
+    }
+
+    pub fn assignment_to_constant(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AssignmentToConstant,
+            format!("Cannot assign to '{name}' because it is a constant."),
+        )
+    }
+
+    pub fn assignment_to_import(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AssignmentToImport,
+            format!("Cannot assign to '{name}' because it is an import."),
+        )
+    }
+
+    pub fn interface_type_parameters_mismatch(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::InterfaceTypeParametersMismatch,
+            format!("All declarations of '{name}' must have identical type parameters."),
+        )
+    }
+
+    pub fn private_property_access(name: &str, class: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PrivatePropertyAccess,
+            format!("Property '{name}' is private and only accessible within class '{class}'."),
+        )
+    }
+
+    pub fn protected_property_access(name: &str, class: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ProtectedPropertyAccess,
+            format!(
+                "Property '{name}' is protected and only accessible within class '{class}' and its subclasses."
+            ),
+        )
+    }
+
+    pub fn readonly_property_assignment(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ReadonlyPropertyAssignment,
+            format!("Cannot assign to '{name}' because it is a read-only property."),
+        )
+    }
+
+    pub fn import_assignment_in_es_modules() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImportAssignmentInEsModules,
+            "Import assignment cannot be used when targeting ECMAScript modules. Consider using 'import * as ns from \"mod\"', 'import {a} from \"mod\"', 'import d from \"mod\"', or another module format instead.".to_string(),
+        )
+    }
+
+    pub fn export_assignment_in_es_modules() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ExportAssignmentInEsModules,
+            "Export assignment cannot be used when targeting ECMAScript modules. Consider using 'export default' or another module format instead.".to_string(),
+        )
+    }
+
+    pub fn export_star_ambiguity(specifier: &str, name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ExportStarAmbiguity,
+            format!(
+                "Module '{specifier}' has already exported a member named '{name}'. Consider explicitly re-exporting to resolve the ambiguity."
+            ),
+        )
+    }
+
+    pub fn duplicate_function_implementation() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::DuplicateFunctionImplementation,
+            "Duplicate function implementation.".to_string(),
         )
     }
 

@@ -146,7 +146,28 @@ pub(super) fn check_function_declaration(
         if overloaded {
             ctx.implementation_signatures.insert(symbol_id, updated);
         } else {
-            ctx.symbols.declare(symbol_id, updated);
+            // A namespace of the same name was merged next to the placeholder as an object
+            // (`function f() {}` and `namespace f { export const v = 1 }`); the real signature
+            // replaces the function side and keeps that object beside it.
+            let merged = match ctx
+                .symbols
+                .get(symbol_id)
+                .map(|previous| ctx.arena.get(previous))
+            {
+                Some(crate::types::Type::Intersection(members)) => {
+                    let mut parts = vec![updated];
+                    parts.extend(members.iter().copied().filter(|&member| {
+                        matches!(ctx.arena.get(member), crate::types::Type::Object(_))
+                    }));
+                    if parts.len() > 1 {
+                        ctx.arena.alloc_intersection(parts).unwrap_or(updated)
+                    } else {
+                        updated
+                    }
+                }
+                _ => updated,
+            };
+            ctx.symbols.declare(symbol_id, merged);
         }
     }
 

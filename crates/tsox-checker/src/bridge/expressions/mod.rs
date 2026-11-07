@@ -197,6 +197,10 @@ pub fn infer_expression_type(
             infer_assignment_expression_type(assign, scoping, ctx)
         }
 
+        Expression::UpdateExpression(update) => {
+            assignment::infer_update_expression_type(update, scoping, ctx)
+        }
+
         Expression::UnaryExpression(unary)
             if unary.operator == oxc_ast::ast::UnaryOperator::Typeof =>
         {

@@ -247,8 +247,43 @@ pub fn check_statement(stmt: &Statement, scoping: &Scoping, ctx: &mut CheckConte
         // With an import source the declaration was bound before checking started
         // (bridge::imports), so it is handled, not unsupported.
         Statement::ImportDeclaration(_) if ctx.imports.is_some() => {}
+        // `import x = require("m")` was bound with the other imports before checking started.
+        // The `import x = N.M` alias form names a namespace member, which is not read yet.
+        Statement::TSImportEqualsDeclaration(decl)
+            if ctx.imports.is_some()
+                && matches!(
+                    decl.module_reference,
+                    oxc_ast::ast::TSModuleReference::ExternalModuleReference(_)
+                ) =>
+        {
+            // TS1202: an ECMAScript module format has no `require`.
+            if ctx.options.module_is_es && !is_declaration_file(ctx.file_name) {
+                ctx.error(
+                    crate::diagnostic_messages::messages::import_assignment_in_es_modules(),
+                    decl.span,
+                );
+            }
+        }
+        // `export = value`: the value is an ordinary expression to check (an unknown name in
+        // it is reported); the export table takes it from the export collector.
+        Statement::TSExportAssignment(assign) => {
+            // TS1203: an ECMAScript module format has no `module.exports`.
+            if ctx.options.module_is_es && !is_declaration_file(ctx.file_name) {
+                ctx.error(
+                    crate::diagnostic_messages::messages::export_assignment_in_es_modules(),
+                    assign.span,
+                );
+            }
+            infer_expression_type(&assign.expression, scoping, ctx);
+        }
+        // `export as namespace X` only names a global alias of the module.
+        Statement::TSNamespaceExportDeclaration(_) => {}
         other => support::push_unsupported(other, ctx),
     }
+}
+
+fn is_declaration_file(file_name: &str) -> bool {
+    file_name.ends_with(".d.ts") || file_name.ends_with(".d.mts") || file_name.ends_with(".d.cts")
 }
 
 // `namespace N { ... }`: its statements are checked with `N` as the enclosing scope, so a

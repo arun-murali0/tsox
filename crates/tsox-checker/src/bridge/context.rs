@@ -120,6 +120,11 @@ pub struct CheckContext<'ast, 'src> {
     pub exported_function_types: FxHashMap<u32, TypeId>,
 
     pub current_class_instance: Option<TypeId>,
+    /// Identities (see `class_identity`) of the classes whose bodies enclose the code being
+    /// checked, innermost last. A `private` member is reachable only while its class is here.
+    pub current_class_ids: Vec<u64>,
+    /// Checking the body of a constructor, where a `readonly` member of `this` may be assigned.
+    pub in_constructor: bool,
 
     // True while checking the body of a function whose `this` has no type at all:
     // a plain function expression with no `this` parameter and no contextual
@@ -146,8 +151,6 @@ pub struct CheckContext<'ast, 'src> {
     pub contextual: Option<TypeId>,
     /// Set while the operand of `as const` is inferred: literals are kept, arrays become tuples.
     pub const_context: bool,
-    /// Inside a class constructor body, where `this.x = v` may initialise a readonly field.
-    pub in_constructor: bool,
 
     // The type of each branch of every conditional expression checked so far, by the
     // expression's start offset. tsc reports a ternary that does not fit its target
@@ -443,12 +446,13 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             return_reads: ReturnReads::default(),
             exported_function_types: FxHashMap::default(),
             current_class_instance: None,
+            current_class_ids: Vec::new(),
+            in_constructor: false,
             implicit_this: false,
             next_function_has_no_this: false,
             call_return_context: None,
             contextual: None,
             const_context: false,
-            in_constructor: false,
             conditional_arms: std::collections::HashMap::new(),
             jump_frames: Vec::new(),
             pending_loop_label: None,

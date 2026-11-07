@@ -138,6 +138,49 @@ pub fn report_duplicate_declarations<'ast>(
     report_namespace_export_mismatches(&items, ctx);
     report_namespace_merge_order(&items, ctx);
     report_enum_merge_initializers(&items, ctx);
+    report_interface_type_parameter_mismatches(&items, ctx);
+}
+
+// TS2428. Declarations of one interface have to agree on their type parameters: the same number
+// and the same names. A constraint left off one of them is not a disagreement (tsc accepts it),
+// and a class merged with an interface is not compared (tsc stays silent there too).
+fn report_interface_type_parameter_mismatches(
+    items: &[(TopLevelItem<'_>, bool)],
+    ctx: &mut CheckContext<'_, '_>,
+) {
+    use std::collections::BTreeMap;
+    type Shape = Vec<String>;
+    let mut groups: BTreeMap<String, Vec<(Shape, Span)>> = BTreeMap::new();
+    for (item, _) in items {
+        if let TopLevelItem::Interface(decl) = item {
+            let shape: Shape =
+                decl.type_parameters
+                    .as_deref()
+                    .map_or_else(Vec::new, |declaration| {
+                        declaration
+                            .params
+                            .iter()
+                            .map(|param| param.name.name.to_string())
+                            .collect()
+                    });
+            groups
+                .entry(decl.id.name.to_string())
+                .or_default()
+                .push((shape, decl.id.span));
+        }
+    }
+    for (name, declarations) in groups {
+        if declarations.len() < 2 {
+            continue;
+        }
+        let first = &declarations[0].0;
+        if declarations.iter().all(|(other, _)| other == first) {
+            continue;
+        }
+        for (_, span) in declarations {
+            ctx.error(messages::interface_type_parameters_mismatch(&name), span);
+        }
+    }
 }
 
 struct Walker {

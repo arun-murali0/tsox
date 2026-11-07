@@ -42,6 +42,10 @@ pub struct CheckOptions {
     pub no_implicit_returns: bool,
     /// `noFallthroughCasesInSwitch`; independent of `strict`.
     pub no_fallthrough_cases_in_switch: bool,
+    /// `module` is one of the ECMAScript module formats (`es2015`, `es2020`, `es2022`,
+    /// `esnext`): `import x = require()` (TS1202) and `export =` (TS1203) are not allowed in a
+    /// non-declaration file. Unset or any other `module` leaves both alone.
+    pub module_is_es: bool,
 }
 
 impl CheckOptions {
@@ -68,6 +72,7 @@ impl CheckOptions {
             no_implicit_override: false,
             no_implicit_returns: false,
             no_fallthrough_cases_in_switch: false,
+            module_is_es: false,
         }
     }
 

@@ -181,7 +181,7 @@ impl<'a, R: KeyResolver> StableHasher<'a, R> {
                         name: &p.name,
                         optional: p.optional,
                         is_method: p.is_method,
-                        readonly: p.readonly,
+                        modifiers: p.modifiers.fingerprint(),
                         ty,
                     })
                     .collect();
@@ -273,7 +273,7 @@ mod tests {
             type_id,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }
     }
 

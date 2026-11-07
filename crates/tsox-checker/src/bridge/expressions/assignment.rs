@@ -20,24 +20,25 @@ pub(super) fn infer_assignment_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
+    // TS2588 and TS2632: a `const` or an import binding cannot be written to, whatever the
+    // right-hand side holds. The right side keeps its own errors, and the write is not also
+    // checked against the binding's type, which tsc does not do either.
+    if let AssignmentTarget::AssignmentTargetIdentifier(ident) = &assign.left {
+        if let Some(message) = immutable_binding_message(ident, scoping, ctx) {
+            let right_type = infer_expression_type(&assign.right, scoping, ctx);
+            ctx.error(message, ident.span);
+            return right_type;
+        }
+    }
     // The target is the contextual type of the right-hand side. It is read first, which
     // reports nothing the right side's own inference would not (the target is only looked
     // up here), and an unresolvable target simply gives no context.
-    let reported_before = ctx.diagnostics.len();
     let target_type = resolve_assignment_target_type(&assign.left, scoping, ctx);
-    // tsc reports a write to a readonly property once, as TS2540, and does not also compare
-    // the value with the property's type.
-    let read_only_write = ctx.diagnostics[reported_before..]
-        .iter()
-        .any(|d| d.code == crate::diagnostic_codes::DiagnosticCode::ReadonlyAssignment);
     if matches!(assign.operator, AssignmentOperator::Assign) {
         ctx.contextual = target_type;
     }
     let right_type = infer_expression_type(&assign.right, scoping, ctx);
 
-    if read_only_write {
-        return right_type;
-    }
     let Some(target_type) = target_type else {
         // A destructuring target (`[a, b] = arr`, `({x} = obj)`), or one
         // wrapped in `as`/`!`/a type assertion, not modeled. Skips the
@@ -95,6 +96,50 @@ pub(super) fn infer_assignment_expression_type(
             // plain binary op the way the arithmetic ones are. Not modeled.
             None => right_type,
         },
+    }
+}
+
+// `x++` and `--x`. The operand is read for its own errors; a `const` or an import cannot be
+// written to; the result is `number`. This checker has no `bigint` type, so a bigint operand
+// reads as `number` too.
+pub(super) fn infer_update_expression_type(
+    update: &oxc_ast::ast::UpdateExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> TypeId {
+    use oxc_ast::ast::SimpleAssignmentTarget;
+    if let SimpleAssignmentTarget::AssignmentTargetIdentifier(ident) = &update.argument {
+        if let Some(message) = immutable_binding_message(ident, scoping, ctx) {
+            ctx.error(message, ident.span);
+            return ctx.arena.number();
+        }
+        // The operand is read for its own errors (an undeclared name, say).
+        resolve_identifier_type(ident, scoping, ctx);
+    }
+    ctx.arena.number()
+}
+
+fn immutable_binding_message(
+    ident: &oxc_ast::ast::IdentifierReference,
+    scoping: &Scoping,
+    ctx: &CheckContext<'_, '_>,
+) -> Option<crate::diagnostic_messages::DiagnosticMessage> {
+    let Some(symbol_id) = resolve_symbol_id(ident, scoping) else {
+        // No binding in this file: a global another file declared `const` is still read-only.
+        return ctx
+            .namespace
+            .is_const_global(&ident.name)
+            .then(|| crate::diagnostic_messages::messages::assignment_to_constant(&ident.name));
+    };
+    let flags = scoping.symbol_flags(symbol_id);
+    if flags.is_const_variable() {
+        Some(crate::diagnostic_messages::messages::assignment_to_constant(&ident.name))
+    } else if flags.is_import() {
+        Some(crate::diagnostic_messages::messages::assignment_to_import(
+            &ident.name,
+        ))
+    } else {
+        None
     }
 }
 
@@ -203,15 +248,15 @@ fn resolve_assignment_target_type(
         }
         AssignmentTarget::StaticMemberExpression(member) => {
             let object_type = infer_expression_type(&member.object, scoping, ctx);
-            let initialising = ctx.in_constructor
-                && matches!(member.object, oxc_ast::ast::Expression::ThisExpression(_));
-            if !initialising && property_is_readonly(object_type, &member.property.name, ctx) {
-                ctx.error(
-                    crate::diagnostic_messages::messages::readonly_assignment(
-                        &member.property.name,
-                    ),
-                    member.property.span(),
-                );
+            // tsc reports the readonly write and nothing about the value's type.
+            if super::super::accessibility::check_readonly_write(
+                ctx,
+                object_type,
+                matches!(member.object, oxc_ast::ast::Expression::ThisExpression(_)),
+                &member.property.name,
+                member.property.span,
+            ) {
+                return None;
             }
             Some(infer_member_access_type(
                 object_type,
@@ -248,12 +293,4 @@ fn compound_assignment_operator(operator: AssignmentOperator) -> Option<BinaryOp
         AssignmentOperator::Exponential => BinaryOperator::Exponential,
         _ => return None,
     })
-}
-
-/// Whether `object.name` is a declared `readonly` property.
-fn property_is_readonly(object: TypeId, name: &str, ctx: &CheckContext<'_, '_>) -> bool {
-    matches!(
-        ctx.arena.get(object),
-        Type::Object(o) if o.properties.iter().any(|p| p.readonly && p.name.as_ref() == name)
-    )
 }

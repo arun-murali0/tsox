@@ -48,7 +48,7 @@ pub struct MappedType {
     pub name_type: Option<TypeId>,
     pub value: TypeId,
     pub optional: MappedModifier,
-    /// `readonly`, `+readonly` or `-readonly` before the binder.
+    /// `readonly`, `+readonly` or `-readonly` on the mapped member.
     pub readonly: MappedModifier,
 }
 
@@ -534,9 +534,56 @@ pub struct PropertyEntry {
     // follows the *target* property's declaration (see subtyping::object_is_subtype).
     pub is_method: bool,
 
-    // Declared `readonly`, or made so by a mapped type's `readonly` modifier. It changes
-    // what may be written, never what is assignable.
+    // `readonly` and the accessibility keywords, which assignability does not read but a write
+    // (TS2540) and a member access (TS2341, TS2445) do.
+    pub modifiers: PropModifiers,
+}
+
+/// Who may reach a class member: everyone, the declaring class and its subclasses, or the
+/// declaring class alone.
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Access {
+    #[default]
+    Public,
+    Protected,
+    Private,
+}
+
+/// The modifiers of one property. All-default is a plain public, writable member, which is what
+/// every property that came from an object literal, a type literal member without a keyword or a
+/// computed shape is.
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PropModifiers {
     pub readonly: bool,
+    pub access: Access,
+    /// Identity and name of the class that declared a `private` or `protected` member, so
+    /// "inside the declaring class" can be told from "inside another class". A subclass keeps the
+    /// declaring class of what it inherits. `None` for a public member.
+    pub declaring_class: Option<(u64, std::sync::Arc<str>)>,
+}
+
+impl PropModifiers {
+    /// The modifiers folded into one word for the stable fingerprint, so a type whose member
+    /// became `readonly`, `private` or moved to another declaring class no longer looks unchanged
+    /// to the files that read it. 0 for a plain public writable member.
+    pub fn fingerprint(&self) -> u64 {
+        if *self == PropModifiers::default() {
+            return 0;
+        }
+        let mut word: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |value: u64| {
+            word ^= value;
+            word = word.wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        mix(u64::from(self.readonly));
+        mix(self.access as u64 + 1);
+        if let Some((id, _)) = &self.declaring_class {
+            mix(*id);
+        }
+        word | 1
+    }
 }
 
 pub fn widen(arena: &TypeArena, type_id: TypeId) -> TypeId {

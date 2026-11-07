@@ -42,7 +42,15 @@ pub fn infer_member_access_type(
     };
 
     match lookup_with_augmentation(ctx, effective_type, property_name) {
-        Some(found) => found,
+        Some(found) => {
+            super::super::accessibility::check_member_accessibility(
+                ctx,
+                effective_type,
+                property_name,
+                span,
+            );
+            found
+        }
         None => {
             ctx.error(
                 crate::diagnostic_messages::messages::property_does_not_exist(
@@ -65,6 +73,13 @@ fn lookup_with_augmentation(
     property_name: &str,
 ) -> Option<TypeId> {
     if let Some(found) = lookup_member(&mut ctx.arena, type_id, property_name) {
+        // A name that only an index signature supplies may be absent at run time.
+        if ctx.options.no_unchecked_indexed_access
+            && read_through_index_only(ctx, type_id, property_name)
+        {
+            let undefined = ctx.arena.undefined();
+            return Some(ctx.arena.alloc_union(vec![found, undefined]));
+        }
         return Some(found);
     }
     let (interface, args): (&str, Vec<TypeId>) = match ctx.arena.get(type_id) {
@@ -112,6 +127,27 @@ fn index_member(object: &crate::types::ObjectType, name: &str) -> Option<TypeId>
         return Some(index.value);
     }
     object.string_index.as_ref().map(|index| index.value)
+}
+
+fn read_through_index_only(ctx: &CheckContext<'_, '_>, type_id: TypeId, name: &str) -> bool {
+    // The members every value has (`toString`, `hasOwnProperty`...) come from `Object`, not the
+    // index signature, so they are never possibly-undefined.
+    if matches!(
+        name,
+        "toString"
+            | "toLocaleString"
+            | "valueOf"
+            | "hasOwnProperty"
+            | "isPrototypeOf"
+            | "propertyIsEnumerable"
+    ) {
+        return false;
+    }
+    matches!(
+        ctx.arena.get(type_id),
+        Type::Object(o) if (o.string_index.is_some() || o.number_index.is_some())
+            && !o.properties.iter().any(|p| *p.name == *name)
+    )
 }
 
 fn lookup_member(arena: &mut TypeArena, type_id: TypeId, property_name: &str) -> Option<TypeId> {
@@ -751,6 +787,10 @@ pub(super) fn infer_computed_member_access_type(
             _ => None,
         };
         if let Some(value) = by_key {
+            if ctx.options.no_unchecked_indexed_access {
+                let undefined = ctx.arena.undefined();
+                return ctx.arena.alloc_union(vec![value, undefined]);
+            }
             return value;
         }
     }

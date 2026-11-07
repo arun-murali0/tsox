@@ -36,7 +36,7 @@ pub struct PProp {
     pub name: Box<str>,
     pub optional: bool,
     pub is_method: bool,
-    pub readonly: bool,
+    pub modifiers: crate::types::PropModifiers,
     pub ty: u32,
 }
 
@@ -288,7 +288,7 @@ impl<'a, R: KeyResolver> Exporter<'a, R> {
                         name: (&*p.name).into(),
                         optional: p.optional,
                         is_method: p.is_method,
-                        readonly: p.readonly,
+                        modifiers: p.modifiers.clone(),
                         ty: self.emit(p.type_id)?,
                     });
                 }
@@ -711,6 +711,16 @@ pub trait ImportSource: DeclProvider {
         false
     }
 
+    /// The qualified names (`NS.I`) of what a global namespace `root` holds, sorted.
+    fn global_members(&self, _root: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// True when `name` is a global declared `const`, which an assignment cannot write to.
+    fn global_name_is_const(&self, _name: &str) -> bool {
+        false
+    }
+
     /// The type parameters (name, has a default) of a generic global whose declaration could
     /// not be carried over, so a reference to it can still be checked for its number of type
     /// arguments.
@@ -1032,7 +1042,7 @@ impl Importer {
                             type_id: ids[p.ty as usize],
                             optional: p.optional,
                             is_method: p.is_method,
-                            readonly: p.readonly,
+                            modifiers: p.modifiers.clone(),
                         })
                         .collect();
                     arena.alloc(Type::Object(ObjectType::new(props)))
@@ -1180,7 +1190,7 @@ mod tests {
             type_id,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }
     }
 
