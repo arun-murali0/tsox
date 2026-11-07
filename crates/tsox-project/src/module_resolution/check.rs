@@ -263,6 +263,9 @@ struct Globals {
     // names, and whether those are the whole list. A specifier several blocks declare is
     // their union.
     ambient: FxHashMap<String, (Vec<(String, DeclKey)>, bool)>,
+    // The specifiers among them with a `*` (`declare module "*.css"`), sorted, so a specifier
+    // no block names exactly can be matched against them in a fixed order.
+    wildcard_modules: Vec<String>,
     // Module augmentation declarations are merged with a resolved module's export list;
     // unlike ambient modules, they must not make an otherwise unresolved specifier exist.
     augmentations: FxHashMap<FileId, (Vec<(String, DeclKey)>, bool)>,
@@ -275,12 +278,18 @@ struct Globals {
     // taken in path order, so the order of a name's declarations does not depend on the
     // order the files were checked or listed in.
     global_names: FxHashMap<String, Vec<DeclKey>>,
+    // The names among `global_names` that sit inside a namespace (`NS.I`), by the root name
+    // (`NS`), in sorted order: a file that uses `NS` finds the types it holds under their
+    // qualified names.
+    global_members: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     // Names the project declares globally whose declaration could not be carried over. A use
     // of one is not a missing name, but nothing is known about its type.
     unmodelled_globals: std::collections::HashSet<String>,
     // The type parameters of the generic ones among them, so a reference can still be checked
     // for its number of type arguments. The first declaration in path order wins.
     unmodelled_generics: FxHashMap<String, Vec<(String, bool)>>,
+    // The globals declared `const`, which no file may assign to.
+    global_consts: std::collections::HashSet<String>,
     // Of the unmodelled names, those dropped as a type and those dropped with a runtime side.
     // A name only in the first is a type with no value.
     unmodelled_type_names: std::collections::HashSet<String>,
@@ -291,14 +300,40 @@ struct Globals {
 }
 
 impl Globals {
+    // The ambient module a specifier names: the block that names it exactly, else the pattern
+    // module (`declare module "*.css"`) it matches. Of several patterns the one with the longest
+    // part before the `*` wins, as in tsc, and a tie goes to the smaller pattern.
+    fn ambient_entry(&self, specifier: &str) -> Option<&(Vec<(String, DeclKey)>, bool)> {
+        if let Some(entry) = self.ambient.get(specifier) {
+            return Some(entry);
+        }
+        let mut best: Option<(usize, &String)> = None;
+        for pattern in &self.wildcard_modules {
+            let Some((prefix, suffix)) = pattern.split_once('*') else {
+                continue;
+            };
+            let matches = specifier.len() >= prefix.len() + suffix.len()
+                && specifier.starts_with(prefix)
+                && specifier.ends_with(suffix);
+            if matches && best.is_none_or(|(len, _)| prefix.len() > len) {
+                best = Some((prefix.len(), pattern));
+            }
+        }
+        best.and_then(|(_, pattern)| self.ambient.get(pattern))
+    }
+
     // Built from the outputs of the given files, which are in file order, so the result
     // does not depend on the order they were produced in.
     fn build(graph: &ModuleGraph, units: &[(FileId, &UnitExports)]) -> Self {
         let mut globals = Globals::default();
+        let mut ambient_augmentations: Vec<&crate::unit::AmbientExports> = Vec::new();
         for (id, unit) in units {
             for module in &unit.ambient {
                 for decl in &module.exports {
                     globals.decls.insert(decl.key, Arc::new(decl.clone()));
+                }
+                if module.specifier.contains('*') {
+                    globals.wildcard_modules.push(module.specifier.clone());
                 }
                 let entry = globals
                     .ambient
@@ -325,12 +360,26 @@ impl Globals {
                     globals.decls.insert(decl.key, Arc::new(decl.clone()));
                 }
                 let Some(target) = target else {
+                    // No file to attach to: the specifier may name an ambient module, which
+                    // an augmentation extends the way a second `declare module` block does.
+                    // The ambient modules are all known only after this loop.
+                    ambient_augmentations.push(module);
                     continue;
                 };
                 let entry = globals
                     .augmentations
                     .entry(target)
                     .or_insert_with(|| (Vec::new(), true));
+                entry.0.extend(module.export_names.iter().cloned());
+                entry.0.sort();
+                entry.0.dedup();
+                entry.1 &= module.complete;
+            }
+        }
+        globals.wildcard_modules.sort();
+        globals.wildcard_modules.dedup();
+        for module in ambient_augmentations {
+            if let Some(entry) = globals.ambient.get_mut(&module.specifier) {
                 entry.0.extend(module.export_names.iter().cloned());
                 entry.0.sort();
                 entry.0.dedup();
@@ -356,6 +405,13 @@ impl Globals {
                     if !keys.contains(key) {
                         keys.push(*key);
                     }
+                    if let Some((root, _)) = name.split_once('.') {
+                        globals
+                            .global_members
+                            .entry(root.to_string())
+                            .or_default()
+                            .insert(name.clone());
+                    }
                 }
                 globals
                     .unmodelled_globals
@@ -366,6 +422,7 @@ impl Globals {
                 globals
                     .unmodelled_value_names
                     .extend(block.unmodelled_values.iter().cloned());
+                globals.global_consts.extend(block.consts.iter().cloned());
                 for (name, params) in &block.unmodelled_generics {
                     globals
                         .unmodelled_generics
@@ -1742,7 +1799,7 @@ impl ImportsOf<'_> {
 impl ImportSource for ImportsOf<'_> {
     fn export_all(&self, specifier: &str) -> Vec<(String, DeclKey)> {
         // A `declare module "x"` answers `x` before any file does, as it does in TypeScript.
-        if let Some((names, _)) = self.project.globals.ambient.get(specifier) {
+        if let Some((names, _)) = self.project.globals.ambient_entry(specifier) {
             return names
                 .iter()
                 .filter(|(name, _)| name != "default")
@@ -1771,7 +1828,7 @@ impl ImportSource for ImportsOf<'_> {
 
     fn module_exports(&self, specifier: &str) -> ModuleExports {
         let globals = &self.project.globals;
-        if let Some((_, complete)) = globals.ambient.get(specifier) {
+        if let Some((_, complete)) = globals.ambient_entry(specifier) {
             return ModuleExports::Known {
                 complete: *complete,
             };
@@ -1806,7 +1863,7 @@ impl ImportSource for ImportsOf<'_> {
     }
 
     fn export_keys(&self, specifier: &str, name: &str) -> Vec<DeclKey> {
-        if let Some((names, _)) = self.project.globals.ambient.get(specifier) {
+        if let Some((names, _)) = self.project.globals.ambient_entry(specifier) {
             return names
                 .iter()
                 .filter(|(exported, _)| exported == name)
@@ -1852,6 +1909,15 @@ impl ImportSource for ImportsOf<'_> {
             .unwrap_or_default()
     }
 
+    fn global_members(&self, root: &str) -> Vec<String> {
+        self.project
+            .globals
+            .global_members
+            .get(root)
+            .map(|names| names.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     fn requires_registered_global_types(&self) -> bool {
         self.standard_library_registry_applies()
     }
@@ -1871,6 +1937,10 @@ impl ImportSource for ImportsOf<'_> {
     fn global_type_only_unmodelled(&self, name: &str) -> bool {
         self.project.globals.unmodelled_type_names.contains(name)
             && !self.project.globals.unmodelled_value_names.contains(name)
+    }
+
+    fn global_name_is_const(&self, name: &str) -> bool {
+        self.project.globals.global_consts.contains(name)
     }
 
     fn global_generic_params(&self, name: &str) -> Option<Vec<(String, bool)>> {

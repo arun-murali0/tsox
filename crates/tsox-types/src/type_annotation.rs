@@ -470,6 +470,12 @@ pub fn resolve_ts_type(
             if crate::semantic::generics::contains_type_param(arena, operand) {
                 return Some(arena.alloc(Type::Keyof(operand)));
             }
+            // An index signature makes the key set open (`string | number`), which
+            // reduce_keyof builds; a plain object has a fixed list of names.
+            if matches!(arena.get(operand), Type::Object(o) if o.string_index.is_some() || o.number_index.is_some())
+            {
+                return Some(crate::semantic::generics::reduce_keyof(arena, operand));
+            }
             let keys = concrete_keys(arena, operand)?;
             let members: Vec<TypeId> = keys
                 .iter()
@@ -927,11 +933,11 @@ fn resolve_builtin_generic(
                     if name == "Partial" {
                         property.optional = true;
                     }
+                    if name == "Readonly" {
+                        property.modifiers.readonly = true;
+                    }
                     if name == "Required" {
                         property.optional = false;
-                    }
-                    if name == "Readonly" {
-                        property.readonly = true;
                     }
                     Some(property)
                 })
@@ -1231,7 +1237,10 @@ pub fn resolve_object_members(
                     type_id,
                     optional: property.optional,
                     is_method: false,
-                    readonly: property.readonly,
+                    modifiers: crate::types::PropModifiers {
+                        readonly: property.readonly,
+                        ..Default::default()
+                    },
                 }
             }
             TSSignature::TSMethodSignature(method) => {
@@ -1351,7 +1360,7 @@ fn resolve_method_signature(
         type_id: function,
         optional: method.optional,
         is_method: true,
-        readonly: false,
+        modifiers: Default::default(),
     })
 }
 
@@ -1456,9 +1465,7 @@ fn resolve_mapped_arm(
     };
     let readonly = match mapped.readonly {
         None => crate::types::MappedModifier::Keep,
-        Some(oxc_ast::ast::TSMappedTypeModifierOperator::Minus) => {
-            crate::types::MappedModifier::Remove
-        }
+        Some(Modifier::Minus) => crate::types::MappedModifier::Remove,
         Some(_) => crate::types::MappedModifier::Add,
     };
     arena.register_mapped_key(key);

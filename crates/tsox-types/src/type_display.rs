@@ -494,7 +494,7 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
                 }
             }
             for property in object.properties.iter() {
-                if property.readonly {
+                if property.modifiers.readonly {
                     out.push_str("readonly ");
                 }
                 out.push_str(&property.name);
@@ -664,14 +664,14 @@ mod tests {
                 type_id: string,
                 optional: true,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             },
             PropertyEntry {
                 name: "x".into(),
                 type_id: number,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             },
         ])));
         // ObjectType::new sorts by name, so x comes before y regardless of
@@ -688,7 +688,7 @@ mod tests {
             type_id: string,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }])));
         let arr = arena.alloc(Type::Array(inner));
         let outer = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
@@ -696,7 +696,7 @@ mod tests {
             type_id: arr,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }])));
         assert_eq!(render(&arena, outer), "{ items: { name: string; }[]; }");
     }
@@ -782,7 +782,7 @@ mod tests {
             type_id: string,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }])));
         let dog = arena.alloc_ref();
         arena.resolve_ref(dog, body);
@@ -841,7 +841,7 @@ mod tests {
             type_id: string,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }])));
         let dog = arena.alloc_ref();
         arena.resolve_ref(dog, body);

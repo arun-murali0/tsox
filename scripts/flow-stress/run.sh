@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Generates a seeded set of control-flow files and compares tsox with tsc on them.
 #
-#   scripts/flow-stress/run.sh [--seed N] [--files N] [--mode reach|assign] [--codes 7027,7029] [--keep DIR]
+#   scripts/flow-stress/run.sh [--seed N] [--files N] [--mode reach|assign|return] [--codes 7027,7029] [--keep DIR]
 #
 # Prints, per diagnostic code, how many lines agree and how many differ, then the first few
 # differing lines with the statement around them. Exit status is 1 when anything differs.

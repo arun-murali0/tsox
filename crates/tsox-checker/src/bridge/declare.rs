@@ -209,6 +209,7 @@ pub fn declare_top_level<'ast>(program: &'ast Program<'ast>, ctx: &mut CheckCont
     let items = items_in(&program.body);
     declare_types(&items, ctx);
     super::imports::merge_own_global_interfaces(program, ctx);
+    super::ambient_checks::check(program, ctx);
     for (name, span, involves_enum) in ctx.namespace.take_declaration_collisions() {
         let message = if involves_enum {
             crate::diagnostic_messages::messages::enum_declaration_merge()
@@ -560,7 +561,7 @@ fn namespace_properties(
                 type_id,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             });
             Some(())
         };
@@ -598,7 +599,7 @@ fn namespace_properties(
                         type_id,
                         optional: false,
                         is_method: false,
-                        readonly: false,
+                        modifiers: Default::default(),
                     });
                 }
             }
@@ -911,10 +912,24 @@ fn resolve_function_signature(
     )
 }
 
+// The static members riding next to a class's constructor in its value type.
+fn static_members_of(
+    arena: &crate::arena::TypeArena,
+    value: crate::arena::TypeId,
+) -> Option<Vec<crate::types::PropertyEntry>> {
+    let crate::types::Type::Intersection(members) = arena.get(value) else {
+        return None;
+    };
+    members.iter().find_map(|member| match arena.get(*member) {
+        crate::types::Type::Object(object) => Some(object.properties.to_vec()),
+        _ => None,
+    })
+}
+
 fn declare_class_constructor<'a>(
     class: &'a Class<'a>,
     items: &[(TopLevelItem<'a>, bool)],
-    ctx: &mut CheckContext<'_, '_>,
+    ctx: &mut CheckContext<'a, '_>,
 ) {
     let Some(name) = class.id.as_ref() else {
         return;
@@ -944,7 +959,56 @@ fn declare_class_constructor<'a>(
                 type_params: constructor_type_params,
                 is_untyped: constructor_is_untyped,
             }));
-    ctx.declare_value(symbol_id, &name.name, constructor_type);
+    // The statics ride next to the constructor in one value type, so `Widget.create()` finds
+    // them and `new Widget()` still finds the constructor.
+    let class_scope = ctx.namespace.push_decl_type_params(&mut ctx.arena, None);
+    let own_statics = ctx.namespace.resolve_class_statics(class, &mut ctx.arena);
+    ctx.namespace.pop_type_params(class_scope);
+    // A class also has the statics of the class it extends, when that one is declared above it
+    // in this file; its own win by name.
+    let inherited = match class.heritage.as_ref().map(|heritage| &heritage.expression) {
+        Some(oxc_ast::ast::Expression::Identifier(base)) => {
+            let query = crate::type_annotation::typeof_value_name(&base.name);
+            match ctx.namespace.resolve(&query, &mut ctx.arena) {
+                crate::namespace::Resolution::Resolved(base_value) => {
+                    static_members_of(&ctx.arena, base_value)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let statics = match (inherited, own_statics) {
+        (Some(base), Some(own)) => {
+            let mut properties = base;
+            if let crate::types::Type::Object(own_object) = ctx.arena.get(own) {
+                for property in own_object.properties.iter() {
+                    match properties.iter_mut().find(|p| p.name == property.name) {
+                        Some(existing) => *existing = property.clone(),
+                        None => properties.push(property.clone()),
+                    }
+                }
+            }
+            Some(
+                ctx.arena
+                    .alloc(crate::types::Type::Object(crate::types::ObjectType::new(
+                        properties,
+                    ))),
+            )
+        }
+        (Some(base), None) => Some(ctx.arena.alloc(crate::types::Type::Object(
+            crate::types::ObjectType::new(base),
+        ))),
+        (None, own) => own,
+    };
+    let value_type = match statics {
+        Some(statics) => ctx
+            .arena
+            .alloc_intersection(vec![constructor_type, statics])
+            .unwrap_or(constructor_type),
+        None => constructor_type,
+    };
+    ctx.declare_value(symbol_id, &name.name, value_type);
     let spaces = ctx.symbol_capabilities.entry(symbol_id).or_default();
     spaces.has_type = true;
     spaces.has_value = true;

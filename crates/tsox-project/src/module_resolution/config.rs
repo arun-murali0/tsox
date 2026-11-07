@@ -502,6 +502,15 @@ impl ProjectConfig {
             no_implicit_override: flag("noImplicitOverride").unwrap_or(false),
             no_implicit_returns: flag("noImplicitReturns").unwrap_or(false),
             no_fallthrough_cases_in_switch: flag("noFallthroughCasesInSwitch").unwrap_or(false),
+            module_is_es: self
+                .compiler_option("module")
+                .and_then(Json::as_str)
+                .is_some_and(|module| {
+                    matches!(
+                        module.to_ascii_lowercase().as_str(),
+                        "es6" | "es2015" | "es2020" | "es2022" | "esnext"
+                    )
+                }),
         };
 
         let target = self

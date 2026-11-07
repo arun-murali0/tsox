@@ -148,6 +148,9 @@ fn bind_project_globals<'ast>(
     }
     names.sort();
     for name in names {
+        if source.global_name_is_const(&name) {
+            ctx.namespace.mark_const_global(&name);
+        }
         if own.contains(&name) && !own_interfaces.contains(&name) {
             continue;
         }
@@ -189,6 +192,13 @@ fn bind_project_globals<'ast>(
                 }
             }
             continue;
+        }
+        // What a global namespace holds is read under its qualified names (`NS.I`), which a use
+        // of `NS` in a type position (`let x: NS.I`) names without ever writing `NS.I` as a
+        // name of its own.
+        for member in source.global_members(&name) {
+            let member_keys = source.global_decls(&member);
+            bind_global_name(ctx, source, &member, &member_keys);
         }
         if keys.is_empty() {
             if source.global_name_unmodelled(&name) {
@@ -425,7 +435,7 @@ fn bind_global_namespace<'ast>(
                     type_id,
                     optional: false,
                     is_method: false,
-                    readonly: false,
+                    modifiers: Default::default(),
                 });
             }
         }
@@ -594,7 +604,6 @@ fn bind_declaration<'ast>(
                 bind_name(ctx, source, specifier, imported, &spec.local, type_only);
             }
             ImportDeclarationSpecifier::ImportDefaultSpecifier(spec) => {
-                report_missing_name(source, specifier, "default", spec.local.span, ctx);
                 // A module with no default that says `export = x` is what a default
                 // import gets (the interop every bundler and `esModuleInterop` give).
                 let imported = if source.export_keys(specifier, "default").is_empty()
@@ -604,6 +613,7 @@ fn bind_declaration<'ast>(
                 } else {
                     "default"
                 };
+                report_missing_name(source, specifier, imported, spec.local.span, ctx);
                 bind_name(
                     ctx,
                     source,
@@ -738,7 +748,7 @@ fn module_object<'ast>(
             type_id,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         });
     }
     Some(ctx.arena.alloc(Type::Object(ObjectType::new(properties))))

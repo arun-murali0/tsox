@@ -107,6 +107,12 @@ pub(super) fn check_function_declaration(
     }
     let returned = ctx.leave_return_scope(return_scope);
     ctx.narrow = outer_narrow;
+    ctx.note_function_return(
+        func.span.start,
+        (!infers_return).then_some(function_type.return_type),
+        func.r#async,
+        infers_return.then(|| returned.clone()),
+    );
 
     if infers_return {
         // A return type that is read, directly or through other functions, by one of its
@@ -146,7 +152,28 @@ pub(super) fn check_function_declaration(
         if overloaded {
             ctx.implementation_signatures.insert(symbol_id, updated);
         } else {
-            ctx.symbols.declare(symbol_id, updated);
+            // A namespace of the same name was merged next to the placeholder as an object
+            // (`function f() {}` and `namespace f { export const v = 1 }`); the real signature
+            // replaces the function side and keeps that object beside it.
+            let merged = match ctx
+                .symbols
+                .get(symbol_id)
+                .map(|previous| ctx.arena.get(previous))
+            {
+                Some(crate::types::Type::Intersection(members)) => {
+                    let mut parts = vec![updated];
+                    parts.extend(members.iter().copied().filter(|&member| {
+                        matches!(ctx.arena.get(member), crate::types::Type::Object(_))
+                    }));
+                    if parts.len() > 1 {
+                        ctx.arena.alloc_intersection(parts).unwrap_or(updated)
+                    } else {
+                        updated
+                    }
+                }
+                _ => updated,
+            };
+            ctx.symbols.declare(symbol_id, merged);
         }
     }
 
@@ -187,6 +214,12 @@ fn check_anonymous_function_body(
     }
     let returned = ctx.leave_return_scope(return_scope);
     ctx.narrow = outer_narrow;
+    ctx.note_function_return(
+        func.span.start,
+        (!infers_return).then_some(function_type.return_type),
+        func.r#async,
+        infers_return.then(|| returned.clone()),
+    );
 
     let return_type = if infers_return {
         if returned.is_empty() {

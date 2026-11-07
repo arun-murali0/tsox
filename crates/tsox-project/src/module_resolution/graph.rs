@@ -173,7 +173,14 @@ impl ModuleGraph {
             let mut failed = false;
             let mut declares_ambient = false;
             if is_scannable(&path) {
-                let source = String::from_utf8_lossy(&bytes);
+                // `str::from_utf8` first: it checks valid text several times faster than the
+                // lossy conversion does (the lossy one walks the bytes in chunks), and nearly
+                // every file is valid. For bytes that are not, the lossy conversion gives the
+                // same text as before.
+                let source = match std::str::from_utf8(&bytes) {
+                    Ok(valid) => Cow::Borrowed(valid),
+                    Err(_) => String::from_utf8_lossy(&bytes),
+                };
                 // Borrowed means the bytes were valid UTF-8, which is the only text
                 // `read_to_string` would have given the checker. Anything else is not
                 // kept, so the checker reads the file itself and fails as before.

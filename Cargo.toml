@@ -176,7 +176,7 @@ rayon = "1.10"
 salsa = "=0.28.5"
 bumpalo = "=3.20.3"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 proc-macro2 = "1.0.107"
 zmij = "1.0.23"
 tsox-base = { path = "crates/tsox-base" }

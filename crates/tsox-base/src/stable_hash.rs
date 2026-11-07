@@ -31,7 +31,8 @@ pub struct PropIn<'a> {
     pub name: &'a str,
     pub optional: bool,
     pub is_method: bool,
-    pub readonly: bool,
+    /// The property's modifiers packed into one word (0 for a plain public writable member).
+    pub modifiers: u64,
     pub ty: NodeHash,
 }
 
@@ -126,10 +127,13 @@ pub fn hash_node(node: &NodeIn<'_>) -> NodeHash {
             for p in order {
                 w.str(p.name)
                     .u8(p.optional as u8)
-                    // `readonly` shares the method byte, so a type without readonly
-                    // properties hashes as it always has.
-                    .u8(p.is_method as u8 | (p.readonly as u8) << 1)
-                    .raw128(p.ty.as_u128());
+                    // Bit 1 says modifiers follow, so a member with none (the common case)
+                    // hashes as it always has.
+                    .u8(p.is_method as u8 | ((p.modifiers != 0) as u8) << 1);
+                if p.modifiers != 0 {
+                    w.u32(p.modifiers as u32).u32((p.modifiers >> 32) as u32);
+                }
+                w.raw128(p.ty.as_u128());
             }
         }
         NodeIn::Function {
@@ -257,7 +261,7 @@ mod tests {
             name,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: 0,
             ty,
         };
         let a = hash_node(&NodeIn::Object {
@@ -280,7 +284,7 @@ mod tests {
                     name: "x",
                     optional,
                     is_method,
-                    readonly: false,
+                    modifiers: 0,
                     ty: num(),
                 }],
             })
@@ -458,14 +462,14 @@ mod tests {
                     name: "x",
                     optional: false,
                     is_method: false,
-                    readonly: false,
+                    modifiers: 0,
                     ty: num(),
                 },
                 PropIn {
                     name: "y",
                     optional: true,
                     is_method: false,
-                    readonly: false,
+                    modifiers: 0,
                     ty: num(),
                 },
             ],

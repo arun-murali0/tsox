@@ -64,6 +64,11 @@ pub struct CheckContext<'ast, 'src> {
     // identifier check reads it.
     pub flow: crate::reachability::Reachability,
 
+    // What the checker knows about each function's return type, by where the function starts:
+    // the declared type if it has an annotation, and the types its body returned when this
+    // checker collected them. The return-path report pairs these with the flow's facts.
+    pub function_returns: std::collections::HashMap<u32, FunctionReturn>,
+
     // Memoizes is_subtype, is_assignable and is_disjoint answers by relation and the
     // exact TypeId pair asked about, for the lifetime of this one file's check. The
     // pair is ordered, never symmetrized for subtyping: subtyping is not symmetric
@@ -120,6 +125,11 @@ pub struct CheckContext<'ast, 'src> {
     pub exported_function_types: FxHashMap<u32, TypeId>,
 
     pub current_class_instance: Option<TypeId>,
+    /// Identities (see `class_identity`) of the classes whose bodies enclose the code being
+    /// checked, innermost last. A `private` member is reachable only while its class is here.
+    pub current_class_ids: Vec<u64>,
+    /// Checking the body of a constructor, where a `readonly` member of `this` may be assigned.
+    pub in_constructor: bool,
 
     // True while checking the body of a function whose `this` has no type at all:
     // a plain function expression with no `this` parameter and no contextual
@@ -146,8 +156,6 @@ pub struct CheckContext<'ast, 'src> {
     pub contextual: Option<TypeId>,
     /// Set while the operand of `as const` is inferred: literals are kept, arrays become tuples.
     pub const_context: bool,
-    /// Inside a class constructor body, where `this.x = v` may initialise a readonly field.
-    pub in_constructor: bool,
 
     // The type of each branch of every conditional expression checked so far, by the
     // expression's start offset. tsc reports a ternary that does not fit its target
@@ -370,7 +378,42 @@ impl ReturnReads {
     }
 }
 
+/// What the checker knows about one function's return type, for the return-path report.
+#[derive(Clone, Debug)]
+pub struct FunctionReturn {
+    /// The annotation, with an async function's `Promise<T>` already read as `T`. `None` when
+    /// the function has no annotation, or has one the checker could not resolve.
+    pub declared: Option<TypeId>,
+    /// The types the body returned, when this checker collected them (a function with no
+    /// annotation that it infers). `None` when it did not, and nothing is said about the
+    /// inferred type then.
+    pub returned: Option<Vec<TypeId>>,
+}
+
 impl<'ast, 'src> CheckContext<'ast, 'src> {
+    pub fn note_function_return(
+        &mut self,
+        key: u32,
+        declared: Option<TypeId>,
+        is_async: bool,
+        returned: Option<Vec<TypeId>>,
+    ) {
+        // An async function's annotation is `Promise<T>` and it is `T` that must be returned. When
+        // the annotation is not a `Promise<...>` this checker can read (it resolves to an empty
+        // object while the standard library's Promise is not modelled), the type is not known.
+        let declared = declared.and_then(|ty| {
+            if !is_async {
+                return Some(ty);
+            }
+            match self.arena.app_parts(ty) {
+                Some(("Promise", [inner])) => Some(*inner),
+                _ => None,
+            }
+        });
+        self.function_returns
+            .insert(key, FunctionReturn { declared, returned });
+    }
+
     // `infer` is true only for a function declaration with no return annotation, the one
     // place that collects what its body returns. Every other function leaves the
     // collection off, which also hides the enclosing function's list from its body.
@@ -436,6 +479,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             options: crate::check_options::CheckOptions::default(),
             narrow: NarrowState::new(),
             flow: crate::reachability::Reachability::default(),
+            function_returns: std::collections::HashMap::new(),
             relation_cache: RelationCache::default(),
             current_return_type: None,
             current_return_async: false,
@@ -443,12 +487,13 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             return_reads: ReturnReads::default(),
             exported_function_types: FxHashMap::default(),
             current_class_instance: None,
+            current_class_ids: Vec::new(),
+            in_constructor: false,
             implicit_this: false,
             next_function_has_no_this: false,
             call_return_context: None,
             contextual: None,
             const_context: false,
-            in_constructor: false,
             conditional_arms: std::collections::HashMap::new(),
             jump_frames: Vec::new(),
             pending_loop_label: None,

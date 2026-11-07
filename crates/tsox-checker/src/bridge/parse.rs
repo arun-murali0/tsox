@@ -6,12 +6,16 @@ use oxc_span::SourceType;
 
 use crate::error::CheckerError;
 
-// The parser's wording for the three tuple shape rules (TS1257, TS1265, TS1266). They are the
-// parser's own text for tsc's, so they are matched whole.
-const TUPLE_SHAPE_ERRORS: [&str; 3] = [
+// The parser's wording for the rules the checker reports itself, at the offending node and
+// under tsc's code: the three tuple shape rules (TS1257, TS1265, TS1266) and the two ambient
+// context rules (TS1039, TS1183; see `ambient_checks`). They are the parser's own text for tsc's,
+// so they are matched whole. The parser still builds the whole tree for each of them.
+const TUPLE_SHAPE_ERRORS: [&str; 5] = [
     "A required element cannot follow an optional element.",
     "A rest element cannot follow another rest element.",
     "An optional element cannot follow a rest element.",
+    "Initializers are not allowed in ambient contexts.",
+    "An implementation cannot be declared in ambient contexts.",
 ];
 
 #[tracing::instrument(skip(allocator, source), fields(file_name, source_len = source.len()))]

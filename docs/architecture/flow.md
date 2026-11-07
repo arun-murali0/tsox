@@ -82,6 +82,37 @@ resolving is left alone.
 Known to differ from tsc: a `while (v === undefined)` loop nested inside another loop, where tsc
 does not report the read in the condition. See `scripts/flow-stress`.
 
+## Return paths (TS2355, TS2366, TS2534, TS7030)
+
+The flow pass records, for every function with a block body, whether the end of the body can be
+reached and whether a `return` can be. The checker records each function's declared or inferred
+return type where it checks the body. The report pairs the two in tsc's order, for a function whose
+end can be reached:
+
+1. a declared type of `void`, `any` or `undefined`, or a union with `void`, is never an error;
+2. `never` cannot have a reachable end (TS2534);
+3. a declared type and no reachable `return` at all: the function must return a value (TS2355);
+4. under strict null checks, a declared type that `undefined` is not assignable to: the function
+   lacks an ending return (TS2366);
+5. otherwise, under `noImplicitReturns`, not all code paths return a value (TS7030).
+
+Details that are easy to get wrong, all from tsc:
+
+- A `return` counts as explicit only if the flow can reach it, and a bare `return;` counts. One in
+  dead code does not, so `if (false) return 1;` leaves a `: number` function with no return at all.
+- An unannotated function is checked by its inferred type, which is `void`, `undefined` or `any`
+  unless some `return` gives another value. The checker's collected types are used when it has
+  them; otherwise the return statements are read: none with a value, or only `undefined`.
+- A bare `return;` is itself reported (TS7030) under `noImplicitReturns` only without strict null
+  checks. With them tsc checks it as returning `undefined` and reports that instead.
+- An immediately invoked function's end is reachable only if the code around it is, and a function
+  in dead code that is not invoked there still starts reachable.
+
+Not covered: an annotated generator, and an annotated async function whose `Promise<T>` the
+checker cannot read (it resolves to an empty object while the library's `Promise` is not modelled)
+unless the syntax of `T` settles it: a keyword, a literal type, a union of those. A name that
+would need resolving is left alone.
+
 ## Flow nodes
 
 `Start`, `Join`, `LoopHead`, `Assign { target, at }`, `Condition { test, assume }` and
@@ -136,13 +167,14 @@ prints one file's graph.
 
 ## Checking reachability against tsc
 
-`tests/reachability_rules.rs` and `tests/definite_assignment.rs` pin the exact lines tsc reports for one case per rule above.
+`tests/reachability_rules.rs`, `tests/definite_assignment.rs` and `tests/return_paths.rs` pin the exact lines tsc reports for one case per rule above.
 `scripts/flow-stress/run.sh` generates random control flow and compares tsox with tsc line by
 line:
 
 ```text
 scripts/flow-stress/run.sh --seed 1 --files 400 --codes 7027,7029
 scripts/flow-stress/run.sh --mode assign --seed 1 --files 300 --codes 2454
+scripts/flow-stress/run.sh --mode return --seed 1 --files 300 --codes 2355,2366,2534,7030
 ```
 
 It prints, per code, how many lines agree and differ, then the statement around the first

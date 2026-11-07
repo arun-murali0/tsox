@@ -390,6 +390,51 @@ fn children(arena: &TypeArena, source: TypeId, target: TypeId, depth: usize) -> 
             object_children(arena, source, target, from, to, depth)
         }
         (Type::Function(from), Type::Function(to)) => function_children(arena, from, to, depth),
+        // A class value that has statics is its constructor with them beside it. Read against an
+        // object type, what it lacks is named the way tsc names the missing members of
+        // `typeof Widget`: the statics and the members every function has count as present.
+        // A class without statics is a bare constructor here, which cannot be told from a plain
+        // function (tsc words that one as a plain mismatch), so it keeps the plain wording.
+        (Type::Intersection(_), Type::Object(to)) => {
+            const FUNCTION_MEMBERS: [&str; 9] = [
+                "name",
+                "length",
+                "call",
+                "apply",
+                "bind",
+                "toString",
+                "prototype",
+                "arguments",
+                "caller",
+            ];
+            let statics: Vec<&ObjectType> = match arena.get(source) {
+                Type::Intersection(members) => members
+                    .iter()
+                    .filter_map(|&member| match arena.get(member) {
+                        Type::Object(object) => Some(object),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let missing: Vec<&str> = to
+                .properties
+                .iter()
+                .filter(|wanted| {
+                    !wanted.optional
+                        && !FUNCTION_MEMBERS.contains(&&*wanted.name)
+                        && !statics
+                            .iter()
+                            .any(|object| object.properties.iter().any(|p| p.name == wanted.name))
+                })
+                .map(|wanted| &*wanted.name)
+                .collect();
+            if missing.is_empty() {
+                Vec::new()
+            } else {
+                vec![missing_level(arena, source, target, &missing)]
+            }
+        }
         _ => Vec::new(),
     }
 }

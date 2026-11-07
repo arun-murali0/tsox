@@ -163,6 +163,8 @@ pub struct AmbientExports {
     pub unmodelled: Vec<String>,
     /// The type parameters (name, has a default) of the generic ones among `unmodelled`.
     pub unmodelled_generics: Vec<(String, Vec<(String, bool)>)>,
+    /// The names declared `const` among the globals, which no file may assign to.
+    pub consts: Vec<String>,
     /// Of `unmodelled`, the names dropped as types only and the names dropped with a runtime
     /// side. A name that is only in the first has no value.
     pub unmodelled_types: Vec<String>,
@@ -263,6 +265,7 @@ impl Worker {
                             export_names: ambient.names,
                             unmodelled: Vec::new(),
                             unmodelled_generics: Vec::new(),
+                            consts: Vec::new(),
                             unmodelled_types: Vec::new(),
                             unmodelled_values: Vec::new(),
                             names_only: false,
@@ -281,6 +284,7 @@ impl Worker {
                             complete: true,
                             unmodelled: table.global_unmodelled,
                             unmodelled_generics: table.global_generics,
+                            consts: table.global_consts,
                             unmodelled_types: table.global_unmodelled_types,
                             unmodelled_values: table.global_unmodelled_values,
                             names_only: table.global_names_only,
@@ -299,6 +303,7 @@ impl Worker {
                             export_names: augmentation.names,
                             unmodelled: Vec::new(),
                             unmodelled_generics: Vec::new(),
+                            consts: Vec::new(),
                             unmodelled_types: Vec::new(),
                             unmodelled_values: Vec::new(),
                             names_only: false,

@@ -107,7 +107,10 @@ pub(super) fn infer_object_expression_type(
                 optional: false,
                 // `{ peek() {} }` prints as `{ peek(): any; }`, the way it was written.
                 is_method: property.method,
-                readonly: ctx.const_context,
+                modifiers: crate::types::PropModifiers {
+                    readonly: ctx.const_context,
+                    ..Default::default()
+                },
             },
         );
     }

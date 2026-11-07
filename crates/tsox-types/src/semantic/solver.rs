@@ -619,7 +619,7 @@ mod tests {
             type_id: number,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }])));
         let giraffe = arena.alloc(Type::Object(ObjectType::new(vec![
             PropertyEntry {
@@ -627,14 +627,14 @@ mod tests {
                 type_id: number,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             },
             PropertyEntry {
                 name: Rc::from("neck"),
                 type_id: number,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             },
         ])));
         let elephant = arena.alloc(Type::Object(ObjectType::new(vec![
@@ -643,14 +643,14 @@ mod tests {
                 type_id: number,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             },
             PropertyEntry {
                 name: Rc::from("trunk"),
                 type_id: number,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             },
         ])));
         let t = arena.alloc(Type::GenericParameter(id, "T".into(), Some(animal)));
@@ -677,7 +677,7 @@ mod tests {
             type_id: number,
             optional: false,
             is_method: false,
-            readonly: false,
+            modifiers: Default::default(),
         }])));
         let giraffe = arena.alloc(Type::Object(ObjectType::new(vec![
             PropertyEntry {
@@ -685,14 +685,14 @@ mod tests {
                 type_id: number,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             },
             PropertyEntry {
                 name: Rc::from("neck"),
                 type_id: number,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             },
         ])));
         let elephant = arena.alloc(Type::Object(ObjectType::new(vec![
@@ -701,14 +701,14 @@ mod tests {
                 type_id: number,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             },
             PropertyEntry {
                 name: Rc::from("trunk"),
                 type_id: number,
                 optional: false,
                 is_method: false,
-                readonly: false,
+                modifiers: Default::default(),
             },
         ])));
         let u = arena.alloc(Type::GenericParameter(u_id, "U".into(), Some(base)));
@@ -774,14 +774,14 @@ mod tests {
             type_id: expected_method,
             optional: false,
             is_method: true,
-            readonly: false,
+            modifiers: Default::default(),
         }])));
         let actual = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
             name: Rc::from("convert"),
             type_id: actual_method,
             optional: false,
             is_method: true,
-            readonly: false,
+            modifiers: Default::default(),
         }])));
 
         let mut session = GenericInferenceSession::new(Vec::new(), Vec::new());
