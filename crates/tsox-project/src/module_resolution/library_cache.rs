@@ -6,14 +6,19 @@
 //!
 //! What may be stored is decided in `check_file`, and the rule is narrow on purpose: only a
 //! library file, and only one whose unit asked nothing of the rest of the project. Its
-//! diagnostics are stored with it, so a cache hit gives the unit exactly as it was checked. A unit that asked nothing cannot have been influenced by what the
-//! project declares, so its output depends on its text and the settings below alone. The key
+//! diagnostics are stored with it, so a cache hit gives the unit exactly as it was checked. A
+//! unit that asked nothing cannot have been influenced by what the project declares, so its output depends on its text and the settings below alone. The key
 //! is a hash of all of those and of the running program, so a rebuilt checker never reads what
 //! an older one wrote. Anything that does not decode is checked as usual and written again.
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+/// Entries not written for this long are removed when a cache is opened. A rebuilt checker
+/// keys its entries differently, so the old ones are never read again and would pile up.
+const MAX_ENTRY_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 use std::sync::OnceLock;
 
 use tsox_base::keys::ENC_VERSION;
@@ -76,6 +81,7 @@ impl DiskLibraryUnitCache {
     pub fn new(dir: impl Into<PathBuf>) -> std::io::Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
+        remove_stale_entries(&dir, SystemTime::now());
         Ok(Self {
             dir,
             fingerprint: executable_fingerprint(),
@@ -109,6 +115,28 @@ impl LibraryUnitCache for DiskLibraryUnitCache {
     }
 }
 
+/// Removes `.unit` files in `dir` last written more than `MAX_ENTRY_AGE` before `now`.
+/// Failures are ignored: a file that stays only costs disk space.
+fn remove_stale_entries(dir: &Path, now: SystemTime) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "unit") {
+            continue;
+        }
+        let age = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|written| now.duration_since(written).ok());
+        if age.is_some_and(|age| age > MAX_ENTRY_AGE) {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
 fn executable_fingerprint() -> u128 {
     let mut hasher = Xxh3::new();
     if let Ok(path) = std::env::current_exe()
@@ -133,4 +161,29 @@ fn executable_fingerprint() -> u128 {
         );
     }
     hasher.digest128()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_entries_are_removed_and_recent_ones_kept() {
+        let dir = std::env::temp_dir().join(format!("tsox-cache-evict-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.unit"), b"x").unwrap();
+        fs::write(dir.join("keep.txt"), b"x").unwrap();
+
+        remove_stale_entries(&dir, SystemTime::now());
+        assert!(dir.join("a.unit").exists());
+
+        remove_stale_entries(
+            &dir,
+            SystemTime::now() + MAX_ENTRY_AGE + Duration::from_secs(60),
+        );
+        assert!(!dir.join("a.unit").exists());
+        assert!(dir.join("keep.txt").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

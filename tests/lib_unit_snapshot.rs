@@ -1,6 +1,7 @@
 //! A checked library file survives the byte form unchanged (stage 1 of the library snapshot):
 //! the unit output of every bundled file of the default set round-trips exactly, and a reader
-//! refuses bytes it should not trust. Nothing reads a snapshot in a check yet.
+//! refuses bytes it should not trust. Diagnostics travel with the snapshot. The library
+//! cache (`tests/library_unit_cache.rs`) is what reads snapshots back in a check.
 #![cfg(feature = "snapshot")]
 
 use tsox::{
