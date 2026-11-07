@@ -49,21 +49,24 @@ pub(super) fn installed() -> Option<&'static dyn LibraryUnitCache> {
     CACHE.get().map(|cache| &**cache)
 }
 
-/// Everything a library unit's output can depend on once it has asked nothing of the project.
+/// What an entry is stored under: everything about a unit that is not an answer from the rest
+/// of the project (those are the probes stored inside the entry and checked on every read).
 pub(super) fn key(
     cache: &dyn LibraryUnitCache,
+    file_name: &str,
     source: &str,
     module: Option<u128>,
     options: &dyn std::fmt::Debug,
-    collect_global_decls: bool,
 ) -> u128 {
     let mut hasher = Xxh3::new();
     hasher.update(&cache.fingerprint().to_le_bytes());
     hasher.update(&SNAPSHOT_FORMAT.to_le_bytes());
-    hasher.update(&[ENC_VERSION, u8::from(collect_global_decls)]);
+    hasher.update(&[ENC_VERSION]);
     hasher.update(TYPESCRIPT_LIB_VERSION.as_bytes());
     hasher.update(&module.unwrap_or(0).to_le_bytes());
     hasher.update(format!("{options:?}").as_bytes());
+    hasher.update(&(file_name.len() as u64).to_le_bytes());
+    hasher.update(file_name.as_bytes());
     hasher.update(&(source.len() as u64).to_le_bytes());
     hasher.update(source.as_bytes());
     hasher.digest128()

@@ -53,7 +53,11 @@ fn project(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
     let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("library-unit-cache-{name}"));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
-    let names: Vec<String> = files.iter().map(|(n, _)| format!("\"{n}\"")).collect();
+    let names: Vec<String> = files
+        .iter()
+        .filter(|(n, _)| !n.starts_with("node_modules/"))
+        .map(|(n, _)| format!("\"{n}\""))
+        .collect();
     fs::write(
         root.join("tsconfig.json"),
         format!(
@@ -63,7 +67,9 @@ fn project(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
     )
     .unwrap();
     for (name, source) in files {
-        fs::write(root.join(name), source).unwrap();
+        let path = root.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, source).unwrap();
     }
     root
 }

@@ -197,7 +197,7 @@ impl ModuleKey {
 /// What a declaration is, for the merge-group disambiguator. The tag values are part of
 /// the encoding: never renumber one, bump `ENC_VERSION` instead.
 #[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 #[repr(u8)]
 pub enum DeclKind {
     Interface = 1,

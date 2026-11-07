@@ -1740,6 +1740,7 @@ dependencies = [
  "tracing",
  "tsox-base",
  "tsox-types",
+ "xxhash-rust",
 ]
 
 [[package]]

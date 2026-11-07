@@ -24,7 +24,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true, optional = true }
 bincode = { version = "1.3", optional = true }
+xxhash-rust = { workspace = true, optional = true }
 
 [features]
 # A byte form for what a unit hands back (`unit_snapshot`), for caching checked library files.
-snapshot = ["dep:serde", "dep:bincode", "tsox-base/snapshot", "tsox-types/snapshot"]
+snapshot = ["dep:serde", "dep:bincode", "dep:xxhash-rust", "tsox-base/snapshot", "tsox-types/snapshot"]

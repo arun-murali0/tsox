@@ -1892,30 +1892,25 @@ fn load_text<'g>(
     }
 }
 
-// The cache entry for this file, when it may have one: the cache is installed and the file is
-// a bundled library file (see `library_cache`).
+// Where this file's cache entry is kept, when it may have one: a cache is installed and the
+// file is a declaration file of a dependency (a bundled library file or one under
+// node_modules). Its diagnostics are never reported as the project's own, and what it
+// declares is what other files import, which is what makes a stored output worth reusing
+// (see `library_cache`).
 #[cfg(feature = "snapshot")]
-fn library_cache_key(
+fn dependency_cache_key(
     project: &Project<'_>,
     id: FileId,
-    path: &std::path::Path,
+    name: &str,
     source: &str,
-    ctx: &UnitContext<'_>,
 ) -> Option<(&'static dyn super::library_cache::LibraryUnitCache, u128)> {
-    static LIBRARY_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
     let cache = super::library_cache::installed()?;
-    let directory = LIBRARY_DIRECTORY.get_or_init(tsox_base::standard_lib::library_directory);
-    if !path.starts_with(directory) {
+    if !project.graph.is_dependency_declaration(id) {
         return None;
     }
     let module = project.graph.module_key(id).map(|module| module.as_u128());
-    let key = super::library_cache::key(
-        cache,
-        source,
-        module,
-        &ctx.options,
-        project.collect_global_decls,
-    );
+    let key =
+        super::library_cache::key(cache, name, source, module, &project.graph.check_options());
     Some((cache, key))
 }
 
@@ -1949,8 +1944,40 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                     reads: std::sync::Mutex::new(Vec::new()),
                     registry_applies: std::sync::OnceLock::new(),
                 };
+                #[cfg(feature = "snapshot")]
+                let cache_key = dependency_cache_key(project, id, &name, &source);
+                #[cfg(feature = "snapshot")]
+                let mut entry = cache_key
+                    .and_then(|(cache, key)| cache.load(key))
+                    .and_then(|bytes| tsox_checker::unit_snapshot::CacheEntry::decode(&bytes).ok());
+                // A stored output is used only if the project answers every question it
+                // asked as it was answered then. The questions are put to a view of their
+                // own, so a variant that fails part-way leaves no reads behind.
+                #[cfg(feature = "snapshot")]
+                let hit = entry.as_ref().and_then(|entry| {
+                    entry.lookup(&ImportsOf {
+                        project,
+                        from: id,
+                        reads: std::sync::Mutex::new(Vec::new()),
+                        registry_applies: std::sync::OnceLock::new(),
+                    })
+                });
+                #[cfg(not(feature = "snapshot"))]
+                let hit: Option<(crate::unit::UnitOutput, Vec<DeclKey>)> = None;
+                // A miss on a cacheable file is run through a recorder, which keeps what the
+                // unit asked and was told.
+                #[cfg(feature = "snapshot")]
+                let recorder = (cache_key.is_some() && hit.is_none())
+                    .then(|| tsox_checker::probe_log::RecordingImports::new(&imports));
+                #[cfg(feature = "snapshot")]
+                let source_imports: &dyn ImportSource = match &recorder {
+                    Some(recorder) => recorder,
+                    None => &imports,
+                };
+                #[cfg(not(feature = "snapshot"))]
+                let source_imports: &dyn ImportSource = &imports;
                 let mut ctx = UnitContext::new(id, &name, &source)
-                    .with_imports(&imports)
+                    .with_imports(source_imports)
                     .with_options(graph.check_options());
                 // A file with no stable key (inside node_modules, until package keys
                 // exist) can import but exports nothing.
@@ -1960,33 +1987,29 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                 if let Some(cancel) = project.cancel {
                     ctx = ctx.with_cancel(cancel.clone());
                 }
-                #[cfg(feature = "snapshot")]
-                let cache_key = library_cache_key(project, id, path, &source, &ctx);
-                #[cfg(feature = "snapshot")]
-                let cached = cache_key.and_then(|(cache, key)| {
-                    let bytes = cache.load(key)?;
-                    let snapshot =
-                        tsox_checker::unit_snapshot::UnitSnapshot::decode(&bytes).ok()?;
-                    Some(snapshot.into_output())
-                });
-                #[cfg(not(feature = "snapshot"))]
-                let cached: Option<crate::unit::UnitOutput> = None;
-                let from_cache = cached.is_some();
-                let checked = match cached {
-                    Some(output) => Ok(output),
-                    None => worker.check_unit(&ctx),
+                let (checked, from_cache_reads) = match hit {
+                    Some((output, keys)) => (Ok(output), Some(keys)),
+                    None => (worker.check_unit(&ctx), None),
                 };
-                reads = imports.take_reads();
+                reads = match from_cache_reads {
+                    Some(keys) => keys,
+                    None => imports.take_reads(),
+                };
                 #[cfg(feature = "snapshot")]
-                if !from_cache
-                    && reads.is_empty()
-                    && let (Some((cache, key)), Ok(output)) = (cache_key, &checked)
-                    && let Ok(bytes) =
-                        tsox_checker::unit_snapshot::UnitSnapshot::capture(output).encode()
+                if let (Some(recorder), Some((cache, key)), Ok(output)) =
+                    (recorder, cache_key, &checked)
                 {
-                    cache.store(key, &bytes);
+                    let mut entry = entry
+                        .take()
+                        .unwrap_or_else(tsox_checker::unit_snapshot::CacheEntry::new);
+                    entry.push(tsox_checker::unit_snapshot::Variant {
+                        probes: recorder.into_records(),
+                        snapshot: tsox_checker::unit_snapshot::UnitSnapshot::capture(output),
+                    });
+                    if let Ok(bytes) = entry.encode() {
+                        cache.store(key, &bytes);
+                    }
                 }
-                let _ = from_cache;
                 match checked {
                     Ok(output) => {
                         incomplete_reasons = output.incomplete_reasons.clone();

@@ -20,6 +20,8 @@ use tsox_types::{
 
 pub mod bridge;
 pub mod flow;
+#[cfg(feature = "snapshot")]
+pub mod probe_log;
 pub mod reachability;
 pub mod unit;
 #[cfg(feature = "snapshot")]

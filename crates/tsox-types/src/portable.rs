@@ -151,7 +151,7 @@ pub struct PTypeParam {
 }
 
 #[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PortableDecl {
     pub key: DeclKey,
     pub sig: SigHash,
