@@ -23,6 +23,7 @@ class G:
         self.mode = mode
         self.n = 0
         self.label_n = 0
+        self.vars = []  # (name, type) of the assignment-tracked variables in scope
         # `return` is only valid inside a function; the top level and a static block are not.
         self.in_func = False
         # One discriminant per switch, declared at the top of the file. Two switches on the same
@@ -34,7 +35,55 @@ class G:
         return f"m({self.n});"
 
     def cond(self):
+        if self.mode == "assign" and self.vars and self.r.random() < 0.4:
+            v, t = self.r.choice(self.vars)
+            kind = "string" if t == "string" else "number"
+            return self.r.choice([
+                v, f"!{v}", f"{v} !== undefined", f"{v} === undefined", f"{v} != null",
+                f"{v} == null", f'typeof {v} === "{kind}"', f'typeof {v} !== "undefined"',
+                f'typeof {v} === "undefined"',
+            ])
         return self.r.choice(COND)
+
+    VALUE = {"number": "1", "string": '"s"', "number | undefined": "1"}
+
+    def read(self, v, t):
+        return {"number": f"m({v});", "string": f"ms({v});",
+                "number | undefined": f"mz({v});"}[t]
+
+    # Statements that assign, read and re-declare the tracked variables.
+    def assign_stmt(self, depth, loop, switch, labels):
+        r = self.r
+        v, t = r.choice(self.vars)
+        val = self.VALUE[t]
+        k = r.choice(["assign", "assign", "read", "read", "read", "inc", "condassign",
+                      "ternassign", "closure", "fndecl", "iife", "destructure", "local"])
+        if k == "assign":
+            return [f"{v} = {val};"]
+        if k == "read":
+            return [self.read(v, t)]
+        if k == "inc":
+            return [r.choice([f"{v}++;", f"{v} += 1;"])] if t == "number" else [f"{v} = {val};"]
+        if k == "condassign":
+            return [f"{r.choice(['c && ', 'c || ', 'd && '])}({v} = {val});"]
+        if k == "ternassign":
+            return [f"c ? ({v} = {val}) : ({v} = {val});"]
+        if k == "closure":
+            return [f"const g{self.fresh()} = () => {{ {self.read(v, t)} }};"]
+        if k == "fndecl":
+            return [f"function g{self.fresh()}() {{ {self.read(v, t)} }}"]
+        if k == "iife":
+            return [f"(() => {{ {v} = {val}; }})();"]
+        if k == "destructure":
+            if t == "number":
+                return [r.choice([f"[{v}] = [1];", f"({{ a: {v} }} = {{ a: 1 }});"])]
+            return [f"{v} = {val};"]
+        # A variable of its own inside a block: declared again on every pass of a loop.
+        name = f"t{self.fresh()}"
+        self.vars.append((name, "number"))
+        inner = self.block(depth + 1, loop, switch, labels, count=r.randint(1, 4))
+        self.vars.pop()
+        return ["{", f"  let {name}: number;"] + self.ind(inner) + ["}"]
 
     def block(self, depth, loop, switch, labels, count=None):
         out = []
@@ -46,6 +95,8 @@ class G:
         return ["  " + l for l in lines]
 
     def stmt(self, depth, loop, switch, labels):
+        if self.mode == "assign" and self.vars and self.r.random() < 0.5:
+            return self.assign_stmt(depth, loop, switch, labels)
         r = self.r
         simple = ["mark", "mark", "mark", "throw", "decl", "empty", "funcdecl", "exprcond",
                   "ternary", "vardecl", "classdecl", "typedecl", "enumdecl", "debugger"]
@@ -188,6 +239,8 @@ class G:
         return self.label_n
 
 PRELUDE = """declare function m(n: number): void;
+declare function ms(s: string): void;
+declare function mz(n: number | undefined): void;
 declare const c: boolean;
 declare const d: boolean;
 declare const nb: boolean | null;
@@ -195,8 +248,30 @@ declare const arr: number[];
 declare const obj: { a: number };
 """
 
+def make_assign_file(rnd, g, idx):
+    out = []
+    for f in range(rnd.randint(3, 6)):
+        keyword = rnd.choice(["let", "let", "var"])
+        # A `var` may be declared at the end: a read above it is still a read before assigning.
+        late = keyword == "var" and rnd.random() < 0.3
+        decls = [f"{keyword} x: number;", f"{keyword} y: string;",
+                 f"{keyword} z: number | undefined;", f"{keyword} k!: number;"]
+        g.vars = [("x", "number"), ("y", "string"), ("z", "number | undefined"), ("k", "number")]
+        g.in_func = True
+        body = g.block(0, False, False, [], count=rnd.randint(3, 8))
+        g.in_func = False
+        out.append(f"function f{idx}_{f}() {{")
+        out += g.ind([] if late else decls) + g.ind(body) + g.ind(decls if late else [])
+        out.append("}")
+    g.vars = []
+    out.append("export {};")
+    declares = [f"declare const {v}: number;" for v in g.switch_vars]
+    return "\n".join([PRELUDE.rstrip()] + declares + out) + "\n"
+
 def make_file(rnd, mode, idx):
     g = G(rnd, mode)
+    if mode == "assign":
+        return make_assign_file(rnd, g, idx)
     out = []
     if rnd.random() < 0.5:
         out += g.block(1, False, False, [], count=rnd.randint(1, 3))

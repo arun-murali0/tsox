@@ -96,6 +96,7 @@ pub enum DiagnosticCode {
     // 1600s: reachability
     UnreachableCode,
     FallthroughCaseInSwitch,
+    UsedBeforeAssigned,
 
     // 1700s: type construction
     ExpressionTooComplex,
@@ -201,6 +202,7 @@ impl DiagnosticCode {
 
             UnreachableCode => "TSR1601",
             FallthroughCaseInSwitch => "TSR1602",
+            UsedBeforeAssigned => "TSR1603",
 
             ExpressionTooComplex => "TSR1701",
 
@@ -315,6 +317,7 @@ impl DiagnosticCode {
 
             UnreachableCode => 7027,
             FallthroughCaseInSwitch => 7029,
+            UsedBeforeAssigned => 2454,
             ExpressionTooComplex => 2590,
 
             UnimplementedCallExpressionKind

@@ -183,6 +183,7 @@ fn bodies_phase<'ast>(
     ctx: &mut CheckContext<'ast, '_>,
 ) {
     let scoping = semantic.scoping();
+    unreachable_code::analyze_flow(program, scoping, ctx);
     statements::check_top_level(program, scoping, ctx);
     if ctx.cancelled {
         return;
@@ -192,7 +193,7 @@ fn bodies_phase<'ast>(
     duplicates::report_duplicate_declarations(program, ctx);
     class_implements::check_class_implements(program, ctx);
     tuple_grammar::report_tuple_grammar_errors(program, ctx);
-    unreachable_code::check_unreachable_code(program, semantic, ctx);
+    unreachable_code::check_unreachable_code(ctx);
 }
 
 // Turns what the passes left in the namespace into diagnostics and returns the file's

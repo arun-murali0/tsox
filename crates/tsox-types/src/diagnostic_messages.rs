@@ -910,6 +910,13 @@ pub mod messages {
         )
     }
 
+    pub fn used_before_assigned(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::UsedBeforeAssigned,
+            format!("Variable '{name}' is used before being assigned."),
+        )
+    }
+
     pub fn unresolvable_destructuring_type_annotation() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnresolvableDestructuringTypeAnnotation,

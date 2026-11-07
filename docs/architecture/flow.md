@@ -10,7 +10,7 @@ yet; see "Phases" below.
 | From `oxc_cfg` (the skeleton) | From one AST pass (what the skeleton lacks) |
 |---|---|
 | Basic blocks and edges | Which successor is the true one and which the false one: the edge into an `if`, ternary or loop body, or into the right operand of `&&`, `\|\|`, `??` |
-| `Finalize` and explicit `Error` edges (try, catch, finally) | Assignments: declarators, `x = v`, `x++`, `for (x of …)`, destructuring, `a.b.c = v` |
+| `Finalize` and explicit `Error` edges (try, catch, finally) | Assignments: declarators, `x = v`, `x++`, `for (x of ...)`, destructuring, `a.b.c = v` |
 | The node-to-block map (`nodes().cfg_id`), used for every AST node | Switch dispatch: the block each `case` is entered by, and what falling through means |
 | Block order inside a body | Where an expression ends when it branches (`a ?? b` ends in the block where its paths meet) |
 
@@ -41,6 +41,46 @@ is good for, blocks and the node-to-block map, for the dataflow phases below.
 Still open here because they need types: a call to a `never`-returning or `asserts false`
 function, and a `switch` that exhausts its discriminant. tsc folds both into the same question
 when it checks.
+
+## Definite assignment (TS2454)
+
+The same structural walk carries a second thing besides "is this point reachable": which
+variables are definitely assigned. Two paths meet by keeping the variables both assigned; a dead
+path gives way to the other. Assignments only add variables, so a loop needs no fixpoint: what is
+assigned at the top of a loop is what was assigned on the way in.
+
+A tracked variable is a `let` or `var` with a type annotation and no initializer. The walk runs
+twice, the first time only to learn which variables are tracked and where they are assigned, so a
+read that comes before its declaration (a hoisted `var`) is known to be of a tracked variable.
+
+The rules that are not obvious, all taken from tsc:
+
+- `x = v`, a destructuring, a `for (x of ...)` head and a logical assignment assign; `x += 1` and
+  `x++` do not, so the variable still counts as possibly `undefined` afterwards.
+- `||=` and `??=` read their target as a condition: where they short-circuit the variable is
+  already known not to be `undefined`; `&&=` short-circuits on a value that can be.
+- A `catch` and a `finally` start from what was assigned before the `try`, not from what the
+  `try` assigned. `break` skips a `finally`.
+- A test that names the variable (`if (x)`, `x !== undefined`, `typeof x === "number"`, `x ==
+  null`) removes `undefined` on the edge where it rules it out. Anything fancier waits for the
+  narrowing resolver.
+- Inside a function that is not called where it is written, tsc assumes the variable is assigned,
+  unless it is a plain `let` that nothing assigns with `=` anywhere. Then an arrow or function
+  expression whose read is past the last assignment continues from the flow where it was created,
+  and anything else starts a flow in which nothing is assigned. An async or generator function
+  that is called where it is written counts as part of the function around it for this.
+- A read where the declared type is `any`, `unknown`, `void`, or holds `undefined`, or is under
+  `x!`, is never reported.
+
+The flow pass is arena-free, so it only records the reads. The checker applies the declared-type
+rule afterwards, in `unreachable_code`, and not where an identifier's type is inferred: the
+expression checker does not cover every expression yet, and a read inside one it skips would be
+lost. Where the checker has no type for the variable (it never walked the body the variable is
+declared in), the annotation's own syntax decides when it can, and a name that would need
+resolving is left alone.
+
+Known to differ from tsc: a `while (v === undefined)` loop nested inside another loop, where tsc
+does not report the read in the condition. See `scripts/flow-stress`.
 
 ## Flow nodes
 
@@ -96,12 +136,13 @@ prints one file's graph.
 
 ## Checking reachability against tsc
 
-`tests/reachability_rules.rs` pins the exact lines tsc reports for one case per rule above.
+`tests/reachability_rules.rs` and `tests/definite_assignment.rs` pin the exact lines tsc reports for one case per rule above.
 `scripts/flow-stress/run.sh` generates random control flow and compares tsox with tsc line by
 line:
 
 ```text
 scripts/flow-stress/run.sh --seed 1 --files 400 --codes 7027,7029
+scripts/flow-stress/run.sh --mode assign --seed 1 --files 300 --codes 2454
 ```
 
 It prints, per code, how many lines agree and differ, then the statement around the first

@@ -59,6 +59,11 @@ pub struct CheckContext<'ast, 'src> {
 
     pub narrow: NarrowState,
 
+    // What the structural flow pass found: dead statements, falling-through clauses and reads of
+    // variables that may be unassigned. Computed once, before any body is checked, because the
+    // identifier check reads it.
+    pub flow: crate::reachability::Reachability,
+
     // Memoizes is_subtype, is_assignable and is_disjoint answers by relation and the
     // exact TypeId pair asked about, for the lifetime of this one file's check. The
     // pair is ordered, never symmetrized for subtyping: subtyping is not symmetric
@@ -428,6 +433,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             file_name,
             options: crate::check_options::CheckOptions::default(),
             narrow: NarrowState::new(),
+            flow: crate::reachability::Reachability::default(),
             relation_cache: RelationCache::default(),
             current_return_type: None,
             current_return_async: false,
