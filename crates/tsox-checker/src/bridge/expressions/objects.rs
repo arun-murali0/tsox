@@ -85,7 +85,7 @@ pub(super) fn infer_object_expression_type(
         // one of the type it accepts. The function carrying either is not the property.
         // A getter wins over a setter of the same name, whichever comes first.
         let type_id = if property.kind == PropertyKind::Init {
-            if declared.iter().any(|d| holds_literal(ctx, *d)) {
+            if ctx.const_context || declared.iter().any(|d| holds_literal(ctx, *d)) {
                 type_id
             } else {
                 crate::types::widen(&ctx.arena, type_id)
@@ -274,6 +274,26 @@ pub(super) fn infer_array_expression_type(
         })
     {
         return infer_tuple_literal(array, &target, scoping, ctx);
+    }
+
+    if ctx.const_context
+        && array.elements.iter().all(|e| {
+            e.as_expression().is_some()
+                && !matches!(e, oxc_ast::ast::ArrayExpressionElement::SpreadElement(_))
+        })
+    {
+        let mut elements = Vec::with_capacity(array.elements.len());
+        for element in &array.elements {
+            let expr = element.as_expression().expect("checked above");
+            ctx.contextual = None;
+            let type_id = infer_expression_type(expr, scoping, ctx);
+            elements.push(crate::types::TupleElement {
+                type_id,
+                optional: false,
+                rest: false,
+            });
+        }
+        return ctx.arena.alloc_tuple(elements);
     }
 
     let mut element_types = Vec::with_capacity(array.elements.len());

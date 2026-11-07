@@ -97,11 +97,15 @@ pub(super) fn infer_as_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
+    let is_const = is_const_assertion(&as_expr.type_annotation);
+    let outer_const = ctx.const_context;
+    ctx.const_context = outer_const || is_const;
     let inner = infer_expression_type(&as_expr.expression, scoping, ctx);
+    ctx.const_context = outer_const;
     // Problem: `x as const` read `const` as a type name and reported "Cannot find name
     // 'const'". Picked: a const assertion keeps the expression's own type.
-    // Cost: it does not narrow the expression's literals or make an object readonly, so
-    // `{ k: 1 } as const` is typed as the plain object, which can only miss an error.
+    // Cost: the result is not marked readonly (readonly is not modelled), so writes to it
+    // are not reported; literals inside objects and tuples are kept.
     if is_const_assertion(&as_expr.type_annotation) {
         return inner;
     }

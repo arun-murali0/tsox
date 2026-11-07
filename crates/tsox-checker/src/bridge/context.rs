@@ -139,6 +139,8 @@ pub struct CheckContext<'ast, 'src> {
     // a literal; infer_expression_type takes it on entry, so it never reaches a deeper
     // expression by accident.
     pub contextual: Option<TypeId>,
+    /// Set while the operand of `as const` is inferred: literals are kept, arrays become tuples.
+    pub const_context: bool,
 
     // The type of each branch of every conditional expression checked so far, by the
     // expression's start offset. tsc reports a ternary that does not fit its target
@@ -437,6 +439,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             next_function_has_no_this: false,
             call_return_context: None,
             contextual: None,
+            const_context: false,
             conditional_arms: std::collections::HashMap::new(),
             jump_frames: Vec::new(),
             pending_loop_label: None,
