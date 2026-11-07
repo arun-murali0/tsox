@@ -1080,6 +1080,34 @@ pub mod messages {
         )
     }
 
+    pub fn not_all_code_paths_return() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::NotAllCodePathsReturn,
+            "Not all code paths return a value.",
+        )
+    }
+
+    pub fn lacks_ending_return() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::LacksEndingReturn,
+            "Function lacks ending return statement and return type does not include 'undefined'.",
+        )
+    }
+
+    pub fn must_return_a_value() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::MustReturnValue,
+            "A function whose declared type is neither 'undefined', 'void', nor 'any' must return a value.",
+        )
+    }
+
+    pub fn never_has_reachable_end() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::NeverHasReachableEnd,
+            "A function returning 'never' cannot have a reachable end point.",
+        )
+    }
+
     pub fn used_before_assigned(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UsedBeforeAssigned,

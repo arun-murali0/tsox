@@ -107,6 +107,12 @@ pub(super) fn check_function_declaration(
     }
     let returned = ctx.leave_return_scope(return_scope);
     ctx.narrow = outer_narrow;
+    ctx.note_function_return(
+        func.span.start,
+        (!infers_return).then_some(function_type.return_type),
+        func.r#async,
+        infers_return.then(|| returned.clone()),
+    );
 
     if infers_return {
         // A return type that is read, directly or through other functions, by one of its
@@ -208,6 +214,12 @@ fn check_anonymous_function_body(
     }
     let returned = ctx.leave_return_scope(return_scope);
     ctx.narrow = outer_narrow;
+    ctx.note_function_return(
+        func.span.start,
+        (!infers_return).then_some(function_type.return_type),
+        func.r#async,
+        infers_return.then(|| returned.clone()),
+    );
 
     let return_type = if infers_return {
         if returned.is_empty() {

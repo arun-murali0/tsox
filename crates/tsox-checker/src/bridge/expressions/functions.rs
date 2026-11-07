@@ -157,6 +157,12 @@ fn infer_arrow_function_type_inner(
             check_statement(body_stmt, scoping, ctx);
         }
         let returned = ctx.leave_return_scope(return_scope);
+        ctx.note_function_return(
+            arrow.span.start,
+            declared_return,
+            arrow.r#async,
+            infers_return.then(|| returned.clone()),
+        );
         if infers_return {
             let inferred = if returned.is_empty() {
                 ctx.arena.void()
@@ -249,6 +255,12 @@ fn infer_function_expression_type_inner(
         ctx.implicit_this = outer_implicit_this;
         ctx.current_class_instance = outer_class_instance;
         let returned = ctx.leave_return_scope(return_scope);
+        ctx.note_function_return(
+            func.span.start,
+            declared_return,
+            func.r#async,
+            infers_return.then(|| returned.clone()),
+        );
         if infers_return {
             return_type = if returned.is_empty() {
                 ctx.arena.void()

@@ -24,6 +24,7 @@ class G:
         self.n = 0
         self.label_n = 0
         self.vars = []  # (name, type) of the assignment-tracked variables in scope
+        self.ret_values = []  # expressions the current function may return (return mode)
         # `return` is only valid inside a function; the top level and a static block are not.
         self.in_func = False
         # One discriminant per switch, declared at the top of the file. Two switches on the same
@@ -97,6 +98,12 @@ class G:
     def stmt(self, depth, loop, switch, labels):
         if self.mode == "assign" and self.vars and self.r.random() < 0.5:
             return self.assign_stmt(depth, loop, switch, labels)
+        if self.mode == "return" and self.in_func and self.r.random() < 0.2:
+            # A function returns the values its declared type allows; one that returns nothing
+            # has a bare `return;` here and there.
+            if self.ret_values and self.r.random() < 0.9:
+                return [f"return {self.r.choice(self.ret_values)};"]
+            return ["return;"]
         r = self.r
         simple = ["mark", "mark", "mark", "throw", "decl", "empty", "funcdecl", "exprcond",
                   "ternary", "vardecl", "classdecl", "typedecl", "enumdecl", "debugger"]
@@ -268,8 +275,48 @@ def make_assign_file(rnd, g, idx):
     declares = [f"declare const {v}: number;" for v in g.switch_vars]
     return "\n".join([PRELUDE.rstrip()] + declares + out) + "\n"
 
+# (declared return type or None, values the body may return)
+RETURN_PROFILES = [
+    ("number", ["1"]), ("string", ['"s"']), ("number | undefined", ["1", "undefined"]),
+    ("void", []), ("any", ["1"]), ("never", []), ("boolean", ["true"]), ("unknown", ["1"]),
+    ("number | void", ["1"]), ("undefined", ["undefined"]),
+    (None, ["1"]), (None, ['"s"']), (None, ["1", '"s"']), (None, ["undefined"]), (None, []),
+    (None, ["1", "undefined"]),
+]
+
+def make_return_file(rnd, g, idx):
+    out = []
+    for f in range(rnd.randint(4, 8)):
+        annotation, values = rnd.choice(RETURN_PROFILES)
+        kind = rnd.choice(["decl", "arrow", "expr", "method", "async_decl", "async_arrow"])
+        is_async = kind.startswith("async")
+        written = None
+        if annotation is not None:
+            written = f"Promise<{annotation}>" if is_async else annotation
+        g.ret_values = values
+        g.in_func = True
+        body = g.block(0, False, False, [], count=rnd.randint(1, 6))
+        g.in_func = False
+        a = f": {written}" if written else ""
+        name = f"f{idx}_{f}"
+        pre = "async " if is_async else ""
+        if kind in ("decl", "async_decl"):
+            out += [f"{pre}function {name}(){a} {{"] + g.ind(body) + ["}"]
+        elif kind in ("arrow", "async_arrow"):
+            out += [f"const {name} = {pre}(){a} => {{"] + g.ind(body) + ["};"]
+        elif kind == "expr":
+            out += [f"const {name} = function (){a} {{"] + g.ind(body) + ["};"]
+        else:
+            out += [f"class C{idx}_{f} {{", f"  m(){a} {{"] + g.ind(g.ind(body)) + ["  }", "}"]
+    g.ret_values = []
+    out.append("export {};")
+    declares = [f"declare const {v}: number;" for v in g.switch_vars]
+    return "\n".join([PRELUDE.rstrip()] + declares + out) + "\n"
+
 def make_file(rnd, mode, idx):
     g = G(rnd, mode)
+    if mode == "return":
+        return make_return_file(rnd, g, idx)
     if mode == "assign":
         return make_assign_file(rnd, g, idx)
     out = []

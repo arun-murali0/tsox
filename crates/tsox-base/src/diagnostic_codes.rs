@@ -117,6 +117,10 @@ pub enum DiagnosticCode {
     UnreachableCode,
     FallthroughCaseInSwitch,
     UsedBeforeAssigned,
+    NotAllCodePathsReturn,
+    LacksEndingReturn,
+    MustReturnValue,
+    NeverHasReachableEnd,
 
     // 1700s: type construction
     ExpressionTooComplex,
@@ -243,6 +247,10 @@ impl DiagnosticCode {
             UnreachableCode => "TSR1601",
             FallthroughCaseInSwitch => "TSR1602",
             UsedBeforeAssigned => "TSR1603",
+            NotAllCodePathsReturn => "TSR1604",
+            LacksEndingReturn => "TSR1605",
+            MustReturnValue => "TSR1606",
+            NeverHasReachableEnd => "TSR1607",
 
             ExpressionTooComplex => "TSR1701",
 
@@ -378,6 +386,10 @@ impl DiagnosticCode {
             UnreachableCode => 7027,
             FallthroughCaseInSwitch => 7029,
             UsedBeforeAssigned => 2454,
+            NotAllCodePathsReturn => 7030,
+            LacksEndingReturn => 2366,
+            MustReturnValue => 2355,
+            NeverHasReachableEnd => 2534,
             ExpressionTooComplex => 2590,
 
             UnimplementedCallExpressionKind

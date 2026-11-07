@@ -72,6 +72,118 @@ pub struct Reachability {
     /// assigned, in the order they are met. Whether each is TS2454 is up to the checker, which
     /// knows the declared type: `let x: number | undefined;` may be read freely.
     pub unassigned: Vec<UnassignedRead>,
+    /// What the flow says about each function that has a block body, in the order they are met:
+    /// whether the end of the body can be reached and whether a `return` can. The checker pairs
+    /// these with the return types it knows.
+    pub functions: Vec<FunctionFact>,
+}
+
+/// The flow facts about one function with a block body.
+#[derive(Debug, Clone)]
+pub struct FunctionFact {
+    /// Where the function node starts: the key the checker records its return types under.
+    pub key: u32,
+    /// Where an error about the whole function is reported: its return type annotation when it
+    /// has one, otherwise its name or, failing that, its start.
+    pub error_span: Span,
+    /// Can the end of the body be reached? tsc's `HasImplicitReturn`.
+    pub end_reachable: bool,
+    /// Is there a `return` statement that can itself be reached? tsc's `HasExplicitReturn`: a
+    /// bare `return;` counts, one in dead code does not.
+    pub has_explicit_return: bool,
+    /// Every `return;` with no value, reachable or not: tsc checks each against the return type.
+    pub bare_returns: Vec<Span>,
+    pub has_annotation: bool,
+    /// Does any `return` carry a value other than `undefined` or `void ...`? Read from the syntax,
+    /// so it cannot see that a value has type `any`. Dead returns count, as they do for tsc's
+    /// inferred type.
+    pub returns_a_value: bool,
+    /// For an async function annotated `Promise<T>`, what the syntax of `T` says on its own.
+    pub async_inner: Option<PromiseInner>,
+    pub is_async: bool,
+    pub is_generator: bool,
+    pub is_constructor: bool,
+}
+
+/// What the `T` of an annotation `Promise<T>` is, as far as its syntax says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromiseInner {
+    /// `void`, `any`, `undefined`, or a union with `void` or `any`: nothing needs returning.
+    VoidUndefinedOrAny,
+    Never,
+    /// `unknown`, or a union with `undefined`: `undefined` is a value of it.
+    AcceptsUndefined,
+    /// A keyword type, a literal, a shape: `undefined` is not a value of it.
+    RejectsUndefined,
+}
+
+// Reads the `T` of `Promise<T>` from an annotation, when it can be read from syntax alone: a name
+// that has to be resolved (an alias, an interface) says nothing.
+fn promise_inner(annotation: &oxc_ast::ast::TSType<'_>) -> Option<PromiseInner> {
+    use oxc_ast::ast::{TSType, TSTypeName};
+    let TSType::TSTypeReference(reference) = annotation else {
+        return None;
+    };
+    let TSTypeName::IdentifierReference(name) = &reference.type_name else {
+        return None;
+    };
+    if name.name != "Promise" {
+        return None;
+    }
+    let arguments = reference.type_arguments.as_ref()?;
+    let [argument] = arguments.params.as_slice() else {
+        return None;
+    };
+    classify_inner(argument)
+}
+
+fn classify_inner(ty: &oxc_ast::ast::TSType<'_>) -> Option<PromiseInner> {
+    use oxc_ast::ast::TSType;
+    Some(match ty {
+        TSType::TSVoidKeyword(_) | TSType::TSAnyKeyword(_) | TSType::TSUndefinedKeyword(_) => {
+            PromiseInner::VoidUndefinedOrAny
+        }
+        TSType::TSNeverKeyword(_) => PromiseInner::Never,
+        TSType::TSUnknownKeyword(_) => PromiseInner::AcceptsUndefined,
+        TSType::TSNumberKeyword(_)
+        | TSType::TSStringKeyword(_)
+        | TSType::TSBooleanKeyword(_)
+        | TSType::TSBigIntKeyword(_)
+        | TSType::TSSymbolKeyword(_)
+        | TSType::TSObjectKeyword(_)
+        | TSType::TSNullKeyword(_)
+        | TSType::TSLiteralType(_)
+        | TSType::TSTypeLiteral(_)
+        | TSType::TSArrayType(_)
+        | TSType::TSTupleType(_)
+        | TSType::TSFunctionType(_) => PromiseInner::RejectsUndefined,
+        TSType::TSUnionType(union) => {
+            let mut result = PromiseInner::RejectsUndefined;
+            for member in &union.types {
+                match classify_inner(member)? {
+                    // `void` (and `any`, which swallows the rest) settles it.
+                    PromiseInner::VoidUndefinedOrAny => {
+                        if matches!(member, TSType::TSVoidKeyword(_) | TSType::TSAnyKeyword(_)) {
+                            return Some(PromiseInner::VoidUndefinedOrAny);
+                        }
+                        result = PromiseInner::AcceptsUndefined;
+                    }
+                    PromiseInner::AcceptsUndefined => result = PromiseInner::AcceptsUndefined,
+                    PromiseInner::Never | PromiseInner::RejectsUndefined => {}
+                }
+            }
+            result
+        }
+        _ => return None,
+    })
+}
+
+// What is known about the function being walked so far.
+#[derive(Default)]
+struct FnState {
+    explicit_return: bool,
+    bare_returns: Vec<Span>,
+    returns_a_value: bool,
 }
 
 /// A read of a tracked variable that no assignment is known to reach.
@@ -275,6 +387,9 @@ struct Analyzer<'s> {
     // The function that is the value of the class method being entered. tsc checks its body in
     // place rather than later, so it keeps `within`.
     in_place_function: Option<Span>,
+    // The name (or start) of the class method being entered and whether it is a constructor.
+    method: Option<(Span, bool)>,
+    fn_state: FnState,
     arrivals: Vec<Option<Bits>>,
     // How many label statements sit directly around the statement being entered, so a loop can
     // make them its `continue` targets. tsc's `setContinueTarget`.
@@ -325,6 +440,8 @@ impl<'s> Analyzer<'s> {
             return_target: None,
             iife_pending: false,
             in_place_function: None,
+            method: None,
+            fn_state: FnState::default(),
             arrivals: Vec::new(),
             pending_labels: 0,
             container: 0,
@@ -866,15 +983,49 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
             transparent: invoked,
         };
         let outer_function = self.enter_function();
+        let method = if in_place { self.method } else { None };
         self.container(immediately_invoked, in_place, kind, |this| {
-            walk::walk_function(this, function, flags)
+            let outer = std::mem::take(&mut this.fn_state);
+            walk::walk_function(this, function, flags);
+            let mine = std::mem::replace(&mut this.fn_state, outer);
+            if function.body.is_some() && !this.discovering {
+                let error_span = function
+                    .return_type
+                    .as_ref()
+                    .map(|annotation| annotation.span)
+                    .or_else(|| method.map(|(name, _)| name))
+                    .or_else(|| function.id.as_ref().map(|id| id.span))
+                    .unwrap_or(function.span);
+                this.out.functions.push(FunctionFact {
+                    key: function.span.start,
+                    error_span,
+                    end_reachable: this.st.live,
+                    has_explicit_return: mine.explicit_return,
+                    bare_returns: mine.bare_returns,
+                    has_annotation: function.return_type.is_some(),
+                    returns_a_value: mine.returns_a_value,
+                    async_inner: function
+                        .r#async
+                        .then(|| function.return_type.as_ref())
+                        .flatten()
+                        .and_then(|annotation| promise_inner(&annotation.type_annotation)),
+                    is_async: function.r#async,
+                    is_generator: function.generator,
+                    is_constructor: method.is_some_and(|(_, constructor)| constructor),
+                });
+            }
         });
         self.function = outer_function;
     }
 
     fn visit_method_definition(&mut self, method: &oxc_ast::ast::MethodDefinition<'a>) {
         let saved = self.in_place_function.replace(method.value.span);
+        let saved_method = self.method.replace((
+            method.key.span(),
+            method.kind == oxc_ast::ast::MethodDefinitionKind::Constructor,
+        ));
         walk::walk_method_definition(self, method);
+        self.method = saved_method;
         self.in_place_function = saved;
     }
 
@@ -890,7 +1041,33 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
         };
         let outer_function = self.enter_function();
         self.container(immediately_invoked, false, kind, |this| {
-            walk::walk_arrow_function_expression(this, arrow)
+            let outer = std::mem::take(&mut this.fn_state);
+            walk::walk_arrow_function_expression(this, arrow);
+            let mine = std::mem::replace(&mut this.fn_state, outer);
+            if matches!(arrow.body, oxc_ast::ast::ArrowFunctionBody::FunctionBody(_))
+                && !this.discovering
+            {
+                this.out.functions.push(FunctionFact {
+                    key: arrow.span.start,
+                    error_span: arrow
+                        .return_type
+                        .as_ref()
+                        .map_or(arrow.span, |annotation| annotation.span),
+                    end_reachable: this.st.live,
+                    has_explicit_return: mine.explicit_return,
+                    bare_returns: mine.bare_returns,
+                    has_annotation: arrow.return_type.is_some(),
+                    returns_a_value: mine.returns_a_value,
+                    async_inner: arrow
+                        .r#async
+                        .then(|| arrow.return_type.as_ref())
+                        .flatten()
+                        .and_then(|annotation| promise_inner(&annotation.type_annotation)),
+                    is_async: arrow.r#async,
+                    is_generator: false,
+                    is_constructor: false,
+                });
+            }
         });
         self.function = outer_function;
     }
@@ -1160,6 +1337,17 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
         match statement {
             Statement::BlockStatement(block) => self.visit_statements(&block.body),
             Statement::ReturnStatement(statement) => {
+                // The binder only meets a `return` it can reach; the checker looks at every one.
+                if entry.live {
+                    self.fn_state.explicit_return = true;
+                }
+                match &statement.argument {
+                    None => self.fn_state.bare_returns.push(statement.span),
+                    Some(argument) if !is_undefined(skip_parens(argument)) => {
+                        self.fn_state.returns_a_value = true;
+                    }
+                    Some(_) => {}
+                }
                 if let Some(argument) = &statement.argument {
                     self.visit_expression(argument);
                 }

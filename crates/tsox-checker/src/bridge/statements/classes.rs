@@ -199,6 +199,16 @@ pub(super) fn check_class_declaration(
                 }
                 ctx.narrow = outer_narrow;
                 ctx.leave_return_scope(return_scope);
+                ctx.note_function_return(
+                    method.value.span.start,
+                    method
+                        .value
+                        .return_type
+                        .is_some()
+                        .then_some(method_type.return_type),
+                    method.value.r#async,
+                    None,
+                );
                 ctx.namespace.pop_type_params(method_type_params);
             }
 
@@ -248,6 +258,12 @@ pub(super) fn check_class_declaration(
                 ctx.narrow = outer_narrow;
                 ctx.current_class_instance = outer_class_instance_for_this;
                 ctx.leave_return_scope(return_scope);
+                ctx.note_function_return(
+                    method.value.span.start,
+                    return_type,
+                    method.value.r#async,
+                    None,
+                );
                 ctx.namespace.pop_type_params(method_type_params);
             }
 
