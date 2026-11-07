@@ -16,6 +16,8 @@ mod library_cache;
 pub mod metadata;
 mod partial;
 mod resolver;
+#[cfg(feature = "snapshot")]
+mod scan_cache;
 mod schedule;
 
 pub use tsox_base::compiler_options::{EffectiveCompilerOptions, ScriptTarget};

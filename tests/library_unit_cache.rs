@@ -12,7 +12,7 @@ use tsox::{
     check_project, install_library_unit_cache,
 };
 
-fn codes(root: &Path) -> Vec<(String, Option<u32>)> {
+fn graph_of(root: &Path) -> ModuleGraph {
     let config = ProjectConfig::load(root.join("tsconfig.json")).unwrap();
     let resolver = ModuleResolver::with_tsconfig(config.config_file());
     let entries: Vec<_> = config
@@ -21,10 +21,39 @@ fn codes(root: &Path) -> Vec<(String, Option<u32>)> {
         .into_iter()
         .map(|path| fs::canonicalize(path).unwrap())
         .collect();
-    let graph = ModuleGraph::build(&entries, &resolver)
+    ModuleGraph::build(&entries, &resolver)
         .unwrap()
         .with_root(root)
-        .with_config(&config);
+        .with_config(&config)
+}
+
+// Every file of the graph and every edge, as text: what the discovery walk found.
+fn graph_shape(root: &Path) -> Vec<String> {
+    let graph = graph_of(root);
+    let mut lines = Vec::new();
+    for index in 0..graph.len() {
+        let id = tsox::FileId::new(index as u32);
+        let name = graph.files().path(id).unwrap().display().to_string();
+        lines.push(format!(
+            "file {name} failed={}",
+            graph.has_syntax_errors(id)
+        ));
+        for edge in graph.edges(id) {
+            let target = edge
+                .target
+                .and_then(|target| graph.files().path(target))
+                .map(|path| path.display().to_string());
+            lines.push(format!(
+                "  {:?} {:?} type={} import={} -> {target:?}",
+                edge.kind, edge.specifier, edge.is_type, edge.is_import
+            ));
+        }
+    }
+    lines
+}
+
+fn codes(root: &Path) -> Vec<(String, Option<u32>)> {
+    let graph = graph_of(root);
     let report = check_project(&graph);
     let mut out = Vec::new();
     for file in &report.files {
@@ -104,6 +133,7 @@ fn a_cold_and_a_warm_run_report_what_an_uncached_run_reports() {
 
     // Before the cache is installed.
     let uncached: Vec<_> = projects.iter().map(|root| codes(root)).collect();
+    let uncached_shapes: Vec<_> = projects.iter().map(|root| graph_shape(root)).collect();
     assert!(
         uncached.iter().all(|codes| !codes.is_empty()),
         "{uncached:?}"
@@ -129,6 +159,11 @@ fn a_cold_and_a_warm_run_report_what_an_uncached_run_reports() {
             uncached[index],
             "a cold run of project {index}"
         );
+        assert_eq!(
+            graph_shape(root),
+            uncached_shapes[index],
+            "the module graph differs from the uncached one, project {index}"
+        );
     }
     let written = entries();
     assert!(
@@ -141,6 +176,11 @@ fn a_cold_and_a_warm_run_report_what_an_uncached_run_reports() {
             codes(root),
             uncached[index],
             "a warm run of project {index}"
+        );
+        assert_eq!(
+            graph_shape(root),
+            uncached_shapes[index],
+            "the module graph differs from the uncached one, project {index}"
         );
     }
     assert_eq!(
@@ -158,6 +198,11 @@ fn a_cold_and_a_warm_run_report_what_an_uncached_run_reports() {
             codes(root),
             uncached[index],
             "after damage, project {index}"
+        );
+        assert_eq!(
+            graph_shape(root),
+            uncached_shapes[index],
+            "the module graph differs from the uncached one, project {index}"
         );
     }
     assert_ne!(fs::read(&written[0]).unwrap(), b"not a snapshot");
