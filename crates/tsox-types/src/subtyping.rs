@@ -503,7 +503,61 @@ fn object_is_subtype(
         }
     }
 
+    index_signatures_fit(arena, sub, sup, seen, binders)
+}
+
+#[inline(never)]
+fn index_signatures_fit(
+    arena: &TypeArena,
+    sub: &ObjectType,
+    sup: &ObjectType,
+    seen: &mut PairStack,
+    binders: &[(TypeParameterId, TypeParameterId)],
+) -> bool {
+    // An index signature asks the same of everything the source has under a name it does
+    // not list: every property, and the source's own index signatures. An object type with
+    // no index signature of its own is taken to have the implicit one that tsc gives an
+    // object literal type; tsc withholds it from an interface, which this does not.
+    if let Some(target_index) = &sup.string_index {
+        let fits = |id: TypeId, seen: &mut PairStack| {
+            is_subtype_inner(arena, id, target_index.value, seen, binders)
+        };
+        for property in sub.properties.iter() {
+            if !fits(property.type_id, seen) {
+                return false;
+            }
+        }
+        for index in [&sub.string_index, &sub.number_index].into_iter().flatten() {
+            if !fits(index.value, seen) {
+                return false;
+            }
+        }
+    }
+    if let Some(target_index) = &sup.number_index {
+        let fits = |id: TypeId, seen: &mut PairStack| {
+            is_subtype_inner(arena, id, target_index.value, seen, binders)
+        };
+        for property in sub.properties.iter() {
+            if is_numeric_name(&property.name) && !fits(property.type_id, seen) {
+                return false;
+            }
+        }
+        for index in [&sub.string_index, &sub.number_index].into_iter().flatten() {
+            if !fits(index.value, seen) {
+                return false;
+            }
+        }
+    }
+
     true
+}
+
+// A property name that reads as a number (`"0"`, `"12"`), which a number index signature
+// also covers.
+fn is_numeric_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_digit())
+        && (name == "0" || !name.starts_with('0'))
 }
 
 // Whether the members of an intersection, between them, give the target object everything
@@ -723,6 +777,7 @@ mod tests {
                 type_id: number,
                 optional: false,
                 is_method: false,
+                readonly: false,
             },
         ])));
         let array = arena.alloc(Type::Array(number));
@@ -1090,6 +1145,7 @@ mod tests {
                 type_id,
                 optional,
                 is_method: false,
+                readonly: false,
             })
             .collect();
         Type::Object(ObjectType::new(properties))
@@ -1331,6 +1387,7 @@ mod intersection_relation_tests {
                 type_id,
                 optional,
                 is_method: false,
+                readonly: false,
             })
             .collect();
         arena.alloc(Type::Object(ObjectType::new(entries)))

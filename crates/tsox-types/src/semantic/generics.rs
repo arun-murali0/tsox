@@ -761,6 +761,29 @@ fn infer_type_param_bindings_uncached(
                 preserve_literals,
             );
         }
+        // `[...T, number]` against `[string, number]`: the fixed elements around the spread
+        // match by position and T takes what lies between them.
+        Type::Variadic(param_elements) => {
+            let Type::Tuple(arg_elements) = arena.get(arg_type).clone() else {
+                return;
+            };
+            let Some((pairs, spread)) = variadic_split(arena, &param_elements, &arg_elements)
+            else {
+                return;
+            };
+            for (wanted, actual) in pairs.into_iter().chain(std::iter::once(spread)) {
+                infer_type_param_bindings_inner(
+                    arena,
+                    wanted,
+                    actual,
+                    bindings,
+                    locked,
+                    cache,
+                    seen,
+                    preserve_literals,
+                );
+            }
+        }
         // `[T, U]` against `[string, number]`: element by element, a rest element taking
         // every argument element past the fixed ones. Against an array it matches nothing,
         // since an array promises no particular element at any position.
@@ -812,6 +835,18 @@ fn infer_type_param_bindings_uncached(
                         preserve_literals,
                     );
                 }
+            }
+            for (signature, from) in index_inference_sources(&param_object, &arg_object) {
+                infer_type_param_bindings_inner(
+                    arena,
+                    signature,
+                    from,
+                    bindings,
+                    locked,
+                    cache,
+                    seen,
+                    preserve_literals,
+                );
             }
         }
         Type::Function(param_fn) => {
@@ -1119,6 +1154,20 @@ fn collect_inference_candidates_inner(
                 seen,
             );
         }
+        Type::Variadic(param_elements) => {
+            let Type::Tuple(arg_elements) = arena.get(arg_type).clone() else {
+                return;
+            };
+            let Some((pairs, spread)) = variadic_split(arena, &param_elements, &arg_elements)
+            else {
+                return;
+            };
+            for (wanted, actual) in pairs.into_iter().chain(std::iter::once(spread)) {
+                collect_inference_candidates_inner(
+                    arena, wanted, actual, locked, variance, false, out, cache, seen,
+                );
+            }
+        }
         // `[T, U]` against `[string, number]`: element by element, a rest element taking
         // every argument element past the fixed ones. Against an array it matches nothing,
         // since an array promises no particular element at any position.
@@ -1179,6 +1228,11 @@ fn collect_inference_candidates_inner(
                         seen,
                     );
                 }
+            }
+            for (signature, from) in index_inference_sources(&param_object, &arg_object) {
+                collect_inference_candidates_inner(
+                    arena, signature, from, locked, variance, false, out, cache, seen,
+                );
             }
         }
         Type::Function(param_fn) => {
@@ -1694,6 +1748,22 @@ impl Substitution<'_> {
         copy
     }
 
+    #[inline(never)]
+    fn rewrite_indexes(
+        &mut self,
+        arena: &mut TypeArena,
+        mut object: ObjectType,
+        cut: &mut usize,
+    ) -> ObjectType {
+        for index in [&mut object.string_index, &mut object.number_index]
+            .into_iter()
+            .flatten()
+        {
+            index.value = self.rewrite(arena, index.value, cut);
+        }
+        object
+    }
+
     fn rewrite_uncached(
         &mut self,
         arena: &mut TypeArena,
@@ -1766,6 +1836,13 @@ impl Substitution<'_> {
                 return type_id;
             }
 
+            if rewritten_arguments != arguments
+                && arena.record_value_type(type_id).is_some()
+                && let [key, value] = rewritten_arguments[..]
+                && let Some(record) = reduce_record(arena, key, value)
+            {
+                return record;
+            }
             let body = self.rewrite(arena, body, cut);
             return arena.alloc_app(slot, rewritten_arguments, body);
         }
@@ -1848,9 +1925,11 @@ impl Substitution<'_> {
                         type_id: self.rewrite(arena, p.type_id, cut),
                         optional: p.optional,
                         is_method: p.is_method,
+                        readonly: p.readonly,
                     });
                 }
-                arena.alloc(Type::Object(ObjectType::new(properties)))
+                let rebuilt = self.rewrite_indexes(arena, object.with_properties(properties), cut);
+                arena.alloc(Type::Object(rebuilt))
             }
             Type::Union(members) => {
                 let mut substituted = Vec::with_capacity(members.len());
@@ -1985,6 +2064,7 @@ impl Substitution<'_> {
                         name_type,
                         value,
                         optional: mapped.optional,
+                        readonly: mapped.readonly,
                     },
                 )
             }
@@ -2147,6 +2227,25 @@ pub fn reduce_mapped(arena: &mut TypeArena, mapped: crate::types::MappedType) ->
         }
     }
 
+    if mapped.name_type.is_none()
+        && matches!(arena.get(mapped.constraint), Type::String | Type::Number)
+    {
+        let is_string = matches!(arena.get(mapped.constraint), Type::String);
+        let key = mapped.constraint;
+        let value = substitute_bound_type_params(arena, mapped.value, &[(mapped.key, key)]);
+        let signature = crate::types::IndexSignature {
+            key_name: "key".into(),
+            value,
+            readonly: false,
+        };
+        let object = ObjectType::new(Vec::new());
+        return arena.alloc(Type::Object(if is_string {
+            object.with_indexes(Some(signature), None)
+        } else {
+            object.with_indexes(None, Some(signature))
+        }));
+    }
+
     let Some(names) = mapped_key_names(arena, mapped.constraint) else {
         return arena.alloc(Type::Mapped(mapped));
     };
@@ -2180,12 +2279,18 @@ pub fn reduce_mapped(arena: &mut TypeArena, mapped: crate::types::MappedType) ->
         if mapped.optional == MappedModifier::Remove && original.is_some_and(|p| p.optional) {
             value = without_undefined(arena, value);
         }
+        let readonly = match mapped.readonly {
+            MappedModifier::Add => true,
+            MappedModifier::Remove => false,
+            MappedModifier::Keep => original.is_some_and(|p| p.readonly),
+        };
         for final_name in final_names {
             properties.push(PropertyEntry {
                 name: final_name.into(),
                 type_id: value,
                 optional,
                 is_method: false,
+                readonly,
             });
         }
     }
@@ -2204,6 +2309,27 @@ pub fn reduce_keyof(arena: &mut TypeArena, operand: TypeId) -> TypeId {
             0 => arena.never(),
             1 => members[0],
             _ => arena.alloc_union(members),
+        };
+    }
+    if let Type::Object(object) = arena.get(operand).clone()
+        && (object.string_index.is_some() || object.number_index.is_some())
+    {
+        let mut members: Vec<TypeId> = Vec::new();
+        if object.string_index.is_some() {
+            members.push(arena.alloc(Type::String));
+            members.push(arena.alloc(Type::Number));
+        } else {
+            members.push(arena.alloc(Type::Number));
+        }
+        for property in object.properties.iter() {
+            if object.string_index.is_none() {
+                members.push(arena.alloc(Type::StringLiteral(property.name.to_string())));
+            }
+        }
+        return if members.len() == 1 {
+            members[0]
+        } else {
+            arena.alloc_union(members)
         };
     }
     arena.alloc(Type::Keyof(operand))
@@ -2309,7 +2435,15 @@ fn parts_of(arena: &TypeArena, type_id: TypeId) -> SmallVec<[TypeId; 8]> {
             parts.extend(function.params.iter().map(|parameter| parameter.type_id));
             parts.push(function.return_type);
         }
-        Type::Object(object) => parts.extend(object.properties.iter().map(|p| p.type_id)),
+        Type::Object(object) => {
+            parts.extend(object.properties.iter().map(|p| p.type_id));
+            parts.extend(
+                [&object.string_index, &object.number_index]
+                    .into_iter()
+                    .flatten()
+                    .map(|index| index.value),
+            );
+        }
         Type::Union(members) | Type::Intersection(members) => parts.extend(members.iter().copied()),
         Type::Conditional(conditional) => {
             parts.extend([
@@ -2681,6 +2815,7 @@ mod tests {
             type_id,
             optional: false,
             is_method: false,
+            readonly: false,
         }
     }
 
@@ -2973,6 +3108,9 @@ fn placeholder_accepts(arena: &TypeArena, part: TypeId, capture: &str) -> bool {
 /// shape a tuple cannot hold (a rest element that is not last), keeps the variadic node.
 pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleElement>) -> TypeId {
     let mut flat: Vec<crate::types::TupleElement> = Vec::with_capacity(elements.len());
+    // An operand that is still generic stays a spread in place, while the ones that are known
+    // are spliced in around it: `[...[string], ...B]` is `[string, ...B]`.
+    let mut unresolved = false;
     for element in &elements {
         if !element.rest {
             flat.push(*element);
@@ -2982,7 +3120,9 @@ pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleE
         if matches!(arena.raw(element.type_id), Type::Ref(_))
             && arena.declared_body(element.type_id).is_none()
         {
-            return arena.alloc(Type::Variadic(elements));
+            flat.push(*element);
+            unresolved = true;
+            continue;
         }
         match arena.get(element.type_id).clone() {
             Type::Tuple(inner) => flat.extend(inner),
@@ -3001,8 +3141,14 @@ pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleE
                 optional: false,
                 rest: true,
             }),
-            _ => return arena.alloc(Type::Variadic(elements)),
+            _ => {
+                flat.push(*element);
+                unresolved = true;
+            }
         }
+    }
+    if unresolved {
+        return arena.alloc(Type::Variadic(flat));
     }
     let rest_count = flat.iter().filter(|e| e.rest).count();
     let mut seen_optional = false;
@@ -3015,7 +3161,118 @@ pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleE
         }
     }
     if !valid {
-        return arena.alloc(Type::Variadic(elements));
+        return arena.alloc(Type::Variadic(flat));
     }
     arena.alloc_tuple(flat)
+}
+
+/// `Record<K, V>` once K is known: one required property per literal key, or an index
+/// signature when the key is `string` or `number`. `None` while K is still generic.
+pub fn reduce_record(arena: &mut TypeArena, key: TypeId, value: TypeId) -> Option<TypeId> {
+    fn members(arena: &TypeArena, id: TypeId, out: &mut Vec<TypeId>) {
+        match arena.get(id) {
+            Type::Union(parts) => {
+                for &part in parts {
+                    members(arena, part, out);
+                }
+            }
+            _ => out.push(id),
+        }
+    }
+    let mut parts = Vec::new();
+    members(arena, key, &mut parts);
+    let has = |arena: &TypeArena, wanted: fn(&Type) -> bool| {
+        parts.iter().any(|&part| wanted(arena.get(part)))
+    };
+    let index = |name: &str, value: TypeId| crate::types::IndexSignature {
+        key_name: name.into(),
+        value,
+        readonly: false,
+    };
+    if has(arena, |t| matches!(t, Type::String)) {
+        let object = ObjectType::new(Vec::new()).with_indexes(Some(index("x", value)), None);
+        return Some(arena.alloc(Type::Object(object)));
+    }
+    if has(arena, |t| matches!(t, Type::Number)) {
+        let object = ObjectType::new(Vec::new()).with_indexes(None, Some(index("x", value)));
+        return Some(arena.alloc(Type::Object(object)));
+    }
+    let names = mapped_key_names(arena, key)?;
+    let properties = names
+        .into_iter()
+        .map(|name| PropertyEntry {
+            name: name.into(),
+            type_id: value,
+            optional: false,
+            is_method: false,
+            readonly: false,
+        })
+        .collect();
+    Some(arena.alloc(Type::Object(ObjectType::new(properties))))
+}
+
+/// The (parameter value type, argument type) pairs an index signature contributes to
+/// inference: the argument's own signature if it has one, otherwise every property type
+/// of the argument (an object literal argument is read as a dictionary of its members).
+fn index_inference_sources(param: &ObjectType, arg: &ObjectType) -> Vec<(TypeId, TypeId)> {
+    let mut pairs = Vec::new();
+    for (signature, own) in [
+        (&param.string_index, &arg.string_index),
+        (&param.number_index, &arg.number_index),
+    ] {
+        let Some(signature) = signature else { continue };
+        match own {
+            Some(own) => pairs.push((signature.value, own.value)),
+            None => {
+                for property in arg.properties.iter() {
+                    pairs.push((signature.value, property.type_id));
+                }
+            }
+        }
+    }
+    pairs
+}
+
+/// A variadic parameter tuple with exactly one generic spread, matched against an argument
+/// tuple: the (parameter, argument) pairs of the fixed elements before and after the spread,
+/// and the spread operand with the tuple of the argument elements between them.
+fn variadic_split(
+    arena: &mut TypeArena,
+    param: &[crate::types::TupleElement],
+    arg: &[crate::types::TupleElement],
+) -> Option<(Vec<(TypeId, TypeId)>, (TypeId, TypeId))> {
+    let mut spreads = param.iter().enumerate().filter(|(_, e)| e.rest);
+    let (at, spread) = spreads.next()?;
+    if spreads.next().is_some() {
+        return None;
+    }
+    let after = param.len() - at - 1;
+    if arg.len() < at + after || arg.iter().any(|e| e.rest) {
+        return None;
+    }
+    let mut pairs = Vec::new();
+    for index in 0..at {
+        pairs.push((param[index].type_id, arg[index].type_id));
+    }
+    for offset in 0..after {
+        pairs.push((
+            param[at + 1 + offset].type_id,
+            arg[arg.len() - after + offset].type_id,
+        ));
+    }
+    let middle = arena.alloc_tuple(arg[at..arg.len() - after].to_vec());
+    Some((pairs, (spread.type_id, middle)))
+}
+
+/// Whether a parameter type holds a variadic tuple with more than one spread
+/// (`(...a: [...A, ...B]) => R`), which cannot be split by position alone.
+pub fn has_multi_spread_variadic(arena: &TypeArena, type_id: TypeId) -> bool {
+    match arena.get(type_id) {
+        Type::Variadic(elements) => elements.iter().filter(|e| e.rest).count() > 1,
+        Type::Function(function) => function
+            .params
+            .iter()
+            .any(|p| has_multi_spread_variadic(arena, p.type_id)),
+        _ => false,
+    }
 }

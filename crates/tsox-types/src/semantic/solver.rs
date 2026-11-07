@@ -80,6 +80,20 @@ impl GenericInferenceSession {
         priority: InferencePriority,
         cache: &mut RelationCache,
     ) {
+        // `[...A, ...B]` splits only once one of the spreads is known: tsc fixes `A` from the
+        // arguments that name it, and `B` then takes what is left. The evidence gathered so
+        // far stands in for the parameters it covers.
+        let parameter_type = if super::generics::has_multi_spread_variadic(arena, parameter_type) {
+            let known: Vec<(TypeParameterId, TypeId)> = self
+                .candidates
+                .iter()
+                .filter(|c| c.variance == InferenceVariance::Covariant)
+                .map(|c| (c.id, c.ty))
+                .collect();
+            GenericSolver::substitute_bound_type_params(arena, parameter_type, &known)
+        } else {
+            parameter_type
+        };
         let mut candidates = Vec::new();
         super::generics::collect_inference_candidates(
             arena,
@@ -392,6 +406,11 @@ impl GenericSolver {
         super::generics::expected_param_type(arena, params, index)
     }
 
+    /// Whether a parameter type holds a variadic tuple with more than one spread.
+    pub fn has_multi_spread_variadic(arena: &TypeArena, type_id: TypeId) -> bool {
+        super::generics::has_multi_spread_variadic(arena, type_id)
+    }
+
     /// Whether a type still mentions an uninstantiated type parameter.
     pub fn contains_type_param(arena: &TypeArena, type_id: TypeId) -> bool {
         super::generics::contains_type_param(arena, type_id)
@@ -600,6 +619,7 @@ mod tests {
             type_id: number,
             optional: false,
             is_method: false,
+            readonly: false,
         }])));
         let giraffe = arena.alloc(Type::Object(ObjectType::new(vec![
             PropertyEntry {
@@ -607,12 +627,14 @@ mod tests {
                 type_id: number,
                 optional: false,
                 is_method: false,
+                readonly: false,
             },
             PropertyEntry {
                 name: Rc::from("neck"),
                 type_id: number,
                 optional: false,
                 is_method: false,
+                readonly: false,
             },
         ])));
         let elephant = arena.alloc(Type::Object(ObjectType::new(vec![
@@ -621,12 +643,14 @@ mod tests {
                 type_id: number,
                 optional: false,
                 is_method: false,
+                readonly: false,
             },
             PropertyEntry {
                 name: Rc::from("trunk"),
                 type_id: number,
                 optional: false,
                 is_method: false,
+                readonly: false,
             },
         ])));
         let t = arena.alloc(Type::GenericParameter(id, "T".into(), Some(animal)));
@@ -653,6 +677,7 @@ mod tests {
             type_id: number,
             optional: false,
             is_method: false,
+            readonly: false,
         }])));
         let giraffe = arena.alloc(Type::Object(ObjectType::new(vec![
             PropertyEntry {
@@ -660,12 +685,14 @@ mod tests {
                 type_id: number,
                 optional: false,
                 is_method: false,
+                readonly: false,
             },
             PropertyEntry {
                 name: Rc::from("neck"),
                 type_id: number,
                 optional: false,
                 is_method: false,
+                readonly: false,
             },
         ])));
         let elephant = arena.alloc(Type::Object(ObjectType::new(vec![
@@ -674,12 +701,14 @@ mod tests {
                 type_id: number,
                 optional: false,
                 is_method: false,
+                readonly: false,
             },
             PropertyEntry {
                 name: Rc::from("trunk"),
                 type_id: number,
                 optional: false,
                 is_method: false,
+                readonly: false,
             },
         ])));
         let u = arena.alloc(Type::GenericParameter(u_id, "U".into(), Some(base)));
@@ -745,12 +774,14 @@ mod tests {
             type_id: expected_method,
             optional: false,
             is_method: true,
+            readonly: false,
         }])));
         let actual = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
             name: Rc::from("convert"),
             type_id: actual_method,
             optional: false,
             is_method: true,
+            readonly: false,
         }])));
 
         let mut session = GenericInferenceSession::new(Vec::new(), Vec::new());

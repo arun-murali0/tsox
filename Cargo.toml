@@ -90,6 +90,8 @@ default = ["module-resolution"]
 # Serialize and Deserialize on the diagnostic types. The wasm front end is the tsox-wasm
 # crate; it turns this on through its dependency on this one.
 wasm = ["tsox-base/wasm"]
+# A byte form for a checked unit (`UnitSnapshot`), for caching bundled library files.
+snapshot = ["tsox-checker/snapshot", "tsox-project?/snapshot"]
 dhat-heap = ["dep:dhat"]
 
 # Project-level module resolution and the module graph. On by default since the checker

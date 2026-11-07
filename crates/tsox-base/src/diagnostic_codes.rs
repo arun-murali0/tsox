@@ -15,7 +15,10 @@
 /// The map is what lets scripts/ts-diag-tool/compare.js compare code and message
 /// text, and not only the line a diagnostic is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "wasm", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    any(feature = "wasm", feature = "snapshot"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub enum DiagnosticCode {
     // 1000s: assignability / type mismatch
     BinaryOperandTypeMismatch,
@@ -40,6 +43,14 @@ pub enum DiagnosticCode {
     ObjectPossiblyNullOrUndefined,
     SatisfiesMismatch,
     TupleIndexOutOfRange,
+    ClassImplementsMismatch,
+    ClassPropertyIncompatible,
+    ReadonlyAssignment,
+    ClassIncorrectlyExtends,
+    InterfaceIncorrectlyExtends,
+    PropertyNotAssignableToIndex,
+    DuplicateIndexSignature,
+    MissingOverrideModifier,
 
     // 1100s: calls
     NotCallable,
@@ -91,6 +102,7 @@ pub enum DiagnosticCode {
     // 1600s: reachability
     UnreachableCode,
     FallthroughCaseInSwitch,
+    UsedBeforeAssigned,
 
     // 1700s: type construction
     ExpressionTooComplex,
@@ -149,6 +161,14 @@ impl DiagnosticCode {
             ObjectPossiblyNullOrUndefined => "TSR1020",
             SatisfiesMismatch => "TSR1021",
             TupleIndexOutOfRange => "TSR1022",
+            ClassImplementsMismatch => "TSR1023",
+            ClassPropertyIncompatible => "TSR1024",
+            ReadonlyAssignment => "TSR1025",
+            ClassIncorrectlyExtends => "TSR1026",
+            InterfaceIncorrectlyExtends => "TSR1027",
+            PropertyNotAssignableToIndex => "TSR1028",
+            DuplicateIndexSignature => "TSR1029",
+            MissingOverrideModifier => "TSR1030",
 
             NotCallable => "TSR1101",
             ArgumentArityMismatch => "TSR1102",
@@ -194,6 +214,7 @@ impl DiagnosticCode {
 
             UnreachableCode => "TSR1601",
             FallthroughCaseInSwitch => "TSR1602",
+            UsedBeforeAssigned => "TSR1603",
 
             ExpressionTooComplex => "TSR1701",
 
@@ -255,6 +276,14 @@ impl DiagnosticCode {
             ObjectPossiblyNullOrUndefined => 2533,
             SatisfiesMismatch => 1360,
             TupleIndexOutOfRange => 2493,
+            ClassImplementsMismatch => 2420,
+            ClassPropertyIncompatible => 2416,
+            ReadonlyAssignment => 2540,
+            ClassIncorrectlyExtends => 2415,
+            InterfaceIncorrectlyExtends => 2430,
+            PropertyNotAssignableToIndex => 2411,
+            DuplicateIndexSignature => 2374,
+            MissingOverrideModifier => 4114,
 
             NotCallable => 2349,
             NotConstructor => 2351,
@@ -306,6 +335,7 @@ impl DiagnosticCode {
 
             UnreachableCode => 7027,
             FallthroughCaseInSwitch => 7029,
+            UsedBeforeAssigned => 2454,
             ExpressionTooComplex => 2590,
 
             UnimplementedCallExpressionKind

@@ -19,3 +19,8 @@ oxc_parser = { workspace = true }
 oxc_allocator = { workspace = true }
 oxc_semantic = { workspace = true }
 smallvec = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[features]
+# Serialize and Deserialize on the portable declaration types, for the library snapshot.
+snapshot = ["dep:serde", "tsox-base/snapshot"]

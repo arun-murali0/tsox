@@ -560,6 +560,7 @@ fn namespace_properties(
                 type_id,
                 optional: false,
                 is_method: false,
+                readonly: false,
             });
             Some(())
         };
@@ -597,6 +598,7 @@ fn namespace_properties(
                         type_id,
                         optional: false,
                         is_method: false,
+                        readonly: false,
                     });
                 }
             }

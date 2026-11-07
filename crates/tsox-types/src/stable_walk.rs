@@ -181,6 +181,7 @@ impl<'a, R: KeyResolver> StableHasher<'a, R> {
                         name: &p.name,
                         optional: p.optional,
                         is_method: p.is_method,
+                        readonly: p.readonly,
                         ty,
                     })
                     .collect();
@@ -272,6 +273,7 @@ mod tests {
             type_id,
             optional: false,
             is_method: false,
+            readonly: false,
         }
     }
 
@@ -300,12 +302,14 @@ mod tests {
         let none = Keys(vec![]);
         let mut a = TypeArena::new();
         let (n, s) = (a.number(), a.string());
-        let o1 = a.alloc(Type::Object(ObjectType {
-            properties: Rc::from(vec![prop("x", n), prop("y", s)]),
-        }));
-        let o2 = a.alloc(Type::Object(ObjectType {
-            properties: Rc::from(vec![prop("y", s), prop("x", n)]),
-        }));
+        let o1 = a.alloc(Type::Object(ObjectType::new(vec![
+            prop("x", n),
+            prop("y", s),
+        ])));
+        let o2 = a.alloc(Type::Object(ObjectType::new(vec![
+            prop("y", s),
+            prop("x", n),
+        ])));
         assert_eq!(hash_in(&a, &none, o1), hash_in(&a, &none, o2));
     }
 
@@ -313,12 +317,8 @@ mod tests {
     fn intersection_order_changes_the_hash() {
         let none = Keys(vec![]);
         let mut a = TypeArena::new();
-        let x = a.alloc(Type::Object(ObjectType {
-            properties: Rc::from(vec![prop("x", a.number())]),
-        }));
-        let y = a.alloc(Type::Object(ObjectType {
-            properties: Rc::from(vec![prop("y", a.string())]),
-        }));
+        let x = a.alloc(Type::Object(ObjectType::new(vec![prop("x", a.number())])));
+        let y = a.alloc(Type::Object(ObjectType::new(vec![prop("y", a.string())])));
         let xy = a.alloc_intersection(vec![x, y]).unwrap();
         let yx = a.alloc_intersection(vec![y, x]).unwrap();
         assert_ne!(hash_in(&a, &none, xy), hash_in(&a, &none, yx));
@@ -335,9 +335,7 @@ mod tests {
         };
         let null = a.null();
         let next = a.alloc_union(vec![node, null]);
-        let body = a.alloc(Type::Object(ObjectType {
-            properties: Rc::from(vec![prop("next", next)]),
-        }));
+        let body = a.alloc(Type::Object(ObjectType::new(vec![prop("next", next)])));
         a.resolve_ref(node, body);
 
         let key = DeclKey::new(ModuleKey::project("a.ts"), "Node", DeclKind::Interface, 0);

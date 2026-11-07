@@ -8,7 +8,7 @@ use crate::types::FileId;
 use tsox_base::compiler_options::EffectiveCompilerOptions;
 
 use super::config::ProjectConfig;
-use super::discovery::{ModuleRequest, ModuleRequestKind, scan_module_requests};
+use super::discovery::{ModuleRequest, ModuleRequestKind, ModuleScan, scan_module_requests};
 use super::error::ModuleError;
 use super::metadata::{FileFingerprint, FileState, content_hash};
 use super::resolver::{ModuleResolver, ResolveMode};
@@ -180,7 +180,7 @@ impl ModuleGraph {
                 if let Cow::Borrowed(valid) = &source {
                     kept = Some(Arc::from(*valid));
                 }
-                let scan = scan_module_requests(&source, &path.to_string_lossy());
+                let scan = scan_dependency_aware(&path, &bytes, &source);
                 failed = scan.parse_failed;
                 declares_ambient = scan.declares_ambient_modules;
                 for request in scan.requests {
@@ -728,6 +728,31 @@ fn resolve_mode(resolver: &ModuleResolver, from: &Path, kind: ModuleRequestKind)
 
 fn extension(path: &Path) -> Option<&str> {
     path.extension().and_then(|ext| ext.to_str())
+}
+
+// The scan of `source`, from the library cache when `path` is a dependency file and the cache
+// has the scan of exactly these bytes (see `scan_cache`).
+#[cfg(feature = "snapshot")]
+fn scan_dependency_aware(path: &Path, bytes: &[u8], source: &str) -> ModuleScan {
+    use super::scan_cache;
+    let Some(cache) = scan_cache::cache_for(path) else {
+        return scan_module_requests(source, &path.to_string_lossy());
+    };
+    let key = scan_cache::key(cache, path, bytes);
+    if let Some(scan) = cache
+        .load(key)
+        .and_then(|stored| scan_cache::decode(&stored))
+    {
+        return scan;
+    }
+    let scan = scan_module_requests(source, &path.to_string_lossy());
+    cache.store(key, &scan_cache::encode(&scan));
+    scan
+}
+
+#[cfg(not(feature = "snapshot"))]
+fn scan_dependency_aware(path: &Path, _bytes: &[u8], source: &str) -> ModuleScan {
+    scan_module_requests(source, &path.to_string_lossy())
 }
 
 // Resolved imports can land on JSON or other assets. They are nodes, so the importer's

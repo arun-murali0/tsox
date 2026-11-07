@@ -11,6 +11,7 @@
 
 use crate::keys::{DeclKey, NodeHash, StreamWriter, TypeParamKey};
 
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 #[repr(u8)]
 pub enum Prim {
@@ -30,6 +31,7 @@ pub struct PropIn<'a> {
     pub name: &'a str,
     pub optional: bool,
     pub is_method: bool,
+    pub readonly: bool,
     pub ty: NodeHash,
 }
 
@@ -124,7 +126,9 @@ pub fn hash_node(node: &NodeIn<'_>) -> NodeHash {
             for p in order {
                 w.str(p.name)
                     .u8(p.optional as u8)
-                    .u8(p.is_method as u8)
+                    // `readonly` shares the method byte, so a type without readonly
+                    // properties hashes as it always has.
+                    .u8(p.is_method as u8 | (p.readonly as u8) << 1)
                     .raw128(p.ty.as_u128());
             }
         }
@@ -253,6 +257,7 @@ mod tests {
             name,
             optional: false,
             is_method: false,
+            readonly: false,
             ty,
         };
         let a = hash_node(&NodeIn::Object {
@@ -275,6 +280,7 @@ mod tests {
                     name: "x",
                     optional,
                     is_method,
+                    readonly: false,
                     ty: num(),
                 }],
             })
@@ -452,12 +458,14 @@ mod tests {
                     name: "x",
                     optional: false,
                     is_method: false,
+                    readonly: false,
                     ty: num(),
                 },
                 PropIn {
                     name: "y",
                     optional: true,
                     is_method: false,
+                    readonly: false,
                     ty: num(),
                 },
             ],

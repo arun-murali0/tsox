@@ -178,7 +178,12 @@ pub(super) fn infer_new_expression_type(
             span: new_expr.span(),
             callee_name: &callee_name,
             is_new: true,
-            callee_is_declaration: true,
+            // A class is a declaration whose parameters are its own; a constructor typed as
+            // `new () => T` returns a parameter of the enclosing function, which is fixed.
+            callee_is_declaration: !matches!(
+                ctx.arena.get(callee_type),
+                Type::Function(f) if matches!(ctx.arena.get(f.return_type), Type::GenericParameter(..))
+            ),
             explicit_type_args: &explicit_type_args,
         },
         scoping,
@@ -1151,11 +1156,15 @@ fn check_callable(
     // `(...args: T)` with `T extends unknown[]`: the parameter stands for every argument
     // from its position on, so T is inferred as the tuple of their types rather than
     // matched against them one by one.
-    let tuple_rest_index = function_type
-        .params
-        .iter()
-        .position(|p| p.rest && matches!(ctx.arena.get(p.type_id), Type::GenericParameter(..)));
+    let tuple_rest_index = function_type.params.iter().position(|p| {
+        p.rest
+            && matches!(
+                ctx.arena.get(p.type_id),
+                Type::GenericParameter(..) | Type::Variadic(..)
+            )
+    });
     let mut inference = GenericInferenceSession::new(bindings, locked);
+    let mut deferred: Vec<usize> = Vec::new();
     for (index, arg_type) in arg_types.iter().enumerate() {
         if tuple_rest_index.is_some_and(|rest| index >= rest) {
             continue;
@@ -1164,6 +1173,11 @@ fn check_callable(
         if let Some(param_type) =
             GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index)
         {
+            // A parameter with two spreads waits for the arguments that fix one of them.
+            if GenericSolver::has_multi_spread_variadic(&ctx.arena, param_type) {
+                deferred.push(index);
+                continue;
+            }
             inference.infer_argument(
                 &mut ctx.arena,
                 param_type,
@@ -1191,6 +1205,21 @@ fn check_callable(
             &mut ctx.arena,
             function_type.params[rest].type_id,
             tuple,
+            &mut ctx.relation_cache,
+        );
+    }
+
+    for index in deferred {
+        let (Some(arg_type), Some(param_type)) = (
+            arg_types[index],
+            GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index),
+        ) else {
+            continue;
+        };
+        inference.infer_argument(
+            &mut ctx.arena,
+            param_type,
+            arg_type,
             &mut ctx.relation_cache,
         );
     }

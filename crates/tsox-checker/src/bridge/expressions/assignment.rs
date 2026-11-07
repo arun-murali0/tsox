@@ -23,12 +23,21 @@ pub(super) fn infer_assignment_expression_type(
     // The target is the contextual type of the right-hand side. It is read first, which
     // reports nothing the right side's own inference would not (the target is only looked
     // up here), and an unresolvable target simply gives no context.
+    let reported_before = ctx.diagnostics.len();
     let target_type = resolve_assignment_target_type(&assign.left, scoping, ctx);
+    // tsc reports a write to a readonly property once, as TS2540, and does not also compare
+    // the value with the property's type.
+    let read_only_write = ctx.diagnostics[reported_before..]
+        .iter()
+        .any(|d| d.code == crate::diagnostic_codes::DiagnosticCode::ReadonlyAssignment);
     if matches!(assign.operator, AssignmentOperator::Assign) {
         ctx.contextual = target_type;
     }
     let right_type = infer_expression_type(&assign.right, scoping, ctx);
 
+    if read_only_write {
+        return right_type;
+    }
     let Some(target_type) = target_type else {
         // A destructuring target (`[a, b] = arr`, `({x} = obj)`), or one
         // wrapped in `as`/`!`/a type assertion, not modeled. Skips the
@@ -194,6 +203,16 @@ fn resolve_assignment_target_type(
         }
         AssignmentTarget::StaticMemberExpression(member) => {
             let object_type = infer_expression_type(&member.object, scoping, ctx);
+            let initialising = ctx.in_constructor
+                && matches!(member.object, oxc_ast::ast::Expression::ThisExpression(_));
+            if !initialising && property_is_readonly(object_type, &member.property.name, ctx) {
+                ctx.error(
+                    crate::diagnostic_messages::messages::readonly_assignment(
+                        &member.property.name,
+                    ),
+                    member.property.span(),
+                );
+            }
             Some(infer_member_access_type(
                 object_type,
                 &member.property.name,
@@ -229,4 +248,12 @@ fn compound_assignment_operator(operator: AssignmentOperator) -> Option<BinaryOp
         AssignmentOperator::Exponential => BinaryOperator::Exponential,
         _ => return None,
     })
+}
+
+/// Whether `object.name` is a declared `readonly` property.
+fn property_is_readonly(object: TypeId, name: &str, ctx: &CheckContext<'_, '_>) -> bool {
+    matches!(
+        ctx.arena.get(object),
+        Type::Object(o) if o.properties.iter().any(|p| p.readonly && p.name.as_ref() == name)
+    )
 }

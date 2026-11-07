@@ -1,12 +1,16 @@
 use crate::diagnostic_codes::DiagnosticCode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "wasm", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    any(feature = "wasm", feature = "snapshot"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub enum Severity {
     Error,
     Warning,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 pub struct Diagnostic {
     pub severity: Severity,
     pub code: DiagnosticCode,

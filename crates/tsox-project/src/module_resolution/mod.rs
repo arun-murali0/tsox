@@ -11,9 +11,13 @@ mod demand_dom;
 mod discovery;
 mod error;
 mod graph;
+#[cfg(feature = "snapshot")]
+mod library_cache;
 pub mod metadata;
 mod partial;
 mod resolver;
+#[cfg(feature = "snapshot")]
+mod scan_cache;
 mod schedule;
 
 pub use tsox_base::compiler_options::{EffectiveCompilerOptions, ScriptTarget};
@@ -30,6 +34,8 @@ pub use demand_dom::project_needs_dom_libraries;
 pub use discovery::{ModuleRequest, ModuleRequestKind, ModuleScan, scan_module_requests};
 pub use error::ModuleError;
 pub use graph::{ModuleEdge, ModuleGraph};
+#[cfg(feature = "snapshot")]
+pub use library_cache::{DiskLibraryUnitCache, LibraryUnitCache, install_library_unit_cache};
 #[allow(unused_imports)]
 pub use metadata::FileState;
 pub use metadata::{FileFingerprint, content_hash};

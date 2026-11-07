@@ -242,115 +242,10 @@ pub fn resolve_ts_type(
         }
 
         // `{ [K in C as N]: V }`, with the `?` and `-?` modifiers. K is bound in N and V only.
-        TSType::TSMappedType(mapped) => {
-            use oxc_ast::ast::TSMappedTypeModifierOperator as Modifier;
-            let constraint = resolve_ts_type(&mapped.constraint, namespace, arena)?;
-            // `[K in keyof T]` is homomorphic in T: the result copies T's optionality and,
-            // for a tuple or an array, its shape.
-            let source = match &mapped.constraint {
-                TSType::TSTypeOperatorType(operator)
-                    if operator.operator == TSTypeOperatorOperator::Keyof =>
-                {
-                    resolve_ts_type(&operator.type_annotation, namespace, arena)
-                }
-                _ => None,
-            };
-            let key_name = mapped.key.name.to_string();
-            let key_start = mapped.key.span.start;
-            let key = crate::types::TypeParameterId::with_file(namespace.file_id(), key_start, 0);
-            let scope = namespace.declare_infer_type_params(arena, &[(key_name, key_start)]);
-            let resolved = (|| {
-                let name_type = match &mapped.name_type {
-                    Some(name_type) => Some(resolve_ts_type(name_type, namespace, arena)?),
-                    None => None,
-                };
-                let value = match &mapped.type_annotation {
-                    Some(value) => resolve_ts_type(value, namespace, arena)?,
-                    None => arena.alloc(Type::Any),
-                };
-                Some((name_type, value))
-            })();
-            namespace.pop_type_params(scope);
-            let (name_type, value) = resolved?;
-            let optional = match mapped.optional {
-                None => crate::types::MappedModifier::Keep,
-                Some(Modifier::Minus) => crate::types::MappedModifier::Remove,
-                Some(_) => crate::types::MappedModifier::Add,
-            };
-            arena.register_mapped_key(key);
-            Some(crate::semantic::generics::reduce_mapped(
-                arena,
-                crate::types::MappedType {
-                    key,
-                    constraint,
-                    source,
-                    name_type,
-                    value,
-                    optional,
-                },
-            ))
-        }
+        TSType::TSMappedType(mapped) => resolve_mapped_arm(mapped, namespace, arena),
 
         TSType::TSConditionalType(conditional) => {
-            // Infer parameters are declared by the extends pattern and are visible
-            // while resolving both that pattern and the true branch. They are binders
-            // of this conditional, never parameters of the enclosing alias.
-            let check_type = resolve_ts_type(&conditional.check_type, namespace, arena)?;
-            let mut collector = InferTypeCollector { params: Vec::new() };
-            collector.visit_ts_type(&conditional.extends_type);
-            let infer_params = collector.params;
-            let infer_ids: Vec<TypeParameterId> = infer_params
-                .iter()
-                .enumerate()
-                .map(|(index, (_, start))| {
-                    TypeParameterId::with_file(namespace.file_id(), *start, index as u32)
-                })
-                .collect();
-            let scope = namespace.declare_infer_type_params(arena, &infer_params);
-            // Constraints are read only after every name is in scope, so one may name another.
-            let mut constrainer = InferConstraintResolver {
-                namespace: &mut *namespace,
-                arena: &mut *arena,
-                declared: &infer_params,
-                done: Vec::new(),
-                in_template: false,
-            };
-            constrainer.visit_ts_type(&conditional.extends_type);
-            let resolved = (|| {
-                let extends_type = resolve_ts_type(&conditional.extends_type, namespace, arena)?;
-                let true_type = resolve_ts_type(&conditional.true_type, namespace, arena)?;
-                Some((extends_type, true_type))
-            })();
-            namespace.pop_type_params(scope);
-            let (extends_type, true_type) = resolved?;
-            // `infer` bindings are visible in the true branch only, not in the false
-            // branch. Resolve it after restoring any outer declaration with the same name.
-            let false_type = resolve_ts_type(&conditional.false_type, namespace, arena)?;
-
-            // Distribution applies only when the original check side was a naked
-            // type parameter. `Box<T> extends U` and `[T] extends U` are not
-            // distributive, even if their resolved shape happens to contain T.
-            let is_naked_parameter = is_naked_conditional_parameter(&conditional.check_type);
-            let distributive_param = if is_naked_parameter {
-                match arena.get(check_type) {
-                    Type::GenericParameter(id, _, _) => Some(*id),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-
-            Some(crate::semantic::resolve_conditional_type(
-                arena,
-                ConditionalType {
-                    check_type,
-                    extends_type,
-                    true_type,
-                    false_type,
-                    infer_params: infer_ids,
-                    distributive_param,
-                },
-            ))
+            resolve_conditional_arm(conditional, namespace, arena)
         }
 
         TSType::TSTypeLiteral(literal) => {
@@ -361,6 +256,29 @@ pub fn resolve_ts_type(
             // Vec of references to it just to match that shared shape.
             let members: Vec<&TSSignature> = literal.members.iter().collect();
             resolve_object_members(&members, namespace, arena)
+        }
+
+        // Problem: `new (...args: any[]) => T` was unresolvable, so every generic taking a
+        // class constructor (`make<T>(c: Ctor<T>)`) went unchecked.
+        // Picked: a constructor type is the same signature as a function type. A class value
+        // is already declared as a function returning its instance (declare_class_constructor),
+        // so inference and assignment through it work without a second kind of type.
+        // Cost: a plain function is accepted where a constructor is wanted, and a constructor
+        // type can be called without `new`; both can only miss an error.
+        TSType::TSConstructorType(ctor) => {
+            let scope = namespace.push_decl_type_params(arena, ctor.type_parameters.as_deref());
+            namespace.note_implicit_any_params(&ctor.params);
+            let params = resolve_params_with_any_fallback(&ctor.params, namespace, arena);
+            let return_type = resolve_type_annotation(&ctor.return_type, namespace, arena);
+            let type_params =
+                resolve_function_type_params(ctor.type_parameters.as_deref(), namespace, arena);
+            namespace.pop_type_params(scope);
+            Some(arena.alloc(Type::Function(crate::types::FunctionType {
+                params,
+                return_type: return_type?,
+                type_params,
+                is_untyped: false,
+            })))
         }
 
         TSType::TSFunctionType(func_type) => {
@@ -415,39 +333,7 @@ pub fn resolve_ts_type(
                 Resolution::Circular | Resolution::NotFound => None,
             }
         }
-        TSType::TSTypeQuery(query) => {
-            // `typeof name`: the declared type of a value of this file, bound under
-            // typeof_value_name when the value was declared.
-            if let TSTypeQueryExprName::IdentifierReference(identifier) = &query.expr_name {
-                if query.type_arguments.is_some() {
-                    return None;
-                }
-                return match namespace.resolve(&typeof_value_name(&identifier.name), arena) {
-                    Resolution::Resolved(type_id) => Some(type_id),
-                    Resolution::Circular | Resolution::NotFound => None,
-                };
-            }
-            let TSTypeQueryExprName::TSImportType(import) = &query.expr_name else {
-                return None;
-            };
-            if import.type_arguments.is_some()
-                || import.options.is_some()
-                || query.type_arguments.is_some()
-            {
-                return None;
-            }
-            let name = match &import.qualifier {
-                None => typeof_import_name(&import.source.value),
-                Some(oxc_ast::ast::TSImportTypeQualifier::Identifier(id)) => {
-                    typeof_import_value_name(&import.source.value, &id.name)
-                }
-                Some(_) => return None,
-            };
-            match namespace.resolve(&name, arena) {
-                Resolution::Resolved(type_id) => Some(type_id),
-                Resolution::Circular | Resolution::NotFound => None,
-            }
-        }
+        TSType::TSTypeQuery(query) => resolve_query_arm(query, namespace, arena),
         TSType::TSTypeReference(reference) => {
             // `N.I` is looked up under its dotted name, which is how a declaration inside
             // `namespace N` is registered. Anything deeper than a plain dotted path of
@@ -530,26 +416,7 @@ pub fn resolve_ts_type(
 
         // `` `on${K}` ``: a union of strings when every placeholder is a literal, a pattern
         // otherwise.
-        TSType::TSTemplateLiteralType(template) => {
-            let texts: Vec<String> = template
-                .quasis
-                .iter()
-                .map(|quasi| {
-                    quasi
-                        .value
-                        .cooked
-                        .as_ref()
-                        .map_or_else(|| quasi.value.raw.to_string(), |c| c.to_string())
-                })
-                .collect();
-            let mut types = Vec::with_capacity(template.types.len());
-            for part in &template.types {
-                types.push(resolve_ts_type(part, namespace, arena)?);
-            }
-            Some(crate::semantic::generics::reduce_template(
-                arena, texts, types,
-            ))
-        }
+        TSType::TSTemplateLiteralType(template) => resolve_template_arm(template, namespace, arena),
 
         // `T[K]` when both sides are concrete: a property name, a union of names,
         // `keyof T`, a number index into an array, or a position in a tuple. Anything
@@ -724,7 +591,7 @@ pub fn resolve_interface_base(
 
 // A reference to a declared type by `name`, with the type arguments the source gave it:
 // shared by `Box<T>` and `import("x").Box<T>`, which differ only in how the name is found.
-fn resolve_named_reference(
+pub fn resolve_named_reference(
     name: &str,
     type_arguments: Option<&oxc_ast::ast::TSTypeParameterInstantiation<'_>>,
     span: oxc_span::Span,
@@ -1023,11 +890,16 @@ fn resolve_builtin_generic(
             // TypeArena::record_value_type reads it back from the application's second
             // argument, so Record<string, number> and Record<string, string> each
             // carry their own.
+            if !crate::semantic::generics::contains_type_param(arena, key)
+                && let Some(record) = crate::semantic::generics::reduce_record(arena, key, value)
+            {
+                return Some(record);
+            }
             let body = arena.alloc(Type::Object(ObjectType::new(Vec::new())));
             let slot = arena.builtin_slot("Record");
             Some(arena.alloc_app(slot, vec![key, value], body))
         }
-        "Partial" | "Required" | "Pick" | "Omit" => {
+        "Partial" | "Required" | "Readonly" | "Pick" | "Omit" => {
             let target = first_type_argument(namespace, arena)??;
             let selected = if matches!(name, "Pick" | "Omit") {
                 let argument = reference.type_arguments.as_ref()?.params.get(1)?;
@@ -1058,10 +930,13 @@ fn resolve_builtin_generic(
                     if name == "Required" {
                         property.optional = false;
                     }
+                    if name == "Readonly" {
+                        property.readonly = true;
+                    }
                     Some(property)
                 })
                 .collect();
-            Some(arena.alloc(Type::Object(ObjectType::new(properties))))
+            Some(arena.alloc(Type::Object(object.with_properties(properties))))
         }
         _ => None,
     }
@@ -1073,6 +948,9 @@ fn resolve_builtin_generic(
 /// every member has.
 pub(crate) fn concrete_keys(arena: &TypeArena, id: TypeId) -> Option<Vec<std::rc::Rc<str>>> {
     match arena.get(id) {
+        Type::Object(object) if object.string_index.is_some() || object.number_index.is_some() => {
+            None
+        }
         Type::Object(object) => Some(object.properties.iter().map(|p| p.name.clone()).collect()),
         Type::Intersection(members) => {
             let mut keys: Vec<std::rc::Rc<str>> = Vec::new();
@@ -1136,9 +1014,17 @@ pub(crate) fn indexed_access(
     match (arena.get(object).clone(), arena.get(index).clone()) {
         (_, Type::Never) => Some(arena.never()),
         (Type::Object(object), Type::StringLiteral(name)) => {
-            let property = object.properties.iter().find(|p| p.name.as_ref() == name)?;
-            Some(with_undefined(arena, property.type_id, property.optional))
+            match object.properties.iter().find(|p| p.name.as_ref() == name) {
+                Some(property) => Some(with_undefined(arena, property.type_id, property.optional)),
+                None => object.string_index.as_ref().map(|i| i.value),
+            }
         }
+        (Type::Object(object), Type::String) => object.string_index.as_ref().map(|i| i.value),
+        (Type::Object(object), Type::Number | Type::NumberLiteral(_)) => object
+            .number_index
+            .as_ref()
+            .or(object.string_index.as_ref())
+            .map(|i| i.value),
         (Type::Array(element), Type::Number | Type::NumberLiteral(_)) => Some(element),
         (Type::Tuple(elements), Type::NumberLiteral(position)) => {
             if position.fract() != 0.0 || position < 0.0 {
@@ -1326,6 +1212,7 @@ pub fn resolve_object_members(
     arena: &mut TypeArena,
 ) -> Option<TypeId> {
     let mut properties: Vec<PropertyEntry> = Vec::with_capacity(members.len());
+    let mut indexes: Box<[Option<crate::types::IndexSignature>; 2]> = Box::new([None, None]);
 
     for member in members {
         // As with class members in namespace.rs, one member this checker cannot
@@ -1344,10 +1231,20 @@ pub fn resolve_object_members(
                     type_id,
                     optional: property.optional,
                     is_method: false,
+                    readonly: property.readonly,
                 }
             }
             TSSignature::TSMethodSignature(method) => {
                 resolve_method_signature(method, namespace, arena)?
+            }
+            // `[key: string]: V` or `[key: number]: V`. Another key type (a symbol, a
+            // template literal) is not modelled, and a second signature of one kind
+            // is an error tsc reports, so those leave the type unresolvable.
+            TSSignature::TSIndexSignature(signature) => {
+                if !read_index_signature(signature, namespace, arena, &mut indexes) {
+                    return None;
+                }
+                continue;
             }
             _ => return None,
         };
@@ -1365,7 +1262,46 @@ pub fn resolve_object_members(
         properties.push(entry);
     }
 
-    Some(arena.alloc(Type::Object(ObjectType::new(properties))))
+    Some(finish_object(arena, properties, indexes))
+}
+
+#[inline(never)]
+fn finish_object(
+    arena: &mut TypeArena,
+    properties: Vec<PropertyEntry>,
+    indexes: Box<[Option<crate::types::IndexSignature>; 2]>,
+) -> TypeId {
+    let [string_index, number_index] = *indexes;
+    arena.alloc(Type::Object(
+        ObjectType::new(properties).with_indexes(string_index, number_index),
+    ))
+}
+
+#[inline(never)]
+fn read_index_signature(
+    signature: &oxc_ast::ast::TSIndexSignature<'_>,
+    namespace: &mut TypeNamespace,
+    arena: &mut TypeArena,
+    indexes: &mut [Option<crate::types::IndexSignature>; 2],
+) -> bool {
+    let [string_index, number_index] = indexes;
+    let key = match &signature.parameter.type_annotation.type_annotation {
+        TSType::TSStringKeyword(_) => string_index,
+        TSType::TSNumberKeyword(_) => number_index,
+        _ => return false,
+    };
+    if key.is_some() {
+        return false;
+    }
+    let Some(value) = resolve_type_annotation(&signature.type_annotation, namespace, arena) else {
+        return false;
+    };
+    *key = Some(crate::types::IndexSignature {
+        key_name: signature.parameter.name.as_str().into(),
+        value,
+        readonly: signature.readonly,
+    });
+    true
 }
 
 // A method signature (`get(name: string): T`, `map<U>(f: (x: T) => U): U[]`) is
@@ -1415,6 +1351,7 @@ fn resolve_method_signature(
         type_id: function,
         optional: method.optional,
         is_method: true,
+        readonly: false,
     })
 }
 
@@ -1474,5 +1411,197 @@ pub fn import_qualifier_text(
             import_qualifier_text(&qualified.left)?,
             qualified.right.name
         )),
+    }
+}
+
+#[inline(never)]
+fn resolve_mapped_arm(
+    mapped: &oxc_ast::ast::TSMappedType<'_>,
+    namespace: &mut TypeNamespace,
+    arena: &mut TypeArena,
+) -> Option<TypeId> {
+    use oxc_ast::ast::TSMappedTypeModifierOperator as Modifier;
+    let constraint = resolve_ts_type(&mapped.constraint, namespace, arena)?;
+    // `[K in keyof T]` is homomorphic in T: the result copies T's optionality and,
+    // for a tuple or an array, its shape.
+    let source = match &mapped.constraint {
+        TSType::TSTypeOperatorType(operator)
+            if operator.operator == TSTypeOperatorOperator::Keyof =>
+        {
+            resolve_ts_type(&operator.type_annotation, namespace, arena)
+        }
+        _ => None,
+    };
+    let key_name = mapped.key.name.to_string();
+    let key_start = mapped.key.span.start;
+    let key = crate::types::TypeParameterId::with_file(namespace.file_id(), key_start, 0);
+    let scope = namespace.declare_infer_type_params(arena, &[(key_name, key_start)]);
+    let resolved = (|| {
+        let name_type = match &mapped.name_type {
+            Some(name_type) => Some(resolve_ts_type(name_type, namespace, arena)?),
+            None => None,
+        };
+        let value = match &mapped.type_annotation {
+            Some(value) => resolve_ts_type(value, namespace, arena)?,
+            None => arena.alloc(Type::Any),
+        };
+        Some((name_type, value))
+    })();
+    namespace.pop_type_params(scope);
+    let (name_type, value) = resolved?;
+    let optional = match mapped.optional {
+        None => crate::types::MappedModifier::Keep,
+        Some(Modifier::Minus) => crate::types::MappedModifier::Remove,
+        Some(_) => crate::types::MappedModifier::Add,
+    };
+    let readonly = match mapped.readonly {
+        None => crate::types::MappedModifier::Keep,
+        Some(oxc_ast::ast::TSMappedTypeModifierOperator::Minus) => {
+            crate::types::MappedModifier::Remove
+        }
+        Some(_) => crate::types::MappedModifier::Add,
+    };
+    arena.register_mapped_key(key);
+    Some(crate::semantic::generics::reduce_mapped(
+        arena,
+        crate::types::MappedType {
+            key,
+            constraint,
+            source,
+            name_type,
+            value,
+            optional,
+            readonly,
+        },
+    ))
+}
+
+#[inline(never)]
+fn resolve_conditional_arm(
+    conditional: &oxc_ast::ast::TSConditionalType<'_>,
+    namespace: &mut TypeNamespace,
+    arena: &mut TypeArena,
+) -> Option<TypeId> {
+    // Infer parameters are declared by the extends pattern and are visible
+    // while resolving both that pattern and the true branch. They are binders
+    // of this conditional, never parameters of the enclosing alias.
+    let check_type = resolve_ts_type(&conditional.check_type, namespace, arena)?;
+    let mut collector = InferTypeCollector { params: Vec::new() };
+    collector.visit_ts_type(&conditional.extends_type);
+    let infer_params = collector.params;
+    let infer_ids: Vec<TypeParameterId> = infer_params
+        .iter()
+        .enumerate()
+        .map(|(index, (_, start))| {
+            TypeParameterId::with_file(namespace.file_id(), *start, index as u32)
+        })
+        .collect();
+    let scope = namespace.declare_infer_type_params(arena, &infer_params);
+    // Constraints are read only after every name is in scope, so one may name another.
+    let mut constrainer = InferConstraintResolver {
+        namespace: &mut *namespace,
+        arena: &mut *arena,
+        declared: &infer_params,
+        done: Vec::new(),
+        in_template: false,
+    };
+    constrainer.visit_ts_type(&conditional.extends_type);
+    let resolved = (|| {
+        let extends_type = resolve_ts_type(&conditional.extends_type, namespace, arena)?;
+        let true_type = resolve_ts_type(&conditional.true_type, namespace, arena)?;
+        Some((extends_type, true_type))
+    })();
+    namespace.pop_type_params(scope);
+    let (extends_type, true_type) = resolved?;
+    // `infer` bindings are visible in the true branch only, not in the false
+    // branch. Resolve it after restoring any outer declaration with the same name.
+    let false_type = resolve_ts_type(&conditional.false_type, namespace, arena)?;
+
+    // Distribution applies only when the original check side was a naked
+    // type parameter. `Box<T> extends U` and `[T] extends U` are not
+    // distributive, even if their resolved shape happens to contain T.
+    let is_naked_parameter = is_naked_conditional_parameter(&conditional.check_type);
+    let distributive_param = if is_naked_parameter {
+        match arena.get(check_type) {
+            Type::GenericParameter(id, _, _) => Some(*id),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    Some(crate::semantic::resolve_conditional_type(
+        arena,
+        ConditionalType {
+            check_type,
+            extends_type,
+            true_type,
+            false_type,
+            infer_params: infer_ids,
+            distributive_param,
+        },
+    ))
+}
+
+#[inline(never)]
+fn resolve_template_arm(
+    template: &oxc_ast::ast::TSTemplateLiteralType<'_>,
+    namespace: &mut TypeNamespace,
+    arena: &mut TypeArena,
+) -> Option<TypeId> {
+    let texts: Vec<String> = template
+        .quasis
+        .iter()
+        .map(|quasi| {
+            quasi
+                .value
+                .cooked
+                .as_ref()
+                .map_or_else(|| quasi.value.raw.to_string(), |c| c.to_string())
+        })
+        .collect();
+    let mut types = Vec::with_capacity(template.types.len());
+    for part in &template.types {
+        types.push(resolve_ts_type(part, namespace, arena)?);
+    }
+    Some(crate::semantic::generics::reduce_template(
+        arena, texts, types,
+    ))
+}
+
+#[inline(never)]
+fn resolve_query_arm(
+    query: &oxc_ast::ast::TSTypeQuery<'_>,
+    namespace: &mut TypeNamespace,
+    arena: &mut TypeArena,
+) -> Option<TypeId> {
+    // `typeof name`: the declared type of a value of this file, bound under
+    // typeof_value_name when the value was declared.
+    if let TSTypeQueryExprName::IdentifierReference(identifier) = &query.expr_name {
+        if query.type_arguments.is_some() {
+            return None;
+        }
+        return match namespace.resolve(&typeof_value_name(&identifier.name), arena) {
+            Resolution::Resolved(type_id) => Some(type_id),
+            Resolution::Circular | Resolution::NotFound => None,
+        };
+    }
+    let TSTypeQueryExprName::TSImportType(import) = &query.expr_name else {
+        return None;
+    };
+    if import.type_arguments.is_some() || import.options.is_some() || query.type_arguments.is_some()
+    {
+        return None;
+    }
+    let name = match &import.qualifier {
+        None => typeof_import_name(&import.source.value),
+        Some(oxc_ast::ast::TSImportTypeQualifier::Identifier(id)) => {
+            typeof_import_value_name(&import.source.value, &id.name)
+        }
+        Some(_) => return None,
+    };
+    match namespace.resolve(&name, arena) {
+        Resolution::Resolved(type_id) => Some(type_id),
+        Resolution::Circular | Resolution::NotFound => None,
     }
 }

@@ -1004,15 +1004,25 @@ impl<'a> TypeNamespace<'a> {
         bases: &[&oxc_ast::ast::TSInterfaceHeritage<'_>],
         arena: &mut TypeArena,
     ) -> Option<TypeId> {
-        let own_properties = match arena.get(own) {
-            Type::Object(object) => object.properties.to_vec(),
+        let (own_properties, own_string_index, own_number_index) = match arena.get(own) {
+            Type::Object(object) => (
+                object.properties.to_vec(),
+                object.string_index.clone(),
+                object.number_index.clone(),
+            ),
             _ => return None,
         };
         let mut properties: Vec<PropertyEntry> = Vec::new();
+        let mut string_index = None;
+        let mut number_index = None;
         for heritage in bases {
             let base = crate::type_annotation::resolve_interface_base(heritage, self, arena)?;
             let inherited = match arena.get(base) {
-                Type::Object(object) => object.properties.to_vec(),
+                Type::Object(object) => {
+                    string_index = object.string_index.clone().or(string_index.take());
+                    number_index = object.number_index.clone().or(number_index.take());
+                    object.properties.to_vec()
+                }
                 _ => return None,
             };
             for property in inherited {
@@ -1024,7 +1034,12 @@ impl<'a> TypeNamespace<'a> {
             properties.retain(|existing| existing.name != property.name);
             properties.push(property);
         }
-        Some(arena.alloc(Type::Object(ObjectType::new(properties))))
+        Some(
+            arena.alloc(Type::Object(ObjectType::new(properties).with_indexes(
+                own_string_index.or(string_index),
+                own_number_index.or(number_index),
+            ))),
+        )
     }
 
     // The resolved `extends` bound of a declared type parameter, read back from
@@ -1839,6 +1854,8 @@ impl<'a> TypeNamespace<'a> {
         mut property_spans: FxHashMap<String, Span>,
         arena: &mut TypeArena,
     ) -> Option<TypeId> {
+        let mut merged_indexes: Box<[Option<crate::types::IndexSignature>; 2]> =
+            Box::new([None, None]);
         for part in parts {
             let members: Vec<&TSSignature> = part.body.body.iter().collect();
             let own = resolve_object_members(&members, self, arena)?;
@@ -1848,10 +1865,7 @@ impl<'a> TypeNamespace<'a> {
             } else {
                 self.with_interface_bases(own, &bases, arena)?
             };
-            let incoming_properties = match arena.get(shape) {
-                Type::Object(object) => object.properties.to_vec(),
-                _ => return None,
-            };
+            let incoming_properties = take_shape_members(arena, shape, &mut merged_indexes)?;
             for incoming in &incoming_properties {
                 let incoming_span =
                     interface_member_span(part, &incoming.name).unwrap_or_else(|| part.span());
@@ -1894,7 +1908,7 @@ impl<'a> TypeNamespace<'a> {
                 }
             }
         }
-        Some(arena.alloc(Type::Object(ObjectType::new(properties))))
+        Some(alloc_with_indexes(arena, properties, merged_indexes))
     }
 
     // Builds a class's structural shape by first copying the parent's own already
@@ -1980,7 +1994,14 @@ impl<'a> TypeNamespace<'a> {
                             _ => arena.any(),
                         },
                     };
-                    upsert_property(&mut properties, name, type_id, prop.optional, false);
+                    upsert_property(
+                        &mut properties,
+                        name,
+                        type_id,
+                        prop.optional,
+                        false,
+                        prop.readonly,
+                    );
                 }
                 ClassElement::MethodDefinition(method)
                     if !method.r#static && method.kind == MethodDefinitionKind::Method =>
@@ -2017,7 +2038,7 @@ impl<'a> TypeNamespace<'a> {
                         type_params,
                         is_untyped,
                     }));
-                    upsert_property(&mut properties, name, method_type, false, true);
+                    upsert_property(&mut properties, name, method_type, false, true, false);
                 }
 
                 // Problem: `get total(): number { ... }` was dropped without a word, so
@@ -2038,7 +2059,7 @@ impl<'a> TypeNamespace<'a> {
                         Some(rt) => resolve_type_annotation(rt, self, arena)?,
                         None => arena.any(),
                     };
-                    upsert_property(&mut properties, name, type_id, false, false);
+                    upsert_property(&mut properties, name, type_id, false, false, false);
                 }
                 ClassElement::MethodDefinition(method)
                     if !method.r#static && method.kind == MethodDefinitionKind::Set =>
@@ -2060,7 +2081,7 @@ impl<'a> TypeNamespace<'a> {
                             Some(annotation) => resolve_type_annotation(annotation, self, arena)?,
                             None => arena.any(),
                         };
-                        upsert_property(&mut properties, name, type_id, false, false);
+                        upsert_property(&mut properties, name, type_id, false, false, false);
                     }
                 }
 
@@ -2088,6 +2109,7 @@ impl<'a> TypeNamespace<'a> {
                             type_id,
                             param.optional,
                             false,
+                            param.readonly,
                         );
                     }
                 }
@@ -2106,9 +2128,11 @@ fn upsert_property(
     type_id: TypeId,
     optional: bool,
     is_method: bool,
+    readonly: bool,
 ) {
     match properties.iter_mut().find(|p| *p.name == *name) {
         Some(existing) => {
+            existing.readonly = readonly;
             existing.type_id = type_id;
             existing.optional = optional;
             existing.is_method = is_method;
@@ -2118,6 +2142,7 @@ fn upsert_property(
             type_id,
             optional,
             is_method,
+            readonly,
         }),
     }
 }
@@ -2137,4 +2162,36 @@ fn static_member_name(key: &PropertyKey<'_>) -> Option<String> {
         PropertyKey::NumericLiteral(lit) => Some(lit.value.to_string()),
         _ => None,
     }
+}
+
+/// The properties of an object shape, with its index signatures folded into `indexes`
+/// (the first declaration of each kind wins).
+#[inline(never)]
+fn take_shape_members(
+    arena: &TypeArena,
+    shape: TypeId,
+    indexes: &mut [Option<crate::types::IndexSignature>; 2],
+) -> Option<Vec<PropertyEntry>> {
+    let Type::Object(object) = arena.get(shape) else {
+        return None;
+    };
+    if indexes[0].is_none() {
+        indexes[0] = object.string_index.clone();
+    }
+    if indexes[1].is_none() {
+        indexes[1] = object.number_index.clone();
+    }
+    Some(object.properties.to_vec())
+}
+
+#[inline(never)]
+fn alloc_with_indexes(
+    arena: &mut TypeArena,
+    properties: Vec<PropertyEntry>,
+    indexes: Box<[Option<crate::types::IndexSignature>; 2]>,
+) -> TypeId {
+    let [string_index, number_index] = *indexes;
+    arena.alloc(Type::Object(
+        ObjectType::new(properties).with_indexes(string_index, number_index),
+    ))
 }

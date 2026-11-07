@@ -70,6 +70,103 @@ pub mod messages {
         DiagnosticMessage::new(DiagnosticCode::TupleIndexOutOfRange, text)
     }
 
+    pub fn class_incorrectly_extends(
+        arena: &TypeArena,
+        class_name: &str,
+        base: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ClassIncorrectlyExtends,
+            format!(
+                "Class '{class_name}' incorrectly extends base class '{}'.",
+                crate::type_display::display_type(arena, base)
+            ),
+        )
+    }
+
+    pub fn interface_incorrectly_extends(
+        arena: &TypeArena,
+        name: &str,
+        base: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::InterfaceIncorrectlyExtends,
+            format!(
+                "Interface '{name}' incorrectly extends interface '{}'.",
+                crate::type_display::display_type(arena, base)
+            ),
+        )
+    }
+
+    pub fn property_not_assignable_to_index(
+        arena: &TypeArena,
+        property: &str,
+        property_type: TypeId,
+        index_kind: &str,
+        index_type: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PropertyNotAssignableToIndex,
+            format!(
+                "Property '{property}' of type '{}' is not assignable to '{index_kind}' index type '{}'.",
+                crate::type_display::display_type(arena, property_type),
+                crate::type_display::display_type(arena, index_type)
+            ),
+        )
+    }
+
+    pub fn missing_override_modifier(base_class: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::MissingOverrideModifier,
+            format!(
+                "This member must have an 'override' modifier because it overrides a member in the base class '{base_class}'."
+            ),
+        )
+    }
+
+    pub fn duplicate_index_signature(index_kind: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::DuplicateIndexSignature,
+            format!("Duplicate index signature for type '{index_kind}'."),
+        )
+    }
+
+    pub fn readonly_assignment(property: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ReadonlyAssignment,
+            format!("Cannot assign to '{property}' because it is a read-only property."),
+        )
+    }
+
+    pub fn class_property_incompatible(
+        arena: &TypeArena,
+        property: &str,
+        class_name: &str,
+        interface: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ClassPropertyIncompatible,
+            format!(
+                "Property '{property}' in type '{class_name}' is not assignable to the same property in base type '{}'.",
+                crate::type_display::display_type(arena, interface)
+            ),
+        )
+    }
+
+    pub fn class_incorrectly_implements(
+        arena: &TypeArena,
+        class_name: &str,
+        interface: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ClassImplementsMismatch,
+            format!(
+                "Class '{class_name}' incorrectly implements interface '{}'.",
+                crate::type_display::display_type(arena, interface)
+            ),
+        )
+    }
+
     pub fn does_not_satisfy(
         arena: &TypeArena,
         actual: TypeId,
@@ -878,6 +975,13 @@ pub mod messages {
         DiagnosticMessage::new(
             DiagnosticCode::FallthroughCaseInSwitch,
             "Fallthrough case in switch.",
+        )
+    }
+
+    pub fn used_before_assigned(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::UsedBeforeAssigned,
+            format!("Variable '{name}' is used before being assigned."),
         )
     }
 

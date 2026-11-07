@@ -470,14 +470,33 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
             // own doc comment). tsc would print declaration order. Not fixed
             // here, since fixing it means ObjectType stops being sorted, and
             // subtyping is not something to touch to make a message prettier.
-            if object.properties.is_empty() {
+            if object.properties.is_empty()
+                && object.string_index.is_none()
+                && object.number_index.is_none()
+            {
                 out.push_str("{}");
                 return;
             }
             // tsc terminates every member with `;`, the last one included:
-            // `{ x: number; y: string; }`.
+            // `{ x: number; y: string; }`. Index signatures come first.
             out.push_str("{ ");
+            for (index, key) in [
+                (&object.string_index, "string"),
+                (&object.number_index, "number"),
+            ] {
+                if let Some(index) = index {
+                    if index.readonly {
+                        out.push_str("readonly ");
+                    }
+                    out.push_str(&format!("[{}: {key}]: ", index.key_name));
+                    write_type(arena, index.value, out, depth - 1);
+                    out.push_str("; ");
+                }
+            }
             for property in object.properties.iter() {
+                if property.readonly {
+                    out.push_str("readonly ");
+                }
                 out.push_str(&property.name);
                 if property.optional {
                     out.push('?');
@@ -645,12 +664,14 @@ mod tests {
                 type_id: string,
                 optional: true,
                 is_method: false,
+                readonly: false,
             },
             PropertyEntry {
                 name: "x".into(),
                 type_id: number,
                 optional: false,
                 is_method: false,
+                readonly: false,
             },
         ])));
         // ObjectType::new sorts by name, so x comes before y regardless of
@@ -667,6 +688,7 @@ mod tests {
             type_id: string,
             optional: false,
             is_method: false,
+            readonly: false,
         }])));
         let arr = arena.alloc(Type::Array(inner));
         let outer = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
@@ -674,6 +696,7 @@ mod tests {
             type_id: arr,
             optional: false,
             is_method: false,
+            readonly: false,
         }])));
         assert_eq!(render(&arena, outer), "{ items: { name: string; }[]; }");
     }
@@ -759,6 +782,7 @@ mod tests {
             type_id: string,
             optional: false,
             is_method: false,
+            readonly: false,
         }])));
         let dog = arena.alloc_ref();
         arena.resolve_ref(dog, body);
@@ -817,6 +841,7 @@ mod tests {
             type_id: string,
             optional: false,
             is_method: false,
+            readonly: false,
         }])));
         let dog = arena.alloc_ref();
         arena.resolve_ref(dog, body);

@@ -23,6 +23,10 @@ scratchpad = ["dep:bumpalo"]
 # Serialize and Deserialize on the diagnostic types, for the wasm front end.
 wasm = ["dep:serde"]
 
+# Serialize and Deserialize on the keys and the portable declaration pieces, for the library
+# snapshot.
+snapshot = ["dep:serde"]
+
 # Exposes `fxhash::TEST_HASH_SEED` outside this crate's own tests, so a dependent's tests can
 # change hash iteration order and check that results do not depend on it. Never enabled by a
 # normal build: only from a dev-dependency.

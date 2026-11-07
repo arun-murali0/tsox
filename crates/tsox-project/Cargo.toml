@@ -30,6 +30,9 @@ xxhash-rust = { workspace = true }
 # dependency itself lives in tsox-db; this only switches the hooks on.
 incremental = []
 
+# The opt-in cache of checked bundled library files (`library_cache`).
+snapshot = ["tsox-checker/snapshot"]
+
 [dev-dependencies]
 # The determinism tests in the driver vary the hash seed (see tsox-base's `test-hash-seed`).
 tsox-base = { workspace = true, features = ["test-hash-seed"] }

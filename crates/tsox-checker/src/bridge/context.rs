@@ -59,6 +59,11 @@ pub struct CheckContext<'ast, 'src> {
 
     pub narrow: NarrowState,
 
+    // What the structural flow pass found: dead statements, falling-through clauses and reads of
+    // variables that may be unassigned. Computed once, before any body is checked, because the
+    // identifier check reads it.
+    pub flow: crate::reachability::Reachability,
+
     // Memoizes is_subtype, is_assignable and is_disjoint answers by relation and the
     // exact TypeId pair asked about, for the lifetime of this one file's check. The
     // pair is ordered, never symmetrized for subtyping: subtyping is not symmetric
@@ -139,6 +144,10 @@ pub struct CheckContext<'ast, 'src> {
     // a literal; infer_expression_type takes it on entry, so it never reaches a deeper
     // expression by accident.
     pub contextual: Option<TypeId>,
+    /// Set while the operand of `as const` is inferred: literals are kept, arrays become tuples.
+    pub const_context: bool,
+    /// Inside a class constructor body, where `this.x = v` may initialise a readonly field.
+    pub in_constructor: bool,
 
     // The type of each branch of every conditional expression checked so far, by the
     // expression's start offset. tsc reports a ternary that does not fit its target
@@ -426,6 +435,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             file_name,
             options: crate::check_options::CheckOptions::default(),
             narrow: NarrowState::new(),
+            flow: crate::reachability::Reachability::default(),
             relation_cache: RelationCache::default(),
             current_return_type: None,
             current_return_async: false,
@@ -437,6 +447,8 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             next_function_has_no_this: false,
             call_return_context: None,
             contextual: None,
+            const_context: false,
+            in_constructor: false,
             conditional_arms: std::collections::HashMap::new(),
             jump_frames: Vec::new(),
             pending_loop_label: None,

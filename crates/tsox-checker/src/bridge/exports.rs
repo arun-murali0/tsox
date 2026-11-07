@@ -41,6 +41,7 @@ use super::context::CheckContext;
 /// Why a unit's export list is partial, one reason for each way the collector gives up on
 /// something. A partial list is safe, because a dependent that sees a name missing from one
 /// stays quiet about it, but a reason says what to build next and lets a test pin each case.
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IncompleteReason {
     /// The checker panicked on the file, so nothing about it can be trusted.
@@ -423,6 +424,7 @@ fn re_export_namespace(
             type_id: value,
             optional: false,
             is_method: false,
+            readonly: false,
         });
     }
     let body = ctx.arena.alloc(Type::Object(ObjectType::new(properties)));

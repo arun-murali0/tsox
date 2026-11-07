@@ -34,6 +34,9 @@ default = ["module-resolution"]
 # tests are gated on this name, so it is a feature of this crate that turns on the library's.
 module-resolution = ["tsox/module-resolution"]
 
+# `--lib-cache <dir>`: keep the checked bundled library files between runs.
+snapshot = ["module-resolution", "tsox/snapshot"]
+
 # `--incremental` and `--watch` (the Salsa query layer). Without it they say so and stop.
 incremental = ["module-resolution", "tsox/incremental"]
 

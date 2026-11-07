@@ -138,7 +138,8 @@ pub struct UnitOutput {
 
 /// One exported function whose inferred return type is read from imported functions, directly
 /// or through functions of its own file (see `UnitOutput::return_reads`).
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReturnRead {
     pub owner: DeclKey,
     pub name: String,
@@ -151,7 +152,8 @@ pub struct ReturnRead {
 }
 
 /// The exports of one `declare module "x"` block (see `UnitOutput`).
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AmbientExports {
     pub specifier: String,
     pub exports: Vec<PortableDecl>,

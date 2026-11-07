@@ -48,6 +48,8 @@ pub struct MappedType {
     pub name_type: Option<TypeId>,
     pub value: TypeId,
     pub optional: MappedModifier,
+    /// `readonly`, `+readonly` or `-readonly` before the binder.
+    pub readonly: MappedModifier,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -470,9 +472,37 @@ pub struct ObjectType {
     // its Ref at a body through TypeArena::resolve_ref), so sharing is safe. Hash
     // and equality see through the Rc, so the intern digests are unchanged.
     pub properties: Rc<[PropertyEntry]>,
+    // `[key: string]: V` and `[key: number]: V`: the value type of every property whose
+    // name is not listed above. The listed properties still have to fit it.
+    pub string_index: Option<IndexSignature>,
+    pub number_index: Option<IndexSignature>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct IndexSignature {
+    // The parameter's own name, kept only so a message can print `[key: string]: V`.
+    pub key_name: Rc<str>,
+    pub value: TypeId,
+    pub readonly: bool,
 }
 
 impl ObjectType {
+    /// The same members with index signatures.
+    pub fn with_indexes(
+        mut self,
+        string_index: Option<IndexSignature>,
+        number_index: Option<IndexSignature>,
+    ) -> Self {
+        self.string_index = string_index;
+        self.number_index = number_index;
+        self
+    }
+
+    /// The same index signatures over other properties.
+    pub fn with_properties(&self, properties: Vec<PropertyEntry>) -> Self {
+        Self::new(properties).with_indexes(self.string_index.clone(), self.number_index.clone())
+    }
+
     // The only supported way to construct an ObjectType. Sorting an already sorted
     // list is a single linear pass, so callers that happen to have sorted input
     // pay almost nothing for not having to know that.
@@ -480,6 +510,8 @@ impl ObjectType {
         properties.sort_by(|a, b| a.name.cmp(&b.name));
         Self {
             properties: properties.into(),
+            string_index: None,
+            number_index: None,
         }
     }
 }
@@ -501,6 +533,10 @@ pub struct PropertyEntry {
     // ones of a function-typed property contravariantly, and which rule applies
     // follows the *target* property's declaration (see subtyping::object_is_subtype).
     pub is_method: bool,
+
+    // Declared `readonly`, or made so by a mapped type's `readonly` modifier. It changes
+    // what may be written, never what is assignable.
+    pub readonly: bool,
 }
 
 pub fn widen(arena: &TypeArena, type_id: TypeId) -> TypeId {

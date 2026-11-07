@@ -15,6 +15,7 @@ pub const ENC_VERSION: u8 = 3;
 macro_rules! key128 {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
+        #[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
         #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(u128);
 
@@ -195,7 +196,8 @@ impl ModuleKey {
 
 /// What a declaration is, for the merge-group disambiguator. The tag values are part of
 /// the encoding: never renumber one, bump `ENC_VERSION` instead.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 #[repr(u8)]
 pub enum DeclKind {
     Interface = 1,
@@ -302,6 +304,7 @@ impl CycleKey {
 
 /// A type parameter's stable identity: the declaration (or `child` of one) that
 /// declares it, and its position in that list.
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct TypeParamKey {
     pub owner: DeclKey,

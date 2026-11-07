@@ -425,6 +425,7 @@ fn bind_global_namespace<'ast>(
                     type_id,
                     optional: false,
                     is_method: false,
+                    readonly: false,
                 });
             }
         }
@@ -737,6 +738,7 @@ fn module_object<'ast>(
             type_id,
             optional: false,
             is_method: false,
+            readonly: false,
         });
     }
     Some(ctx.arena.alloc(Type::Object(ObjectType::new(properties))))

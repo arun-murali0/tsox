@@ -102,6 +102,18 @@ fn lookup_with_augmentation(
 // nothing itself, so a union can ask every member and let the caller report once.
 // `any` and the error type answer with the error type: they are compatible with
 // everything, which stops one failure from cascading into more diagnostics.
+// What an index signature of the object gives for a name it does not list: the string
+// index for any name, the number index for a name that reads as a number.
+fn index_member(object: &crate::types::ObjectType, name: &str) -> Option<TypeId> {
+    let numeric = !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_digit())
+        && (name == "0" || !name.starts_with('0'));
+    if numeric && let Some(index) = &object.number_index {
+        return Some(index.value);
+    }
+    object.string_index.as_ref().map(|index| index.value)
+}
+
 fn lookup_member(arena: &mut TypeArena, type_id: TypeId, property_name: &str) -> Option<TypeId> {
     let effective = match arena.get(type_id) {
         Type::GenericParameter(_, _, Some(constraint)) => *constraint,
@@ -114,6 +126,7 @@ fn lookup_member(arena: &mut TypeArena, type_id: TypeId, property_name: &str) ->
             Some(arena.number())
         }
         Type::Object(object) => {
+            let indexed = index_member(object, property_name);
             match object.properties.iter().find(|p| *p.name == *property_name) {
                 Some(property) => Some(property.type_id),
                 // The members every value has come before a Record's value type: tsc
@@ -130,6 +143,7 @@ fn lookup_member(arena: &mut TypeArena, type_id: TypeId, property_name: &str) ->
                             None
                         }
                     })
+                    .or(indexed)
                     .or_else(|| arena.record_value_type(effective)),
             }
         }
@@ -724,6 +738,21 @@ pub(super) fn infer_computed_member_access_type(
         return ctx
             .arena
             .alloc_union(vec![element_type, ctx.arena.undefined()]);
+    }
+
+    if let Type::Object(object) = ctx.arena.get(object_type) {
+        let by_key = match ctx.arena.get(key_type) {
+            Type::String => object.string_index.as_ref().map(|i| i.value),
+            Type::Number | Type::NumberLiteral(_) => object
+                .number_index
+                .as_ref()
+                .or(object.string_index.as_ref())
+                .map(|i| i.value),
+            _ => None,
+        };
+        if let Some(value) = by_key {
+            return value;
+        }
     }
 
     let Expression::StringLiteral(key) = key_expr else {
