@@ -80,6 +80,20 @@ impl GenericInferenceSession {
         priority: InferencePriority,
         cache: &mut RelationCache,
     ) {
+        // `[...A, ...B]` splits only once one of the spreads is known: tsc fixes `A` from the
+        // arguments that name it, and `B` then takes what is left. The evidence gathered so
+        // far stands in for the parameters it covers.
+        let parameter_type = if super::generics::has_multi_spread_variadic(arena, parameter_type) {
+            let known: Vec<(TypeParameterId, TypeId)> = self
+                .candidates
+                .iter()
+                .filter(|c| c.variance == InferenceVariance::Covariant)
+                .map(|c| (c.id, c.ty))
+                .collect();
+            GenericSolver::substitute_bound_type_params(arena, parameter_type, &known)
+        } else {
+            parameter_type
+        };
         let mut candidates = Vec::new();
         super::generics::collect_inference_candidates(
             arena,
@@ -390,6 +404,11 @@ impl GenericSolver {
         index: usize,
     ) -> Option<TypeId> {
         super::generics::expected_param_type(arena, params, index)
+    }
+
+    /// Whether a parameter type holds a variadic tuple with more than one spread.
+    pub fn has_multi_spread_variadic(arena: &TypeArena, type_id: TypeId) -> bool {
+        super::generics::has_multi_spread_variadic(arena, type_id)
     }
 
     /// Whether a type still mentions an uninstantiated type parameter.

@@ -3108,6 +3108,9 @@ fn placeholder_accepts(arena: &TypeArena, part: TypeId, capture: &str) -> bool {
 /// shape a tuple cannot hold (a rest element that is not last), keeps the variadic node.
 pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleElement>) -> TypeId {
     let mut flat: Vec<crate::types::TupleElement> = Vec::with_capacity(elements.len());
+    // An operand that is still generic stays a spread in place, while the ones that are known
+    // are spliced in around it: `[...[string], ...B]` is `[string, ...B]`.
+    let mut unresolved = false;
     for element in &elements {
         if !element.rest {
             flat.push(*element);
@@ -3117,7 +3120,9 @@ pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleE
         if matches!(arena.raw(element.type_id), Type::Ref(_))
             && arena.declared_body(element.type_id).is_none()
         {
-            return arena.alloc(Type::Variadic(elements));
+            flat.push(*element);
+            unresolved = true;
+            continue;
         }
         match arena.get(element.type_id).clone() {
             Type::Tuple(inner) => flat.extend(inner),
@@ -3136,8 +3141,14 @@ pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleE
                 optional: false,
                 rest: true,
             }),
-            _ => return arena.alloc(Type::Variadic(elements)),
+            _ => {
+                flat.push(*element);
+                unresolved = true;
+            }
         }
+    }
+    if unresolved {
+        return arena.alloc(Type::Variadic(flat));
     }
     let rest_count = flat.iter().filter(|e| e.rest).count();
     let mut seen_optional = false;
@@ -3150,7 +3161,7 @@ pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleE
         }
     }
     if !valid {
-        return arena.alloc(Type::Variadic(elements));
+        return arena.alloc(Type::Variadic(flat));
     }
     arena.alloc_tuple(flat)
 }
@@ -3251,4 +3262,17 @@ fn variadic_split(
     }
     let middle = arena.alloc_tuple(arg[at..arg.len() - after].to_vec());
     Some((pairs, (spread.type_id, middle)))
+}
+
+/// Whether a parameter type holds a variadic tuple with more than one spread
+/// (`(...a: [...A, ...B]) => R`), which cannot be split by position alone.
+pub fn has_multi_spread_variadic(arena: &TypeArena, type_id: TypeId) -> bool {
+    match arena.get(type_id) {
+        Type::Variadic(elements) => elements.iter().filter(|e| e.rest).count() > 1,
+        Type::Function(function) => function
+            .params
+            .iter()
+            .any(|p| has_multi_spread_variadic(arena, p.type_id)),
+        _ => false,
+    }
 }

@@ -1164,6 +1164,7 @@ fn check_callable(
             )
     });
     let mut inference = GenericInferenceSession::new(bindings, locked);
+    let mut deferred: Vec<usize> = Vec::new();
     for (index, arg_type) in arg_types.iter().enumerate() {
         if tuple_rest_index.is_some_and(|rest| index >= rest) {
             continue;
@@ -1172,6 +1173,11 @@ fn check_callable(
         if let Some(param_type) =
             GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index)
         {
+            // A parameter with two spreads waits for the arguments that fix one of them.
+            if GenericSolver::has_multi_spread_variadic(&ctx.arena, param_type) {
+                deferred.push(index);
+                continue;
+            }
             inference.infer_argument(
                 &mut ctx.arena,
                 param_type,
@@ -1199,6 +1205,21 @@ fn check_callable(
             &mut ctx.arena,
             function_type.params[rest].type_id,
             tuple,
+            &mut ctx.relation_cache,
+        );
+    }
+
+    for index in deferred {
+        let (Some(arg_type), Some(param_type)) = (
+            arg_types[index],
+            GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index),
+        ) else {
+            continue;
+        };
+        inference.infer_argument(
+            &mut ctx.arena,
+            param_type,
+            arg_type,
             &mut ctx.relation_cache,
         );
     }
