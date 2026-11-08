@@ -267,10 +267,33 @@ fn promise_static_call(
             Some(ctx.arena.alloc_promise(never))
         }
         _ => {
-            let elements = array_elements?;
+            // An array that is not a literal (`Promise.all(promises)`): one element type
+            // for all of it, so the result is an array of the awaited element.
+            let Some(elements) = array_elements else {
+                let &first = argument_types.first()?;
+                let crate::types::Type::Array(element) = ctx.arena.get(first).clone() else {
+                    return None;
+                };
+                let awaited = awaited_type(ctx, element);
+                let inner = match method {
+                    "race" => awaited,
+                    "all" => ctx.arena.alloc(crate::types::Type::Array(awaited)),
+                    _ => {
+                        let fulfilled = settled_result(ctx, "fulfilled", "value", awaited);
+                        let any = ctx.arena.any();
+                        let rejected = settled_result(ctx, "rejected", "reason", any);
+                        let result = ctx.arena.alloc_union(vec![fulfilled, rejected]);
+                        ctx.arena.alloc(crate::types::Type::Array(result))
+                    }
+                };
+                return Some(ctx.arena.alloc_promise(inner));
+            };
             let settled: Vec<TypeId> = elements
                 .iter()
-                .map(|&element| awaited_type(ctx, element))
+                .map(|&element| {
+                    let awaited = awaited_type(ctx, element);
+                    crate::types::widen(&ctx.arena, awaited)
+                })
                 .collect();
             let inner = if method == "allSettled" {
                 // Each input becomes `{ status: "fulfilled", value } | { status: "rejected", reason }`.

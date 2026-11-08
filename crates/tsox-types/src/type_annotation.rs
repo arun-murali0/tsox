@@ -1390,7 +1390,7 @@ struct DottedName<'n> {
 }
 
 // `A.B.C` as one string, or None for a name that is not a plain dotted path.
-fn dotted_type_name(name: &TSTypeName) -> Option<String> {
+pub fn dotted_type_name(name: &TSTypeName) -> Option<String> {
     match name {
         TSTypeName::IdentifierReference(id) => Some(id.name.to_string()),
         TSTypeName::QualifiedName(qualified) => Some(format!(

@@ -1,4 +1,4 @@
-use oxc_ast::ast::{Class, Program, Statement, TSTypeName};
+use oxc_ast::ast::{Class, Program, Statement};
 use oxc_span::GetSpan;
 
 use crate::namespace::Resolution;
@@ -71,11 +71,11 @@ fn check_class<'ast>(class: &Class<'ast>, ctx: &mut CheckContext<'ast, '_>) {
     };
     check_extends(class, id, instance, ctx);
     for implemented in &class.implements {
-        let TSTypeName::IdentifierReference(name) = &implemented.expression else {
+        let Some(name) = crate::type_annotation::dotted_type_name(&implemented.expression) else {
             continue;
         };
         let Some(interface) = crate::type_annotation::resolve_named_reference(
-            &name.name,
+            &name,
             implemented.type_arguments.as_deref(),
             implemented.span(),
             &mut ctx.namespace,
@@ -86,30 +86,53 @@ fn check_class<'ast>(class: &Class<'ast>, ctx: &mut CheckContext<'ast, '_>) {
         if crate::subtyping::is_subtype(&ctx.arena, instance, interface) {
             continue;
         }
-        match first_incompatible_property(ctx, instance, interface) {
-            // A property both sides have, with types that disagree: tsc reports it at the
-            // class member (TS2416). Without a member to point at, the class takes it.
-            Some((property, true)) => {
-                let span = member_span(class, &property).unwrap_or_else(|| implemented.span());
-                ctx.error(
-                    crate::diagnostic_messages::messages::class_property_incompatible(
-                        &ctx.arena, &property, &id.name, interface,
-                    ),
-                    span,
-                );
-            }
-            _ => ctx.error(
+        // Every property both sides have with disagreeing types is reported at the class
+        // member (TS2416), as tsc does; with none of those, a missing member is reported once
+        // at the class (TS2420).
+        let conflicts = conflicting_properties(ctx, instance, interface);
+        if conflicts.is_empty() {
+            ctx.error(
                 crate::diagnostic_messages::messages::class_incorrectly_implements(
                     &ctx.arena, &id.name, interface,
                 ),
                 implemented.span(),
-            ),
+            );
+        }
+        for property in conflicts {
+            let span = member_span(class, &property).unwrap_or_else(|| implemented.span());
+            ctx.error(
+                crate::diagnostic_messages::messages::class_property_incompatible(
+                    &ctx.arena, &property, &id.name, interface,
+                ),
+                span,
+            );
         }
     }
 }
 
-/// The first property of `interface` the instance lacks (`false`) or has with an
-/// incompatible type (`true`).
+fn conflicting_properties(
+    ctx: &CheckContext<'_, '_>,
+    instance: crate::arena::TypeId,
+    interface: crate::arena::TypeId,
+) -> Vec<String> {
+    use crate::types::Type;
+    let (Type::Object(have), Type::Object(want)) =
+        (ctx.arena.get(instance), ctx.arena.get(interface))
+    else {
+        return Vec::new();
+    };
+    want.properties
+        .iter()
+        .filter(|property| {
+            have.properties.iter().any(|own| {
+                own.name == property.name
+                    && !crate::subtyping::is_subtype(&ctx.arena, own.type_id, property.type_id)
+            })
+        })
+        .map(|property| property.name.to_string())
+        .collect()
+}
+
 fn first_incompatible_property(
     ctx: &CheckContext<'_, '_>,
     instance: crate::arena::TypeId,
