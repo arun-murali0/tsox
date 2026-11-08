@@ -17,6 +17,7 @@ mod functions;
 mod logical;
 mod members;
 mod objects;
+mod spelling;
 
 pub(super) use assignment::narrow_on_assignment;
 pub(super) use elaborate::report_mismatch;

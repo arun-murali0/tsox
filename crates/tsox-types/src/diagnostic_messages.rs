@@ -682,6 +682,21 @@ pub mod messages {
         )
     }
 
+    pub fn property_does_not_exist_suggestion(
+        arena: &TypeArena,
+        property_name: &str,
+        object_type: TypeId,
+        suggestion: &str,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PropertyDoesNotExistSuggestion,
+            format!(
+                "Property '{property_name}' does not exist on type '{}'. Did you mean '{suggestion}'?",
+                display_type(arena, object_type)
+            ),
+        )
+    }
+
     pub fn array_destructuring_requires_array(
         arena: &TypeArena,
         source: TypeId,

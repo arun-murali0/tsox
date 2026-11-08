@@ -101,6 +101,23 @@ fn infer_conditional_type_params(
     }
 }
 
+/// Whether two application nodes are of one generic declaration. Each instantiation names a
+/// slot of its own, so `P<number>` and `P<infer U>` differ in slot and agree in the declaration
+/// they were made from, which is what lets their arguments be matched pairwise.
+fn same_application(
+    arena: &TypeArena,
+    left: TypeId,
+    left_slot: crate::arena::DeclSlot,
+    right: TypeId,
+    right_slot: crate::arena::DeclSlot,
+) -> bool {
+    left_slot == right_slot
+        || matches!(
+            (arena.app_base_of(left), arena.app_base_of(right)),
+            (Some(a), Some(b)) if a == b
+        )
+}
+
 fn collect_conditional_infer_candidates(
     arena: &mut TypeArena,
     pattern: TypeId,
@@ -119,7 +136,7 @@ fn collect_conditional_infer_candidates(
     // body is opaque (Promise<T>, Record<K, V>, and user generic aliases).
     if let (Type::App(pattern_slot, pattern_args, _), Type::App(actual_slot, actual_args, _)) =
         (arena.raw(pattern).clone(), arena.raw(actual).clone())
-        && pattern_slot == actual_slot
+        && same_application(arena, pattern, pattern_slot, actual, actual_slot)
         && pattern_args.len() == actual_args.len()
     {
         for (&p, &a) in pattern_args.iter().zip(&actual_args) {
@@ -636,7 +653,7 @@ fn infer_type_param_bindings_uncached(
     // applications before falling back to their structural bodies.
     if let (Type::App(param_slot, param_args, _), Type::App(arg_slot, arg_args, _)) =
         (arena.raw(param_type).clone(), arena.raw(arg_type).clone())
-        && param_slot == arg_slot
+        && same_application(arena, param_type, param_slot, arg_type, arg_slot)
         && param_args.len() == arg_args.len()
     {
         for (&parameter, &argument) in param_args.iter().zip(&arg_args) {
@@ -1079,7 +1096,7 @@ fn collect_inference_candidates_inner(
     // `Box<T>` against `Box<string>`) infer through their type arguments, pairwise.
     if let (Type::App(param_slot, param_args, _), Type::App(arg_slot, arg_args, _)) =
         (arena.get(param_type).clone(), arena.get(arg_type).clone())
-        && param_slot == arg_slot
+        && same_application(arena, param_type, param_slot, arg_type, arg_slot)
         && param_args.len() == arg_args.len()
     {
         for (param_arg, arg_arg) in param_args.into_iter().zip(arg_args) {
@@ -1639,7 +1656,13 @@ impl Substitution<'_> {
         if let Some(&copy) = self.closing.get(&type_id) {
             return copy;
         }
-        if !contains_type_param(arena, type_id) {
+        // A recursive application's arguments are what a substitution changes, and the set of
+        // free parameters it is cached under can be empty when the declaration it belongs to
+        // closes over them (`Aw<U>` in `T extends P<infer U> ? Aw<U> : T`).
+        let args_mention = matches!(arena.raw(type_id), Type::App(_, arguments, _)
+            if arena.app_template(type_id).is_some()
+                && arguments.iter().any(|&argument| contains_type_param(arena, argument)));
+        if !args_mention && !contains_type_param(arena, type_id) {
             return type_id;
         }
         if let Some(position) = self.open.iter().position(|&id| id == type_id) {
@@ -2511,7 +2534,29 @@ fn free_generic_params(arena: &TypeArena, type_id: TypeId) -> Rc<[FreeParam]> {
                 Type::GenericParameter(id, _, _) => vec![(*id, nodes[index])],
                 _ => Vec::new(),
             };
-            for &part in &parts[index] {
+            // A recursive application (`P<T | R>` inside `P<T>`) keeps a body snapshotted while
+            // its declaration was still resolving, which names the declaration's own parameter
+            // although its arguments no longer do. The body stands for the arguments given, so
+            // the declaration's parameters count only where an argument mentions them.
+            let template_parameters: Option<Vec<TypeParameterId>> = match arena.raw(nodes[index]) {
+                Type::App(..) => arena
+                    .app_template(nodes[index])
+                    .map(|template| template.parameters.clone()),
+                _ => None,
+            };
+            let part_count = parts[index].len();
+            for (position_in_parts, &part) in parts[index].iter().enumerate() {
+                if let Some(parameters) = &template_parameters
+                    && position_in_parts + 1 == part_count
+                {
+                    let from_body: Vec<FreeParam> = sets[part]
+                        .iter()
+                        .copied()
+                        .filter(|(id, _)| !parameters.contains(id))
+                        .collect();
+                    merge_free(arena, &mut free, &from_body);
+                    continue;
+                }
                 merge_free(arena, &mut free, &sets[part]);
             }
             // The function's own binders are bound inside it, wherever they were used.

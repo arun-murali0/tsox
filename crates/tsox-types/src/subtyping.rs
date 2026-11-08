@@ -50,6 +50,23 @@ fn is_subtype_inner(
     {
         return is_subtype_inner(arena, sub_value, sup_value, seen, binders);
     }
+    // A promise is an object with `then`: no primitive is one, though the body here is empty.
+    if arena.is_promise(sup)
+        && matches!(
+            arena.get(sub),
+            Type::Number
+                | Type::String
+                | Type::Boolean
+                | Type::NumberLiteral(_)
+                | Type::StringLiteral(_)
+                | Type::BooleanLiteral(_)
+                | Type::Null
+                | Type::Undefined
+                | Type::Void
+        )
+    {
+        return false;
+    }
 
     let pair = (sub, sup);
     if seen.contains(&pair) {

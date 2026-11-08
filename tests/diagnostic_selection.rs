@@ -101,7 +101,8 @@ fn number_methods_are_found_on_numbers() {
 fn number_methods_are_not_found_on_a_string() {
     let found = errors("declare const s: string;\nconst a = s.toFixed(2);\n");
     assert_eq!(found.len(), 1, "{found:?}");
-    assert_eq!(found[0].0, Some(2339), "{found:?}");
+    // tsc suggests `fixed`, the String method nearest to `toFixed`.
+    assert_eq!(found[0].0, Some(2551), "{found:?}");
 }
 
 #[test]
@@ -135,9 +136,6 @@ fn string_method_argument_and_result_types_are_checked() {
 #[test]
 fn a_method_a_string_does_not_have_is_still_missing() {
     let found = errors("declare const s: string;\nconst a = s.nope();\nconst b = s.toFixed(1);\n");
-    assert_eq!(found.len(), 2, "{found:?}");
-    assert!(
-        found.iter().all(|(code, _)| *code == Some(2339)),
-        "{found:?}"
-    );
+    let codes: Vec<_> = found.iter().map(|(code, _)| *code).collect();
+    assert_eq!(codes, [Some(2339), Some(2551)], "{found:?}");
 }

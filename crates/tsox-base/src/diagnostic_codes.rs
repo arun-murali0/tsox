@@ -62,6 +62,7 @@ pub enum DiagnosticCode {
     // 1200s: name / member resolution
     UnresolvedIdentifier,
     PropertyDoesNotExist,
+    PropertyDoesNotExistSuggestion,
     ModuleNotFound,
     TypeDefinitionNotFound,
     ReferencedFileNotFound,
@@ -196,6 +197,7 @@ impl DiagnosticCode {
 
             UnresolvedIdentifier => "TSR1201",
             PropertyDoesNotExist => "TSR1202",
+            PropertyDoesNotExistSuggestion => "TSR1210",
             ModuleNotFound => "TSR1203",
             TypeDefinitionNotFound => "TSR1207",
             ReferencedFileNotFound => "TSR1208",
@@ -329,6 +331,7 @@ impl DiagnosticCode {
 
             UnresolvedIdentifier => 2304,
             PropertyDoesNotExist => 2339,
+            PropertyDoesNotExistSuggestion => 2551,
             ModuleNotFound => 2307,
             TypeDefinitionNotFound => 2688,
             ReferencedFileNotFound => 6053,

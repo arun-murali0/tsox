@@ -52,14 +52,25 @@ pub fn infer_member_access_type(
             found
         }
         None => {
-            ctx.error(
-                crate::diagnostic_messages::messages::property_does_not_exist(
+            let names = super::spelling::member_names(&ctx.arena, effective_type);
+            let suggestion =
+                super::spelling::suggest(property_name, names.iter().map(String::as_str));
+            let message = match suggestion {
+                Some(suggestion) => {
+                    crate::diagnostic_messages::messages::property_does_not_exist_suggestion(
+                        &ctx.arena,
+                        property_name,
+                        effective_type,
+                        &suggestion,
+                    )
+                }
+                None => crate::diagnostic_messages::messages::property_does_not_exist(
                     &ctx.arena,
                     property_name,
                     effective_type,
                 ),
-                span,
-            );
+            };
+            ctx.error(message, span);
             ctx.arena.error()
         }
     }
@@ -364,6 +375,19 @@ fn array_member(arena: &mut TypeArena, element: TypeId, property_name: &str) -> 
         name: None,
     };
     let maybe_element = arena.alloc_union(vec![element, undefined]);
+    let callback = |arena: &mut TypeArena, result: TypeId, optional: bool| {
+        let callback_type = arena.alloc(Type::Function(FunctionType {
+            params: vec![
+                param(element, false, false),
+                param(number, true, false),
+                param(elements, true, false),
+            ],
+            return_type: result,
+            type_params: Vec::new(),
+            is_untyped: false,
+        }));
+        param(callback_type, optional, false)
+    };
     let (params, return_type) = match property_name {
         "indexOf" | "lastIndexOf" => (
             vec![param(any, false, false), param(number, true, false)],
@@ -408,26 +432,51 @@ fn array_member(arena: &mut TypeArena, element: TypeId, property_name: &str) -> 
             ],
             elements,
         ),
+        // The callback takes the element, its index and the array, as the library says. Its
+        // result is `any` where tsc says `unknown` or `boolean`, so nothing is rejected that
+        // tsc accepts; `map` keeps the result as a type parameter, which is what makes
+        // `strings.map(s => s.length)` a `number[]`.
         "filter" => (
-            vec![param(any, false, false), param(any, true, false)],
-            any_elements,
+            vec![callback(arena, any, false), param(any, true, false)],
+            elements,
         ),
-        "map" | "flatMap" => (
+        "map" => {
+            let mapped_id =
+                crate::types::TypeParameterId::with_file(crate::types::FileId::ROOT, u32::MAX, 0);
+            let mapped = arena.alloc(Type::GenericParameter(mapped_id, "U".to_string(), None));
+            let mapped_elements = arena.alloc(Type::Array(mapped));
+            let callback_type = callback(arena, mapped, false);
+            return Some(arena.alloc(Type::Function(FunctionType {
+                params: vec![callback_type, param(any, true, false)],
+                return_type: mapped_elements,
+                type_params: vec![crate::types::FunctionTypeParam {
+                    id: mapped_id,
+                    name: "U".to_string(),
+                    constraint: None,
+                    default: None,
+                }],
+                is_untyped: false,
+            })));
+        }
+        "flatMap" => (
             vec![param(any, false, false), param(any, true, false)],
             any_elements,
         ),
         "flat" => (vec![param(number, true, false)], any_elements),
         "forEach" => (
-            vec![param(any, false, false), param(any, true, false)],
+            vec![callback(arena, any, false), param(any, true, false)],
             void,
         ),
         "some" | "every" => (
-            vec![param(any, false, false), param(any, true, false)],
+            vec![callback(arena, any, false), param(any, true, false)],
             boolean,
         ),
-        "find" | "findLast" => (vec![param(any, false, false), param(any, true, false)], any),
+        "find" | "findLast" => (
+            vec![callback(arena, any, false), param(any, true, false)],
+            maybe_element,
+        ),
         "findIndex" | "findLastIndex" => (
-            vec![param(any, false, false), param(any, true, false)],
+            vec![callback(arena, any, false), param(any, true, false)],
             number,
         ),
         "reduce" | "reduceRight" => (vec![param(any, false, false), param(any, true, false)], any),
