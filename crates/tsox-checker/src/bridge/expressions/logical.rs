@@ -4,6 +4,7 @@ use oxc_span::GetSpan;
 
 use crate::arena::TypeId;
 use crate::type_annotation::resolve_ts_type;
+use crate::types::Type;
 
 use super::super::context::CheckContext;
 use super::super::narrow::{
@@ -109,8 +110,63 @@ pub(super) fn infer_as_expression_type(
     if is_const_assertion(&as_expr.type_annotation) {
         return inner;
     }
-    resolve_ts_type(&as_expr.type_annotation, &mut ctx.namespace, &mut ctx.arena)
-        .unwrap_or_else(|| ctx.arena.error())
+    let target = resolve_ts_type(&as_expr.type_annotation, &mut ctx.namespace, &mut ctx.arena)
+        .unwrap_or_else(|| ctx.arena.error());
+    let source = crate::types::widen(&ctx.arena, inner);
+    if assertion_has_no_overlap(ctx, inner, target) {
+        ctx.error(
+            crate::diagnostic_messages::messages::conversion_may_be_mistake(
+                &ctx.arena, source, target,
+            ),
+            as_expr.span,
+        );
+    }
+    target
+}
+
+// Whether `source as target` is a conversion tsc rejects (TS2352): neither type is comparable to
+// the other. Only the clear cases are reported, where both sides are primitives (or literals)
+// of different kinds, or a primitive meets an object type that has required properties; a
+// pair that is merely not assignable either way may still be comparable (optional members,
+// unions, generics), and is left alone.
+fn assertion_has_no_overlap(
+    ctx: &mut CheckContext<'_, '_>,
+    source: TypeId,
+    target: TypeId,
+) -> bool {
+    #[derive(PartialEq)]
+    enum Kind {
+        String,
+        Number,
+        Boolean,
+        Object,
+        Other,
+    }
+    let kind_of = |ctx: &CheckContext<'_, '_>, type_id: TypeId| match ctx.arena.get(type_id) {
+        Type::String | Type::StringLiteral(_) => Kind::String,
+        Type::Number | Type::NumberLiteral(_) => Kind::Number,
+        Type::Boolean | Type::BooleanLiteral(_) => Kind::Boolean,
+        Type::Object(object)
+            if object.properties.iter().any(|p| !p.optional) && object.string_index.is_none() =>
+        {
+            Kind::Object
+        }
+        Type::Array(_) | Type::Tuple(_) => Kind::Object,
+        _ => Kind::Other,
+    };
+    let source_kind = kind_of(ctx, source);
+    let target_kind = kind_of(ctx, target);
+    if source_kind == Kind::Other || target_kind == Kind::Other {
+        return false;
+    }
+    let primitive = |kind: &Kind| !matches!(kind, Kind::Object | Kind::Other);
+    if !(primitive(&source_kind) || primitive(&target_kind)) {
+        return false;
+    }
+    // A literal is comparable to its own primitive and to the same literal only: compare the
+    // widened source against the target, and the target against the source.
+    let widened = crate::types::widen(&ctx.arena, source);
+    !ctx.semantic().is_assignable(widened, target) && !ctx.semantic().is_assignable(target, widened)
 }
 
 // `expr satisfies T` checks the expression against T, with T as its contextual type, and

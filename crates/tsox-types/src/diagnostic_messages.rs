@@ -706,6 +706,21 @@ pub mod messages {
         )
     }
 
+    pub fn conversion_may_be_mistake(
+        arena: &TypeArena,
+        source: TypeId,
+        target: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ConversionMayBeMistake,
+            format!(
+                "Conversion of type '{}' to type '{}' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
+                display_type(arena, source),
+                display_type(arena, target)
+            ),
+        )
+    }
+
     pub fn array_destructuring_requires_array(
         arena: &TypeArena,
         source: TypeId,
