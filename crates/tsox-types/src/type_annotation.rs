@@ -365,6 +365,15 @@ pub fn resolve_ts_type(
                     arena, case, operand,
                 ));
             }
+            // `ReadonlyArray<T>` is the same array type as `readonly T[]`; the library's
+            // interface of that name would otherwise make it an unrelated object.
+            if id.name == "ReadonlyArray"
+                && let Some(arguments) = reference.type_arguments.as_deref()
+                && arguments.params.len() == 1
+            {
+                let element = resolve_ts_type(&arguments.params[0], namespace, arena)?;
+                return Some(arena.alloc(Type::Array(element)));
+            }
             if id.name == "Awaited"
                 && let Some(alias) = crate::prelude::alias(id.name)
             {
