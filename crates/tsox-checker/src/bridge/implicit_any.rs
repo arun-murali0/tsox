@@ -25,6 +25,7 @@ pub fn report_implicit_any<'ast>(program: &Program<'ast>, ctx: &mut CheckContext
         ctx,
         source: program.source_text,
         ambient: 0,
+        constructor_assigned: Vec::new(),
     };
     walker.visit_program(program);
 }
@@ -35,6 +36,9 @@ struct Walker<'c, 'ast, 'src> {
     // Inside `declare class`, `declare namespace` and the like. Their private members
     // carry no types in a declaration, so tsc asks none of them.
     ambient: u32,
+    // Per enclosing class: the members its constructor assigns through `this`. tsc infers
+    // an untyped member's type from those, so such a member is not an implicit any.
+    constructor_assigned: Vec<std::collections::HashSet<String>>,
 }
 
 // How tsc writes a member name in these messages: an identifier as is, a string with its
@@ -123,7 +127,18 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
     fn visit_class(&mut self, class: &oxc_ast::ast::Class<'a>) {
         let ambient = class.declare;
         self.ambient += u32::from(ambient);
+        let mut assigned = ThisAssignments::default();
+        for element in &class.body.body {
+            if let oxc_ast::ast::ClassElement::MethodDefinition(method) = element
+                && method.kind == MethodDefinitionKind::Constructor
+                && let Some(body) = &method.value.body
+            {
+                assigned.visit_function_body(body);
+            }
+        }
+        self.constructor_assigned.push(assigned.names);
         walk::walk_class(self, class);
+        self.constructor_assigned.pop();
         self.ambient -= u32::from(ambient);
     }
 
@@ -184,7 +199,12 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
             && !property.computed
         {
             let source = self.source;
-            if let Some(name) = key_name(&property.key, source) {
+            if let Some(name) = key_name(&property.key, source)
+                && !self
+                    .constructor_assigned
+                    .last()
+                    .is_some_and(|names| names.contains(name.trim_matches(['\'', '"'])))
+            {
                 self.report(
                     DiagnosticCode::ImplicitAnyMember,
                     messages::member_implicitly_any(&name),
@@ -252,5 +272,39 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
     fn visit_ts_constructor_type(&mut self, constructor: &TSConstructorType<'a>) {
         self.params(&constructor.params);
         walk::walk_ts_constructor_type(self, constructor);
+    }
+}
+
+// The names `this.x = ...`, `this["x"] = ...` and `this[0] = ...` assign anywhere in a body.
+#[derive(Default)]
+struct ThisAssignments {
+    names: std::collections::HashSet<String>,
+}
+
+impl<'a> Visit<'a> for ThisAssignments {
+    fn visit_assignment_expression(&mut self, assignment: &oxc_ast::ast::AssignmentExpression<'a>) {
+        use oxc_ast::ast::{AssignmentTarget, Expression};
+        match &assignment.left {
+            AssignmentTarget::StaticMemberExpression(member)
+                if matches!(member.object, Expression::ThisExpression(_)) =>
+            {
+                self.names.insert(member.property.name.to_string());
+            }
+            AssignmentTarget::ComputedMemberExpression(member)
+                if matches!(member.object, Expression::ThisExpression(_)) =>
+            {
+                match &member.expression {
+                    Expression::StringLiteral(lit) => {
+                        self.names.insert(lit.value.to_string());
+                    }
+                    Expression::NumericLiteral(lit) => {
+                        self.names.insert(lit.value.to_string());
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        walk::walk_assignment_expression(self, assignment);
     }
 }

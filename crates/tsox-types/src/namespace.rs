@@ -2032,6 +2032,23 @@ impl<'a> TypeNamespace<'a> {
                         member_modifiers(class, self.file_id, prop.accessibility, prop.readonly),
                     );
                 }
+                // `accessor x: T` is a property for the checker: its type comes from the
+                // annotation, else `any` (an unannotated one is reported as an implicit any).
+                ClassElement::AccessorProperty(prop) if !prop.r#static => {
+                    let name = static_member_name(&prop.key)?;
+                    let type_id = match &prop.type_annotation {
+                        Some(annotation) => resolve_type_annotation(annotation, self, arena)?,
+                        None => arena.any(),
+                    };
+                    upsert_property(
+                        &mut properties,
+                        name,
+                        type_id,
+                        false,
+                        false,
+                        member_modifiers(class, self.file_id, prop.accessibility, false),
+                    );
+                }
                 ClassElement::MethodDefinition(method)
                     if !method.r#static && method.kind == MethodDefinitionKind::Method =>
                 {
