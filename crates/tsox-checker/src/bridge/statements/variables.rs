@@ -203,10 +203,39 @@ fn check_destructured_declarator(
         }
     };
 
-    let inferred_type = declarator
-        .init
-        .as_ref()
-        .map(|init| infer_expression_type(init, scoping, ctx));
+    // `const [a, b] = [1, "x"]`: tsc reads an array literal that is destructured by an array
+    // pattern as a tuple, so each name gets its own element and none is `| undefined`.
+    let literal_tuple = match (&declarator.id, &declarator.init) {
+        (BindingPattern::ArrayPattern(_), Some(Expression::ArrayExpression(array)))
+            if matches!(annotation_outcome, AnnotationOutcome::Absent)
+                && !array.elements.is_empty()
+                && array.elements.iter().all(|e| {
+                    e.as_expression().is_some()
+                        && !matches!(e, oxc_ast::ast::ArrayExpressionElement::SpreadElement(_))
+                }) =>
+        {
+            let mut elements = Vec::with_capacity(array.elements.len());
+            for element in &array.elements {
+                let expr = element.as_expression().expect("checked above");
+                ctx.contextual = None;
+                let type_id = infer_expression_type(expr, scoping, ctx);
+                elements.push(crate::types::TupleElement {
+                    type_id: crate::types::widen(&ctx.arena, type_id),
+                    optional: false,
+                    rest: false,
+                });
+            }
+            Some(ctx.arena.alloc_tuple(elements))
+        }
+        _ => None,
+    };
+
+    let inferred_type = literal_tuple.or_else(|| {
+        declarator
+            .init
+            .as_ref()
+            .map(|init| infer_expression_type(init, scoping, ctx))
+    });
 
     let source_type = match (annotation_outcome, inferred_type) {
         (AnnotationOutcome::Unresolvable, _) => {
