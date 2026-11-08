@@ -101,7 +101,7 @@ pub fn infer_expression_type(
                 [(&bin.left, left), (&bin.right, right)],
                 ctx,
             );
-            let (left, right) = widen_if_narrowed(bin, left, right, ctx);
+            let (left, right) = widen_if_narrowed(bin, left, right, scoping, ctx);
             infer_binary_expression_type(bin.operator, left, right, bin.span(), ctx)
         }
 
@@ -332,6 +332,7 @@ fn widen_if_narrowed(
     bin: &oxc_ast::ast::BinaryExpression,
     left: TypeId,
     right: TypeId,
+    scoping: &oxc_semantic::Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> (TypeId, TypeId) {
     use oxc_ast::ast::BinaryOperator as Op;
@@ -342,7 +343,18 @@ fn widen_if_narrowed(
         return (left, right);
     }
     let name_of = |expression: &Expression| match expression {
-        Expression::Identifier(ident) => Some(ident.name.to_string()),
+        // The declaration the name refers to, so the same name in another function (or
+        // another scope) is a different variable.
+        Expression::Identifier(ident) => Some(
+            ident
+                .reference_id
+                .get()
+                .and_then(|reference| scoping.get_reference(reference).symbol_id())
+                .map_or_else(
+                    || ident.name.to_string(),
+                    |symbol| format!("{}#{}", ident.name, symbol.index()),
+                ),
+        ),
         _ => None,
     };
     let names = [name_of(&bin.left), name_of(&bin.right)];

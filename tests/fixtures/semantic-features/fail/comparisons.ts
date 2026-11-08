@@ -27,3 +27,12 @@ export const r18 = obj === obj;
 export function f(x: string) { return x === 5; } // error TS2367
 let w = "a"; export const r19 = w === "b";
 const k = "a"; export const r20 = k === "b"; // error TS2367
+
+export function sameNameElsewhere(): void {
+  const x = 1;
+  if (x == 1) { return; }
+}
+export function sameNameOther(): void {
+  const x = 1;
+  if (x == 2) { } // error TS2367
+}

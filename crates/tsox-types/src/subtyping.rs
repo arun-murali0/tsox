@@ -13,6 +13,23 @@ pub fn is_subtype(arena: &TypeArena, sub: TypeId, sup: TypeId) -> bool {
     is_subtype_inner(arena, sub, sup, &mut PairStack::new(), &[])
 }
 
+// Results of pairs already decided during the current top-level comparison. Without it a
+// type whose members mention each other (a generic interface whose methods return
+// itself) is compared once per path through those members, which grows factorially.
+// A `false` never depends on a coinductive assumption, so it is always kept; a `true`
+// is kept only when no assumption was used while computing it. Cleared when the outermost
+// comparison ends, because the arena can change between comparisons.
+#[derive(Default)]
+struct PairMemo {
+    depth: u32,
+    assumptions_used: u64,
+    results: std::collections::HashMap<(TypeId, TypeId), bool>,
+}
+
+thread_local! {
+    static PAIR_MEMO: std::cell::RefCell<PairMemo> = std::cell::RefCell::new(PairMemo::default());
+}
+
 // A recursive type (Node { next: Node }, whose declaration's Ref namespace::resolve
 // resolves after its members) means comparing sub and sup can lead back to
 // comparing the same (sub, sup) pair again before either call has returned.
@@ -70,11 +87,36 @@ fn is_subtype_inner(
 
     let pair = (sub, sup);
     if seen.contains(&pair) {
+        PAIR_MEMO.with(|memo| memo.borrow_mut().assumptions_used += 1);
         return true;
     }
+    let memoizable = binders.is_empty();
+    let before = PAIR_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memoizable && let Some(known) = memo.results.get(&pair) {
+            return Err(*known);
+        }
+        memo.depth += 1;
+        Ok(memo.assumptions_used)
+    });
+    let before = match before {
+        Ok(before) => before,
+        Err(known) => return known,
+    };
     seen.push(pair);
     let result = is_subtype_uncached(arena, sub, sup, seen, binders);
     seen.pop();
+    PAIR_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        memo.depth -= 1;
+        if memoizable && (!result || memo.assumptions_used == before) {
+            memo.results.insert(pair, result);
+        }
+        if memo.depth == 0 {
+            memo.results.clear();
+            memo.assumptions_used = 0;
+        }
+    });
     result
 }
 
