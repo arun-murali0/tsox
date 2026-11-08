@@ -106,6 +106,74 @@ pub(super) fn entity_name(expr: &Expression) -> Option<String> {
     }
 }
 
+// TS2367: the two sides of `===` (or `==`, `!==`, `!=`) can never be equal. Only the clear cases
+// are reported: primitives of different kinds, two different literals, or a primitive against an
+// object, array or tuple. Unions, generics, enums and anything unmodelled are left alone.
+// The literal types a type is made of, when it is one literal or a union of only literals.
+fn literal_members(ctx: &CheckContext<'_, '_>, type_id: TypeId) -> Option<Vec<TypeId>> {
+    let is_literal = |id: TypeId| {
+        matches!(
+            ctx.arena.get(id),
+            Type::StringLiteral(_) | Type::NumberLiteral(_) | Type::BooleanLiteral(_)
+        )
+    };
+    match ctx.arena.get(type_id) {
+        Type::Union(members) if members.iter().all(|&m| is_literal(m)) => Some(members.to_vec()),
+        _ if is_literal(type_id) => Some(vec![type_id]),
+        _ => None,
+    }
+}
+
+fn comparison_has_no_overlap(ctx: &CheckContext<'_, '_>, left: TypeId, right: TypeId) -> bool {
+    // Two sets of literals with no member in common (`"a" | "b"` against `"c"`).
+    if let (Some(left_members), Some(right_members)) =
+        (literal_members(ctx, left), literal_members(ctx, right))
+    {
+        return !left_members.iter().any(|l| {
+            right_members
+                .iter()
+                .any(|r| ctx.arena.get(*l) == ctx.arena.get(*r))
+        });
+    }
+    #[derive(PartialEq, Clone, Copy)]
+    enum Kind {
+        String,
+        Number,
+        Boolean,
+        Composite,
+        Other,
+    }
+    let kind_of = |type_id: TypeId| match ctx.arena.get(type_id) {
+        Type::String | Type::StringLiteral(_) => Kind::String,
+        Type::Number | Type::NumberLiteral(_) => Kind::Number,
+        Type::Boolean | Type::BooleanLiteral(_) => Kind::Boolean,
+        Type::Object(object)
+            if object.properties.iter().any(|p| !p.optional) && object.string_index.is_none() =>
+        {
+            Kind::Composite
+        }
+        Type::Array(_) | Type::Tuple(_) => Kind::Composite,
+        _ => Kind::Other,
+    };
+    let (left_kind, right_kind) = (kind_of(left), kind_of(right));
+    if left_kind == Kind::Other || right_kind == Kind::Other {
+        return false;
+    }
+    if left_kind == Kind::Composite && right_kind == Kind::Composite {
+        return false;
+    }
+    if left_kind != right_kind {
+        return true;
+    }
+    // The same primitive kind: only two different literals cannot meet.
+    match (ctx.arena.get(left), ctx.arena.get(right)) {
+        (Type::StringLiteral(a), Type::StringLiteral(b)) => a != b,
+        (Type::NumberLiteral(a), Type::NumberLiteral(b)) => a != b,
+        (Type::BooleanLiteral(a), Type::BooleanLiteral(b)) => a != b,
+        _ => false,
+    }
+}
+
 pub(super) fn infer_binary_expression_type(
     operator: BinaryOperator,
     left: TypeId,
@@ -117,8 +185,34 @@ pub(super) fn infer_binary_expression_type(
         BinaryOperator::Equality
         | BinaryOperator::Inequality
         | BinaryOperator::StrictEquality
-        | BinaryOperator::StrictInequality
-        | BinaryOperator::LessThan
+        | BinaryOperator::StrictInequality => {
+            if comparison_has_no_overlap(ctx, left, right) {
+                // tsc names the literals when both sides are literal types, and otherwise the
+                // primitives they belong to.
+                let literal = |ctx: &CheckContext<'_, '_>, type_id: TypeId| {
+                    literal_members(ctx, type_id).is_some()
+                };
+                let (shown_left, shown_right) = if literal(ctx, left) && literal(ctx, right) {
+                    (left, right)
+                } else {
+                    (
+                        crate::types::widen(&ctx.arena, left),
+                        crate::types::widen(&ctx.arena, right),
+                    )
+                };
+                ctx.error(
+                    crate::diagnostic_messages::messages::comparison_no_overlap(
+                        &ctx.arena,
+                        shown_left,
+                        shown_right,
+                    ),
+                    span,
+                );
+            }
+            ctx.arena.boolean()
+        }
+
+        BinaryOperator::LessThan
         | BinaryOperator::LessEqualThan
         | BinaryOperator::GreaterThan
         | BinaryOperator::GreaterEqualThan => ctx.arena.boolean(),

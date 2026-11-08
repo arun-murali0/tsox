@@ -721,6 +721,21 @@ pub mod messages {
         )
     }
 
+    pub fn comparison_no_overlap(
+        arena: &TypeArena,
+        left: TypeId,
+        right: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ComparisonNoOverlap,
+            format!(
+                "This comparison appears to be unintentional because the types '{}' and '{}' have no overlap.",
+                display_type(arena, left),
+                display_type(arena, right)
+            ),
+        )
+    }
+
     pub fn array_destructuring_requires_array(
         arena: &TypeArena,
         source: TypeId,
