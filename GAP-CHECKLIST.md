@@ -1,44 +1,46 @@
 # Gap checklist against tsc
 
-Where tsox disagrees with tsc 6.0.3 on the 10k conformance corpus, by error code, so the work can be ordered by how many corpus lines it affects. Tick an item when its corpus count has gone down in a fresh run. Section 5 lists what the roadmap work has already moved.
+Where tsox disagrees with tsc 6.0.3 on the 10k conformance corpus, by error code, so the work can be ordered by how many corpus lines it affects. Tick an item when its corpus count has gone down in a fresh run. Section 5 lists what the roadmap work has already moved; sections 6 and 7 are performance and real-project findings.
 
-- Measured: tsox `fb9ebd6` (release), tsc 6.0.3 through the API, **each of the 21 parts as its own project**, 10,081 files. Two files are left out because tsox does not finish on them (first two in section 4).
+- Measured: tsox `2badb7c` (release), tsc 6.0.3 through the API, **each of the 21 parts as its own project**, 10,081 files. Two files are left out because tsox does not finish on them (first two in section 4).
 - Unit: a *line* is one file and line that has the code in tsc's output. *Missed* = tsc reports the code there and tsox does not. *Extra* = tsox reports it and tsc does not. *Right* = both report it.
-- Files: exact match 4,284 (42.5%), of which 3,087 are clean on both sides; gap 4,128 (40.9%); false positive 685 (6.8%); mixed 373; code differs 437; message differs 174. Files agreeing on error lines: 4,895 (48.6%). Exact lines: 11,901 of 38,822 (30.7%).
-- Diagnostics: tsc 45,542, tsox 22,936.
-- Totals: 25,348 missed line-codes; 12,678 (50%) from 616 codes tsox never reports, 12,670 (50%) from 72 codes it reports only partly.
+- Files: exact match 4,311 (42.8%), of which 3,103 are clean on both sides; gap 4,135 (41.0%); false positive 666 (6.6%); mixed 360; code differs 435; message differs 174. Files agreeing on error lines: 4,920 (48.8%). Exact lines: 11,998 of 38,736 (31.0%).
+- Diagnostics: tsc 45,542, tsox 22,939.
+- Totals: 25,239 missed line-codes; 12,025 (48%) from 613 codes tsox never reports, 13,214 (52%) from 75 codes it reports only partly.
 
 ## Method: run the corpus part by part
 
-An earlier version of this checklist ran the whole corpus as ONE project. That reference is wrong for some codes: tsc reported 322 TS2454 lines that way, and 5,798 when each part is its own project (and most of the 3,081 false-positive TS2454 lines in the single run are really agreement: per part, 3,052 lines right and 144 extra). Counts from the one-project run are not comparable with these. Why one project loses diagnostics is not understood; the corpus README already says to run one folder at a time.
+Running the whole corpus as ONE project gives a wrong reference for some codes: tsc reported 322 TS2454 lines that way, and 5,798 when each part is its own project (most of the 3,081 false-positive TS2454 lines in the single run were really agreement). Counts from a one-project run are not comparable with these. Why one project loses diagnostics is not understood; the corpus README already says to run one folder at a time.
 
 ## 1. Codes tsox reports only partly (completeness)
 
 Highest yield: the check exists, so this is breadth. Sorted by missed lines.
 
-- [ ] **TS2304** Cannot find name 'X'. — missed 1,828, right 942, extra 98
-- [ ] **TS2322** Type 'X' is not assignable to type 'X'. — missed 1,461, right 1,586, extra 951
+- [ ] **TS2304** Cannot find name 'X'. — missed 1,843, right 927, extra 73
+- [ ] **TS2322** Type 'X' is not assignable to type 'X'. — missed 1,461, right 1,586, extra 947
 - [ ] **TS2454** Variable 'X' is used before being assigned. — missed 1,241, right 3,052, extra 144
 - [ ] **TS7006** Parameter 'X' implicitly has an 'X' type. — missed 718, right 1,216, extra 121
-- [ ] **TS2339** Property 'X' does not exist on type 'X'. — missed 611, right 429, extra 1,244
+- [ ] **TS2339** Property 'X' does not exist on type 'X'. — missed 611, right 429, extra 1,222
 - [ ] **TS2362** The left-hand side of an arithmetic operation must be of type 'X', 'X', 'X' or an enum typ — missed 495, right 430, extra 17
-- [ ] **TS2345** Argument of type 'X' is not assignable to parameter of type 'X'. — missed 485, right 333, extra 621
+- [ ] **TS2345** Argument of type 'X' is not assignable to parameter of type 'X'. — missed 486, right 332, extra 615
 - [ ] **TS2564** Property 'X' has no initializer and is not definitely assigned in the constructor. — missed 463, right 1,397, extra 8
 - [ ] **TS2300** Duplicate identifier 'X'. — missed 445, right 122, extra 7
 - [ ] **TS2363** The right-hand side of an arithmetic operation must be of type 'X', 'X', 'X' or an enum ty — missed 386, right 393, extra 28
 - [ ] **TS2365** Operator 'X' cannot be applied to types 'X' and 'X'. — missed 363, right 65, extra 28
-- [ ] **TS4114** This member must have an 'X' modifier because it overrides a member in the base class 'X'. — missed 348, right 288, extra 51
-- [ ] **TS18048** 'X' is possibly 'X'. — missed 284, right 72, extra 271
+- [ ] **TS4114** This member must have an 'X' modifier because it overrides a member in the base class 'X'. — missed 346, right 290, extra 17
+- [ ] **TS2367** This comparison appears to be unintentional because the types 'X' and 'X' have no overlap. — missed 322, right 62, extra 7
+- [ ] **TS18048** 'X' is possibly 'X'. — missed 284, right 72, extra 268
 - [ ] **TS2532** Object is possibly 'X'. — missed 253, right 38, extra 7
 - [ ] **TS2307** Cannot find module 'X' or its corresponding type declarations. — missed 227, right 105, extra 6
-- [ ] **TS7008** Member 'X' implicitly has an 'X' type. — missed 203, right 637, extra 33
+- [ ] **TS7008** Member 'X' implicitly has an 'X' type. — missed 205, right 635, extra 23
 - [ ] **TS2683** 'X' implicitly has type 'X' because it does not have a type annotation. — missed 203, right 35
 - [ ] **TS2769** No overload matches this call.
   Overload N of N, 'X', gave the following error.
     Argum — missed 185, right 24, extra 17
 - [ ] **TS7027** Unreachable code detected. — missed 162, right 185, extra 19
+- [ ] **TS2352** Conversion of type 'X' to type 'X' may be a mistake because neither type sufficiently over — missed 158, right 2
 - [ ] **TS2353** Object literal may only specify known properties, and 'X' does not exist in type 'X'. — missed 148, right 4, extra 15
-- [ ] **TS7053** Element implicitly has an 'X' type because expression of type 'X' can'X'{}'X'string'X'{}'. — missed 145, right 40, extra 86
+- [ ] **TS7053** Element implicitly has an 'X' type because expression of type 'X' can'X'{}'X'string'X'{}'. — missed 145, right 40, extra 83
 - [ ] **TS2430** Interface 'X' incorrectly extends interface 'X'.
   Types of property 'X' are incompatible. — missed 143, right 47, extra 25
 - [ ] **TS2554** Expected N arguments, but got N. — missed 139, right 102, extra 89
@@ -49,27 +51,28 @@ Highest yield: the check exists, so this is breadth. Sorted by missed lines.
 - [ ] **TS2416** Property 'X' in type 'X' is not assignable to the same property in base type 'X'.
   Type ' — missed 88, right 26, extra 19
 - [ ] **TS7032** Property 'X' implicitly has type 'X', because its set accessor lacks a parameter type anno — missed 81, right 44
-- [ ] **TS2540** Cannot assign to 'X' because it is a read-only property. — missed 79, right 18, extra 3
 - [ ] **TS7013** Construct signature, which lacks return-type annotation, implicitly has an 'X' return type — missed 78, right 82
 - [ ] **TS2741** Property 'X' is missing in type 'X' but required in type 'X'. — missed 78, right 73, extra 76
+- [ ] **TS2540** Cannot assign to 'X' because it is a read-only property. — missed 76, right 21, extra 3
 - [ ] **TS2693** 'X' only refers to a type, but is being used as a value here. — missed 68, right 16, extra 241
 - [ ] **TS1183** An implementation cannot be declared in ambient contexts. — missed 65, right 21
 - [ ] **TS2415** Class 'X' incorrectly extends base class 'X'.
   Property 'X' is private in type 'X' but no — missed 56, right 0, extra 13
-- [ ] **TS2488** Type 'X' must have a 'X' method that returns an iterator. — missed 46, right 36, extra 57
+- [ ] **TS4111** Property 'X' comes from an index signature, so it must be accessed with ['X']. — missed 53, right 56, extra 5
+- [ ] **TS2488** Type 'X' must have a 'X' method that returns an iterator. — missed 46, right 36, extra 55
 - [ ] **TS2374** Duplicate index signature for type 'X'. — missed 45, right 18
 - [ ] **TS2393** Duplicate function implementation. — missed 41, right 10
 - [ ] **TS2344** Type 'X' does not satisfy the constraint 'X'. — missed 39, right 59, extra 144
 - [ ] **TS2349** This expression is not callable.
   Type 'X' has no call signatures. — missed 34, right 17, extra 143
 - [ ] **TS2341** Property 'X' is private and only accessible within class 'X'. — missed 34, right 77, extra 20
-- [ ] **TS2551** Property 'X' does not exist on type 'X'. Did you mean 'X'? — missed 31, right 14, extra 35
+- [ ] **TS2551** Property 'X' does not exist on type 'X'. Did you mean 'X'? — missed 31, right 14, extra 33
 - [ ] **TS2428** All declarations of 'X' must have identical type parameters. — missed 30, right 30, extra 6
 - [ ] **TS2351** This expression is not constructable.
   Type 'X' has no construct signatures. — missed 27, right 6, extra 13
 - [ ] **TS2420** Class 'X' incorrectly implements interface 'X'.
   Property 'X' is missing in type 'X' but  — missed 24, right 36, extra 47
-- [ ] **TS2493** Tuple type 'X' of length 'X' has no element at index 'X'. — missed 24, right 24, extra 1
+- [ ] **TS2493** Tuple type 'X' of length 'X' has no element at index 'X'. — missed 22, right 26, extra 1
 - [ ] **TS7023** 'X' implicitly has return type 'X' because it does not have a return type annotation and i — missed 20, right 5, extra 3
 - [ ] **TS2395** Individual declarations in merged declaration 'X' must be all exported or all local. — missed 20, right 18, extra 2
 - [ ] **TS2355** A function whose declared type is neither 'X', 'X', nor 'X' must return a value. — missed 18, right 19, extra 1
@@ -101,7 +104,6 @@ Highest yield: the check exists, so this is breadth. Sorted by missed lines.
 
 - [ ] **TS18050** The value 'X' cannot be used here. — missed 722
 - [ ] **TS1005** 'X' expected. — missed 523
-- [ ] **TS2367** This comparison appears to be unintentional because the types 'X' and 'X' have no overlap. — missed 384
 - [ ] **TS7019** Rest parameter 'X' implicitly has an 'X' type. — missed 303
 - [ ] **TS7005** Variable 'X' implicitly has an 'X' type. — missed 290
 - [ ] **TS2550** Property 'X' does not exist on type 'X'. Do you need to change your target library? Try ch — missed 267
@@ -110,7 +112,6 @@ Highest yield: the check exists, so this is breadth. Sorted by missed lines.
 - [ ] **TS2356** An arithmetic operand must be of type 'X', 'X', 'X' or an enum type. — missed 203
 - [ ] **TS2403** Subsequent variable declarations must have the same type.  Variable 'X' must be of type 'X — missed 201
 - [ ] **TS7031** Binding element 'X' implicitly has an 'X' type. — missed 189
-- [ ] **TS2352** Conversion of type 'X' to type 'X' may be a mistake because neither type sufficiently over — missed 160
 - [ ] **TS1214** Identifier expected. 'X' is a reserved word in strict mode. Modules are automatically in s — missed 155
 - [ ] **TS1128** Declaration or statement expected. — missed 138
 - [ ] **TS1215** Invalid use of 'X'. Modules are automatically in strict mode. — missed 136
@@ -123,7 +124,6 @@ Highest yield: the check exists, so this is breadth. Sorted by missed lines.
 - [ ] **TS7009** 'X' expression, whose target lacks a construct signature, implicitly has an 'X' type. — missed 116
 - [ ] **TS2503** Cannot find namespace 'X'. — missed 115
 - [ ] **TS2703** The operand of a 'X' operator must be a property reference. — missed 110
-- [ ] **TS4111** Property 'X' comes from an index signature, so it must be accessed with ['X']. — missed 109
 - [ ] **TS2449** Class 'X' used before its declaration. — missed 105
 - [ ] **TS2873** This kind of expression is always falsy. — missed 103
 - [ ] **TS2694** Namespace 'X' has no exported member 'X'. — missed 94
@@ -161,17 +161,20 @@ Highest yield: the check exists, so this is breadth. Sorted by missed lines.
 - [ ] **TS1003** Identifier expected. — missed 44
 - [ ] **TS1102** 'X' cannot be called on an identifier in strict mode. — missed 44
 - [ ] **TS1127** Invalid character. — missed 43
+- [ ] **TS2790** The operand of a 'X' operator must be optional. — missed 41
+- [ ] **TS1345** An expression of type 'X' cannot be tested for truthiness. — missed 40
+- [ ] **TS2528** A module cannot have multiple default exports. — missed 39
 
-Long tail: 556 more codes, 5,216 missed lines in total (per-part results: `tsox_diagnostics = 0`).
+Long tail: 553 more codes, 5,096 missed lines in total (per-part results: `tsox_diagnostics = 0`).
 
 TS1005, TS1109 and the other TS1xxx codes are parser diagnostics, so they belong with the parser, not the checker.
 
 ## 3. False positives (tsox reports, tsc does not)
 
-- [ ] **TS2339** Property 'X' does not exist on type 'X'. — extra 1,244, right 429
-- [ ] **TS2322** Type 'X' is not assignable to type 'X'. — extra 951, right 1,586
-- [ ] **TS2345** Argument of type 'X' is not assignable to parameter of type 'X'. — extra 621, right 333
-- [ ] **TS18048** 'X' is possibly 'X'. — extra 271, right 72
+- [ ] **TS2339** Property 'X' does not exist on type 'X'. — extra 1,222, right 429
+- [ ] **TS2322** Type 'X' is not assignable to type 'X'. — extra 947, right 1,586
+- [ ] **TS2345** Argument of type 'X' is not assignable to parameter of type 'X'. — extra 615, right 332
+- [ ] **TS18048** 'X' is possibly 'X'. — extra 268, right 72
 - [ ] **TS2693** 'X' only refers to a type, but is being used as a value here. — extra 241, right 16
 - [ ] **TS2531** Object is possibly 'X'. — extra 231, right 0
 - [ ] **TS2454** Variable 'X' is used before being assigned. — extra 144, right 3,052
@@ -179,31 +182,31 @@ TS1005, TS1109 and the other TS1xxx codes are parser diagnostics, so they belong
 - [ ] **TS2349** This expression is not callable.
   Type 'X' has no call signatures. — extra 143, right 17
 - [ ] **TS7006** Parameter 'X' implicitly has an 'X' type. — extra 121, right 1,216
-- [ ] **TS2304** Cannot find name 'X'. — extra 98, right 942
 - [ ] **TS2554** Expected N arguments, but got N. — extra 89, right 102
-- [ ] **TS7053** Element implicitly has an 'X' type because expression of type 'X' can'X'{}'X'string'X'{}'. — extra 86, right 40
+- [ ] **TS7053** Element implicitly has an 'X' type because expression of type 'X' can'X'{}'X'string'X'{}'. — extra 83, right 40
 - [ ] **TS2741** Property 'X' is missing in type 'X' but required in type 'X'. — extra 76, right 73
-- [ ] **TS2488** Type 'X' must have a 'X' method that returns an iterator. — extra 57, right 36
-- [ ] **TS4114** This member must have an 'X' modifier because it overrides a member in the base class 'X'. — extra 51, right 288
+- [ ] **TS2304** Cannot find name 'X'. — extra 73, right 927
+- [ ] **TS2488** Type 'X' must have a 'X' method that returns an iterator. — extra 55, right 36
 - [ ] **TS2739** Type 'X' is missing the following properties from type 'X': hello, world — extra 50, right 18
 - [ ] **TS2420** Class 'X' incorrectly implements interface 'X'.
   Property 'X' is missing in type 'X' but  — extra 47, right 36
 - [ ] **TS2445** Property 'X' is protected and only accessible within class 'X' and its subclasses. — extra 36, right 84
-- [ ] **TS2551** Property 'X' does not exist on type 'X'. Did you mean 'X'? — extra 35, right 14
 - [ ] **TS2434** A namespace declaration cannot be located prior to a class or function with which it is me — extra 34, right 11
-- [ ] **TS7008** Member 'X' implicitly has an 'X' type. — extra 33, right 637
+- [ ] **TS2551** Property 'X' does not exist on type 'X'. Did you mean 'X'? — extra 33, right 14
 - [ ] **TS7030** Not all code paths return a value. — extra 33, right 58
 - [ ] **TS2314** Generic type 'X' requires N type argument(s). — extra 30, right 127
 - [ ] **TS2365** Operator 'X' cannot be applied to types 'X' and 'X'. — extra 28, right 65
+- [ ] **TS2363** The right-hand side of an arithmetic operation must be of type 'X', 'X', 'X' or an enum ty — extra 28, right 393
+- [ ] **TS18047** 'X' is possibly 'X'. — extra 26, right 5
 
 ## 4. Files that hang or crawl
 
-The first two are left out of the runs above; the third is in them.
+Status on `2badb7c`. The first two are left out of the runs above; the third is in them.
 
-- [ ] `part-07/compiler__largeTupleTypes.ts`: does not finish in 8 s alone.
-- [ ] `part-08/compiler__performanceComparisonOfStructurallyIdenticalInterfacesWithGenericSignatures.ts`: 25 ms on `b0efa6a`, over 30 s since `bfd1712` (the interface heritage check). Cost grows about n! with the number of generic methods that return their own interface (9 methods 36 s). The pairs compared repeat (56 distinct for the corpus file), but the binder environment differs on every route, so a cache keyed on the binder list never hits; keyed on the binders as a set it takes about 220 ms and stays exponential in the method count. Not retested at `fb9ebd6`.
-- [ ] `part-09/compiler__relationComplexityError.ts`: about 5 s alone.
-- [ ] The same corpus file as above reports TS2416 on line 45 ("'await' in type 'A' is not assignable ... base type 'InterfaceB<error>'"); tsc reports nothing. It also did so before `bfd1712`.
+- [ ] `part-07/compiler__largeTupleTypes.ts`: does not finish in 15 s alone.
+- [ ] `part-08/compiler__performanceComparisonOfStructurallyIdenticalInterfacesWithGenericSignatures.ts`: 25 ms on `b0efa6a`, over 30 s since `bfd1712` (the interface heritage check), still over 15 s on `2badb7c`. Cost grows about n! with the number of generic methods that return their own interface. The compared pairs repeat (56 distinct for this file), but the binder environment differs on every route. `337384b` memoizes pairs only when `binders` is empty, and these comparisons run inside generic method signatures, so the memo is skipped. A key over the binders *as a set* (order and repeats do not matter to the lookup) reuses the work; that took the file to about 220 ms in a draft and was still exponential in the method count (2^n sets).
+- [ ] `part-09/compiler__relationComplexityError.ts`: regression, see section 6. 4 to 5 s before `337384b`, about 27 to 29 s after.
+- [ ] The file in the second item also reports TS2416 on line 45 ("'await' in type 'A' is not assignable ... base type 'InterfaceB<error>'"); tsc reports nothing. It did so before `bfd1712` too.
 
 ## 5. Already moved by the roadmap work
 
@@ -214,8 +217,34 @@ Counts are from this run (per part). Commits are the ones whose subject names th
 - **TS2366** (02afd9d): tsc 27 lines, right 17, missed 10, extra 20
 - **TS2355** (02afd9d): tsc 37 lines, right 19, missed 18, extra 1
 - **TS2534** (02afd9d): tsc 2 lines, right 2, missed 0, extra 2
-- **TS2540** (118447a Model readonly properties and report writes to them): tsc 97 lines, right 18, missed 79, extra 3
-- **TS2551** (fb9ebd6 Type library calls more precisely and suggest spellings): tsc 45 lines, right 14, missed 31, extra 35
+- **TS2540** (118447a Model readonly properties and report writes to them): tsc 97 lines, right 21, missed 76, extra 3
+- **TS2551** (fb9ebd6 Type library calls more precisely and suggest spellings): tsc 45 lines, right 14, missed 31, extra 33
+- **TS2367** (e8c5877 Report comparisons whose types cannot overlap; f43e9c9 and 337384b narrow the guard): tsc 385 lines, right 62, missed 322, extra 7
+- **TS2352** (75a7f1a Report invalid type assertions for clearly non-overlapping types): tsc 160 lines, right 2, missed 158, extra 0
+- **TS4111** (937e16a Report TS4111, type new Promise<T> and Promise.allSettled): tsc 141 lines, right 56, missed 53, extra 5
+
+## 6. Performance regression
+
+- [ ] `337384b` ("Memoize subtype pairs within a comparison"): `compiler__relationComplexityError.ts` takes 5.1 s on its parent `86d1abc` and 26.9 s on `337384b` (28.9 s on `2badb7c`), alone. Part-09 as a whole went from 18 s and 50 MB of tsox time and memory to 92 s and 663 MB; the other 20 parts are unchanged or slightly faster (10.9 s against 11.7 s combined). The memo keeps every decided pair in a `HashMap` until the outermost comparison ends, so a file with very large unions probably grows it to millions of entries. Not profiled. Options: cap the memo, or only memoize comparisons that are large enough to repeat.
+
+## 7. Real projects (tsox against tsgo, `2badb7c`, single core, 10 s limit)
+
+| project | tsgo | tsox | tsox, warm lib cache | errors tsox / tsgo |
+|---|---|---|---|---|
+| zustand | 1,061 ms, 195 MB | 819 ms, 48 MB | 263 ms | 40 / 0 |
+| immer | 525 ms, 106 MB | 239 ms, 34 MB | 87 ms | 11 / 5 |
+| jotai | 1,184 ms, 227 MB | 1,276 ms, 48 MB | 673 ms | 586 / 7 |
+| rxjs | 8,281 ms, 1,167 MB | 2,570 ms, 59 MB | 1,947 ms | 3,751 / 22,014 (see below) |
+| type-fest | over 10 s | over 10 s | over 10 s | not compared |
+
+- [ ] **jotai, generic inference.** `store.get(atom)` with an intersection argument (`PrimitiveAtom<number> & WithInitialValue<number>`) and a parameter `Atom<Value>`: `Value` is never instantiated, so errors read `Atom<Value>` and `'Value' and '1'`. Probably one root cause behind most of its 586 errors: TS2345 329 extra lines, TS2339 67 (`.slice` on `Value`, callback parameters left `unknown`), TS2365 and TS2362 28 (arithmetic on `Value`). Inference should go through interface heritage (`PrimitiveAtom` to `WritableAtom` to `Atom`) and intersection members. `tests/vanilla/store.test.tsx` has 182 of the 586.
+- [ ] **jotai, generic function type as an assignment target.** `() => void` is rejected for `OnMount<[SetStateAction<number>], void>` (TS2322, 63 lines); the callback parameters stay untyped.
+- [ ] **jotai, constraint on a conditional type.** `ExtractAtomArgs<AtomType>` is reported as not satisfying `unknown[]` (TS2344, 13 lines).
+- [ ] **jotai, narrowing.** `getDefault(get, options)` and `use(value)` reported "not callable" (TS2349, 25 lines); looks like a `typeof x === 'function'` narrowing of a union with a type parameter, or React's `use` typing. Not confirmed.
+- [ ] **`process` and `globalThis` not found.** TS2304 on jotai (17 and 2), zustand (8). tsgo finds `process` through `@types/node`; automatic `@types` inclusion and `globalThis` are standard library and environment work.
+- [ ] **immer, wrong code for a Node global.** tsox reports TS2304 (6 lines) where tsgo reports TS2591 (5 lines), "Cannot find name ... install type definitions for node". Probably the same names; not confirmed.
+- [ ] **type-fest times out** at 10 s in both tsgo and tsox (almost pure type-level code).
+- [ ] **rxjs needs a full install before it is a valid accuracy test.** With the dependencies installed (`--ignore-scripts`, `--legacy-peer-deps`, no workspace setup) tsgo itself reports 22,014 errors, mostly TS7031 and TS7006, so the 8,850 lines tsox is missing there are mostly implicit-any codes tsox does not report yet. Only its timing is usable: tsox is about 3.2x faster with 20x less memory.
 
 ## Notes
 
