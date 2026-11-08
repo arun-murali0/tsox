@@ -130,6 +130,8 @@ pub struct CheckContext<'ast, 'src> {
     pub current_class_ids: Vec<u64>,
     /// Checking the body of a constructor, where a `readonly` member of `this` may be assigned.
     pub in_constructor: bool,
+    /// Set while a bracket access with a literal key is looked up like a property read.
+    pub bracket_access: bool,
 
     // True while checking the body of a function whose `this` has no type at all:
     // a plain function expression with no `this` parameter and no contextual
@@ -489,6 +491,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             current_class_instance: None,
             current_class_ids: Vec::new(),
             in_constructor: false,
+            bracket_access: false,
             implicit_this: false,
             next_function_has_no_this: false,
             call_return_context: None,

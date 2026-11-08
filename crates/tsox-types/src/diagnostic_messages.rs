@@ -697,6 +697,15 @@ pub mod messages {
         )
     }
 
+    pub fn property_from_index_signature(property_name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PropertyFromIndexSignature,
+            format!(
+                "Property '{property_name}' comes from an index signature, so it must be accessed with ['{property_name}']."
+            ),
+        )
+    }
+
     pub fn array_destructuring_requires_array(
         arena: &TypeArena,
         source: TypeId,

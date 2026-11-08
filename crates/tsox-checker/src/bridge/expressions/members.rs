@@ -43,6 +43,17 @@ pub fn infer_member_access_type(
 
     match lookup_with_augmentation(ctx, effective_type, property_name) {
         Some(found) => {
+            if ctx.options.no_property_access_from_index_signature
+                && !ctx.bracket_access
+                && read_through_index_only(ctx, effective_type, property_name)
+            {
+                ctx.error(
+                    crate::diagnostic_messages::messages::property_from_index_signature(
+                        property_name,
+                    ),
+                    span,
+                );
+            }
             super::super::accessibility::check_member_accessibility(
                 ctx,
                 effective_type,
@@ -892,7 +903,11 @@ pub(super) fn infer_computed_member_access_type(
         return ctx.arena.error();
     }
 
-    infer_member_access_type_with_optional(object_type, &key.value, optional, span, ctx)
+    ctx.bracket_access = true;
+    let result =
+        infer_member_access_type_with_optional(object_type, &key.value, optional, span, ctx);
+    ctx.bracket_access = false;
+    result
 }
 
 pub(super) fn infer_chain_element_type(

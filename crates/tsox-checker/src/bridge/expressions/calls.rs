@@ -170,6 +170,27 @@ fn member_callee(
 // Picked: take the member's type the way a call on `a.b` does (member_callee) and run the
 // same check as for a plain name. The namespace's value already holds the class's
 // constructor as a property, so there is nothing new to look up.
+// `PromiseSettledResult` for one input: `{ status: "fulfilled", value: T }` or
+// `{ status: "rejected", reason: any }`, one member of it built here.
+fn settled_result(
+    ctx: &mut CheckContext<'_, '_>,
+    status: &str,
+    field: &str,
+    value: TypeId,
+) -> TypeId {
+    let status_literal = ctx.arena.alloc(Type::StringLiteral(status.into()));
+    let entry = |name: &str, type_id: TypeId| crate::types::PropertyEntry {
+        name: name.into(),
+        type_id,
+        optional: false,
+        is_method: false,
+        modifiers: Default::default(),
+    };
+    let properties = vec![entry("status", status_literal), entry(field, value)];
+    ctx.arena
+        .alloc(Type::Object(crate::types::ObjectType::new(properties)))
+}
+
 // The value a promise settles to: `number` for `Promise<number>`, the type itself otherwise.
 fn awaited_type(ctx: &CheckContext<'_, '_>, mut type_id: TypeId) -> TypeId {
     for _ in 0..16 {
@@ -199,7 +220,7 @@ fn promise_static_call(
         return None;
     }
     let method = member.property.name.as_str();
-    if !matches!(method, "resolve" | "reject" | "all" | "race") {
+    if !matches!(method, "resolve" | "reject" | "all" | "race" | "allSettled") {
         return None;
     }
     let mut argument_types = Vec::new();
@@ -251,7 +272,26 @@ fn promise_static_call(
                 .iter()
                 .map(|&element| awaited_type(ctx, element))
                 .collect();
-            let inner = if method == "all" {
+            let inner = if method == "allSettled" {
+                // Each input becomes `{ status: "fulfilled", value } | { status: "rejected", reason }`.
+                let mut results = Vec::new();
+                for &type_id in &settled {
+                    let fulfilled = settled_result(ctx, "fulfilled", "value", type_id);
+                    let any = ctx.arena.any();
+                    let rejected = settled_result(ctx, "rejected", "reason", any);
+                    results.push(ctx.arena.alloc_union(vec![fulfilled, rejected]));
+                }
+                ctx.arena.alloc_tuple(
+                    results
+                        .into_iter()
+                        .map(|type_id| crate::types::TupleElement {
+                            type_id,
+                            optional: false,
+                            rest: false,
+                        })
+                        .collect(),
+                )
+            } else if method == "all" {
                 ctx.arena.alloc_tuple(
                     settled
                         .into_iter()
@@ -292,6 +332,25 @@ pub(super) fn infer_new_expression_type(
     };
     let explicit_type_args =
         resolve_explicit_type_arguments(new_expr.type_arguments.as_deref(), ctx);
+
+    // `new Promise<T>(executor)` on the global Promise: the library's constructor is not
+    // modelled, so the result is `Promise<T>`, or `Promise<unknown>` when no `T` is written, as tsc
+    // gives when nothing is inferred. The executor is still checked as an expression.
+    if let Expression::Identifier(callee_ident) = &new_expr.callee
+        && callee_ident.name == "Promise"
+        && resolve_symbol_id(callee_ident, scoping).is_none()
+    {
+        for argument in &new_expr.arguments {
+            if let Some(expression) = argument.as_expression() {
+                infer_expression_type(expression, scoping, ctx);
+            }
+        }
+        let value = match explicit_type_args.as_slice() {
+            [only] => *only,
+            _ => ctx.arena.unknown(),
+        };
+        return ctx.arena.alloc_promise(value);
+    }
 
     check_callable(
         callee_type,

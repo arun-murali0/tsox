@@ -81,6 +81,7 @@ impl CheckOptions {
     pub const fn comparison_harness_defaults() -> Self {
         Self {
             no_unchecked_indexed_access: true,
+            no_property_access_from_index_signature: true,
             allow_unreachable_code: false,
             ..Self::typescript_defaults()
         }
