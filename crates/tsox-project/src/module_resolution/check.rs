@@ -1541,7 +1541,7 @@ static TEST_DELAY_SALT: std::sync::atomic::AtomicUsize = std::sync::atomic::Atom
 // The pool is built once and kept, since each worker owns an arena that is reused
 // from file to file. If the threads cannot be created, None sends the caller to
 // rayon's global pool, which works but has the small default stack.
-fn worker_pool() -> Option<&'static rayon::ThreadPool> {
+pub(super) fn worker_pool() -> Option<&'static rayon::ThreadPool> {
     static POOL: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
     POOL.get_or_init(|| {
         rayon::ThreadPoolBuilder::new()

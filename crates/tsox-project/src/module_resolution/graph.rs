@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use crate::project::ProjectFiles;
 use crate::types::FileId;
 use tsox_base::compiler_options::EffectiveCompilerOptions;
@@ -121,6 +123,25 @@ impl ModuleGraph {
         resolver: &ModuleResolver,
         overlay: &(dyn Fn(&Path) -> Option<Arc<str>> + Sync),
     ) -> Result<Self, ModuleError> {
+        // The checking pool: its threads have the big stack the parser needs and the stack
+        // guard set. On one core it would only add hand-offs, so it is not used there.
+        let pool = super::check::worker_pool().filter(|pool| pool.current_num_threads() > 1);
+        Self::discover_in(entries, resolver, overlay, pool)
+    }
+
+    // The walk. Each round takes every file found so far that has not been read, loads the
+    // whole round at once (on `pool`, when given and the round has more than one file), and
+    // then resolves the imports of the round's files one file at a time, in id order, which
+    // is where new files are found and interned. Loading touches nothing the walk owns, so
+    // doing it in parallel changes nothing but the time. The ids the graph publishes follow
+    // path order (`in_path_order`), so the order files are interned in cannot show in the
+    // result either.
+    fn discover_in(
+        entries: &[PathBuf],
+        resolver: &ModuleResolver,
+        overlay: &(dyn Fn(&Path) -> Option<Arc<str>> + Sync),
+        pool: Option<&rayon::ThreadPool>,
+    ) -> Result<Self, ModuleError> {
         // Discovery ids: handed out as files are found, and used only until the walk ends.
         let mut files = ProjectFiles::new();
         for entry in entries {
@@ -135,83 +156,63 @@ impl ModuleGraph {
         let mut syntax_errors = Vec::new();
         let mut ambient_scripts = Vec::new();
 
-        // Files are interned as their importers are scanned, so the list grows while it
-        // is walked. Visiting ids in order is a breadth-first walk with no queue.
         let mut next = 0;
         while next < files.len() {
-            let id = file_id(next);
-            let path = files
-                .path(id)
-                .expect("every interned id has a path")
-                .to_path_buf();
-
-            // The fingerprint is taken before the read. If the file changes in between,
-            // the recorded fingerprint is the older one and the change is still seen.
-            let buffer = overlay(&path);
-            let (fingerprint, bytes) = match buffer {
-                Some(text) => (
-                    FileFingerprint::of(&path).unwrap_or_else(|_| FileFingerprint::absent()),
-                    text.as_bytes().to_vec(),
-                ),
-                None => {
-                    let fingerprint =
-                        FileFingerprint::of(&path).map_err(|source| ModuleError::Read {
-                            path: path.clone(),
-                            source,
-                        })?;
-                    let bytes = fs::read(&path).map_err(|source| ModuleError::Read {
-                        path: path.clone(),
-                        source,
-                    })?;
-                    (fingerprint, bytes)
-                }
+            let round_end = files.len();
+            let paths: Vec<PathBuf> = (next..round_end)
+                .map(|position| {
+                    files
+                        .path(file_id(position))
+                        .expect("every interned id has a path")
+                        .to_path_buf()
+                })
+                .collect();
+            let loaded: Vec<Result<Loaded, ModuleError>> = match pool {
+                Some(pool) if paths.len() > 1 => pool.install(|| {
+                    paths
+                        .par_iter()
+                        .map(|path| load_for_discovery(path, overlay))
+                        .collect()
+                }),
+                _ => paths
+                    .iter()
+                    .map(|path| load_for_discovery(path, overlay))
+                    .collect(),
             };
-            let state = FileState::new(fingerprint, content_hash(&bytes));
-
-            let mut kept: Option<Arc<str>> = None;
-            let mut file_edges = Vec::new();
-            let mut failed = false;
-            let mut declares_ambient = false;
-            if is_scannable(&path) {
-                // `str::from_utf8` first: it checks valid text several times faster than the
-                // lossy conversion does (the lossy one walks the bytes in chunks), and nearly
-                // every file is valid. For bytes that are not, the lossy conversion gives the
-                // same text as before.
-                let source = match std::str::from_utf8(&bytes) {
-                    Ok(valid) => Cow::Borrowed(valid),
-                    Err(_) => String::from_utf8_lossy(&bytes),
-                };
-                // Borrowed means the bytes were valid UTF-8, which is the only text
-                // `read_to_string` would have given the checker. Anything else is not
-                // kept, so the checker reads the file itself and fails as before.
-                if let Cow::Borrowed(valid) = &source {
-                    kept = Some(Arc::from(*valid));
-                }
-                let scan = scan_dependency_aware(&path, &bytes, &source);
-                failed = scan.parse_failed;
-                declares_ambient = scan.declares_ambient_modules;
-                for request in scan.requests {
-                    // TypeScript's `noLib` disables the `lib` compiler option and explicit
-                    // triple-slash library references alike.
-                    if request.kind == ModuleRequestKind::LibraryReference && resolver.no_lib() {
-                        continue;
+            // In id order, so the first failure reported is the one a one-file-at-a-time
+            // walk would have stopped at.
+            for (path, loaded) in paths.iter().zip(loaded) {
+                let Loaded { state, kept, scan } = loaded?;
+                let mut file_edges = Vec::new();
+                let mut failed = false;
+                let mut declares_ambient = false;
+                if let Some(scan) = scan {
+                    failed = scan.parse_failed;
+                    declares_ambient = scan.declares_ambient_modules;
+                    for request in scan.requests {
+                        // TypeScript's `noLib` disables the `lib` compiler option and
+                        // explicit triple-slash library references alike.
+                        if request.kind == ModuleRequestKind::LibraryReference && resolver.no_lib()
+                        {
+                            continue;
+                        }
+                        let target = resolve_request(resolver, path, &request)
+                            .map(|resolved| files.intern(resolved));
+                        file_edges.push(ModuleEdge {
+                            specifier: request.specifier,
+                            target,
+                            is_type: request.is_type,
+                            is_import: request.is_import,
+                            kind: request.kind,
+                        });
                     }
-                    let target = resolve_request(resolver, &path, &request)
-                        .map(|resolved| files.intern(resolved));
-                    file_edges.push(ModuleEdge {
-                        specifier: request.specifier,
-                        target,
-                        is_type: request.is_type,
-                        is_import: request.is_import,
-                        kind: request.kind,
-                    });
                 }
+                states.push(state.with_text(kept));
+                edges.push(file_edges);
+                syntax_errors.push(failed);
+                ambient_scripts.push(declares_ambient);
             }
-            states.push(state.with_text(kept));
-            edges.push(file_edges);
-            syntax_errors.push(failed);
-            ambient_scripts.push(declares_ambient);
-            next += 1;
+            next = round_end;
         }
 
         Ok(Self::in_path_order(
@@ -737,6 +738,67 @@ fn extension(path: &Path) -> Option<&str> {
     path.extension().and_then(|ext| ext.to_str())
 }
 
+// What one file contributes to the walk before its imports are resolved. Nothing in it needs
+// the walk's file table, so every file of a round can be loaded at the same time.
+struct Loaded {
+    state: FileState,
+    kept: Option<Arc<str>>,
+    scan: Option<ModuleScan>,
+}
+
+fn load_for_discovery(
+    path: &Path,
+    overlay: &(dyn Fn(&Path) -> Option<Arc<str>> + Sync),
+) -> Result<Loaded, ModuleError> {
+    // The fingerprint is taken before the read. If the file changes in between,
+    // the recorded fingerprint is the older one and the change is still seen.
+    let (fingerprint, bytes) = match overlay(path) {
+        Some(text) => (
+            FileFingerprint::of(path).unwrap_or_else(|_| FileFingerprint::absent()),
+            text.as_bytes().to_vec(),
+        ),
+        None => {
+            let fingerprint = FileFingerprint::of(path).map_err(|source| ModuleError::Read {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            let bytes = fs::read(path).map_err(|source| ModuleError::Read {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            (fingerprint, bytes)
+        }
+    };
+    let state = FileState::new(fingerprint, content_hash(&bytes));
+    if !is_scannable(path) {
+        return Ok(Loaded {
+            state,
+            kept: None,
+            scan: None,
+        });
+    }
+    // `str::from_utf8` first: it checks valid text several times faster than the lossy
+    // conversion does (the lossy one walks the bytes in chunks), and nearly every file is
+    // valid. For bytes that are not, the lossy conversion gives the same text as before.
+    let source = match std::str::from_utf8(&bytes) {
+        Ok(valid) => Cow::Borrowed(valid),
+        Err(_) => String::from_utf8_lossy(&bytes),
+    };
+    // Borrowed means the bytes were valid UTF-8, which is the only text `read_to_string`
+    // would have given the checker. Anything else is not kept, so the checker reads the file
+    // itself and fails as before.
+    let kept = match &source {
+        Cow::Borrowed(valid) => Some(Arc::from(*valid)),
+        Cow::Owned(_) => None,
+    };
+    let scan = scan_dependency_aware(path, &bytes, &source);
+    Ok(Loaded {
+        state,
+        kept,
+        scan: Some(scan),
+    })
+}
+
 // The scan of `source`, from the library cache when `path` is a dependency file and the cache
 // has the scan of exactly these bytes (see `scan_cache`).
 #[cfg(feature = "snapshot")]
@@ -1017,5 +1079,222 @@ mod tests {
         assert_eq!(graph.dependencies(file_id(0)), ids(&[2]));
         assert_eq!(graph.dependents(file_id(2)), ids(&[0, 1]));
         assert!(graph.dependents(file_id(0)).is_empty());
+    }
+}
+
+// Discovery that loads each round of files on a pool must find what the one-file-at-a-time
+// walk finds. The pool here has four threads whatever the machine has, so the parallel path
+// runs (and interleaves) on a single core too.
+#[cfg(test)]
+mod parallel_discovery {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use super::ModuleGraph;
+    use crate::module_resolution::{ModuleError, ModuleResolver};
+    use crate::types::FileId;
+
+    fn project(name: &str, files: &[(&str, &str)]) -> (PathBuf, Vec<PathBuf>) {
+        let root = std::env::temp_dir().join(format!(
+            "tsox-discovery-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mut paths = Vec::new();
+        for (file, text) in files {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, text).unwrap();
+            paths.push(fs::canonicalize(&path).unwrap());
+        }
+        (fs::canonicalize(&root).unwrap(), paths)
+    }
+
+    // Everything the walk found, as text: files in id order, then each file's edges.
+    fn shape(graph: &ModuleGraph) -> Vec<String> {
+        let mut lines = Vec::new();
+        for index in 0..graph.len() {
+            let id = FileId::new(index as u32);
+            let path = graph.files().path(id).unwrap().display().to_string();
+            // The state's `observed` time is when this run looked, so it differs between two
+            // runs by nature. What must match is the text read and its hash.
+            let (length, hash) = graph
+                .source_with_state(id)
+                .map(|(text, _, hash)| (text.len() as i64, hash))
+                .unwrap_or((-1, 0));
+            lines.push(format!(
+                "{path} failed={} ambient={} hash={hash} text_len={length}",
+                graph.has_syntax_errors(id),
+                graph.declares_ambient_modules(id),
+            ));
+            for edge in graph.edges(id) {
+                let target = edge
+                    .target
+                    .and_then(|target| graph.files().path(target))
+                    .map(|path| path.display().to_string());
+                lines.push(format!(
+                    "  {:?} {:?} type={} import={} -> {target:?}",
+                    edge.kind, edge.specifier, edge.is_type, edge.is_import
+                ));
+            }
+        }
+        lines
+    }
+
+    fn both(entries: &[PathBuf]) -> (ModuleGraph, ModuleGraph) {
+        let resolver = ModuleResolver::new();
+        let overlay = |_: &Path| None;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let sequential = ModuleGraph::discover_in(entries, &resolver, &overlay, None).unwrap();
+        let parallel = ModuleGraph::discover_in(entries, &resolver, &overlay, Some(&pool)).unwrap();
+        (sequential, parallel)
+    }
+
+    #[test]
+    fn a_wide_and_deep_project_is_found_the_same_way() {
+        // A fan-out with shared dependencies, a chain, a cycle, a type-only import, a
+        // dynamic import, a re-export, an import that resolves to nothing, and a file that
+        // does not parse.
+        let mut files: Vec<(String, String)> = Vec::new();
+        let mut main = String::new();
+        for n in 0..14 {
+            main.push_str(&format!("import {{ v{n} }} from './m{n}';\n"));
+            files.push((
+                format!("m{n}.ts"),
+                format!(
+                    "import {{ s }} from './shared{}';\nimport './chain0';\nexport const v{n} = s;\n",
+                    n % 3
+                ),
+            ));
+        }
+        for n in 0..3 {
+            files.push((format!("shared{n}.ts"), format!("export const s = {n};\n")));
+        }
+        for n in 0..6 {
+            files.push((
+                format!("chain{n}.ts"),
+                format!("import './chain{}';\nexport {{}};\n", n + 1),
+            ));
+        }
+        files.push((
+            "chain6.ts".into(),
+            "import './cycle-a';\nexport {};\n".into(),
+        ));
+        files.push((
+            "cycle-a.ts".into(),
+            "import './cycle-b';\nexport const a = 1;\n".into(),
+        ));
+        files.push((
+            "cycle-b.ts".into(),
+            "import './cycle-a';\nexport const b = 1;\n".into(),
+        ));
+        files.push((
+            "types.d.ts".into(),
+            "export interface T { x: number }\n".into(),
+        ));
+        files.push(("lazy.ts".into(), "export const lazy = 1;\n".into()));
+        files.push(("reexp.ts".into(), "export * from './shared0';\n".into()));
+        files.push((
+            "broken.ts".into(),
+            "const = = ;\nimport './shared1';\n".into(),
+        ));
+        files.push((
+            "ambient.d.ts".into(),
+            "declare module 'ambient-x' { export const q: number }\n".into(),
+        ));
+        main.push_str(
+            "import type { T } from './types';\nexport * from './reexp';\nimport './broken';\n\
+             import './ambient';\nimport './missing-file';\nconst l = import('./lazy');\n",
+        );
+        files.insert(0, ("main.ts".into(), main));
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let (_root, paths) = project("wide", &refs);
+        let (sequential, parallel) = both(&paths[..1]);
+        assert!(sequential.len() > 30, "{} files", sequential.len());
+        assert_eq!(shape(&parallel), shape(&sequential));
+        assert_eq!(parallel.layers(), sequential.layers());
+        assert_eq!(parallel.cycles(), sequential.cycles());
+        assert_eq!(
+            parallel.unresolved().count(),
+            sequential.unresolved().count()
+        );
+    }
+
+    #[test]
+    fn several_entries_and_a_failing_file_report_what_the_sequential_walk_reports() {
+        let (root, paths) = project(
+            "failing",
+            &[
+                ("a.ts", "import './b';\nimport './gone';\n"),
+                ("b.ts", "export const b = 1;\n"),
+                ("c.ts", "export const c = 1;\n"),
+            ],
+        );
+        let (sequential, parallel) = both(&paths);
+        assert_eq!(shape(&parallel), shape(&sequential));
+
+        // An entry that cannot be read: the error names the same file either way.
+        let missing = root.join("not-there.ts");
+        let mut entries = paths.clone();
+        entries.insert(1, missing.clone());
+        let resolver = ModuleResolver::new();
+        let overlay = |_: &Path| None;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let named = |result: Result<ModuleGraph, ModuleError>| match result {
+            Err(ModuleError::Read { path, .. }) => path,
+            other => panic!("expected a read error, got {:?}", other.map(|g| g.len())),
+        };
+        let one = named(ModuleGraph::discover_in(
+            &entries, &resolver, &overlay, None,
+        ));
+        let many = named(ModuleGraph::discover_in(
+            &entries,
+            &resolver,
+            &overlay,
+            Some(&pool),
+        ));
+        assert_eq!(one, missing);
+        assert_eq!(many, one);
+    }
+
+    #[test]
+    fn an_overlay_is_read_the_same_way_on_a_pool() {
+        let (_root, paths) = project(
+            "overlay",
+            &[
+                ("a.ts", "import './b';\n"),
+                ("b.ts", "export const b = 1;\n"),
+                ("c.ts", "export const c = 1;\n"),
+            ],
+        );
+        let b = paths[1].clone();
+        let overlay = move |path: &Path| {
+            (path == b).then(|| Arc::<str>::from("import './c';\nexport const b = 2;\n"))
+        };
+        let resolver = ModuleResolver::new();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let sequential = ModuleGraph::discover_in(&paths[..1], &resolver, &overlay, None).unwrap();
+        let parallel =
+            ModuleGraph::discover_in(&paths[..1], &resolver, &overlay, Some(&pool)).unwrap();
+        assert_eq!(shape(&parallel), shape(&sequential));
+        // The buffer's import was followed in both.
+        assert_eq!(sequential.len(), 3);
     }
 }
