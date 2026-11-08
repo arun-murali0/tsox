@@ -130,6 +130,8 @@ pub struct CheckContext<'ast, 'src> {
     pub current_class_ids: Vec<u64>,
     /// Checking the body of a constructor, where a `readonly` member of `this` may be assigned.
     pub in_constructor: bool,
+    /// Abstract member names per top-level class: implementing one needs no `override`.
+    pub abstract_members: std::collections::HashMap<String, std::collections::HashSet<String>>,
     /// Names already compared with `==` or `===`: such a comparison narrows the name for the
     /// code after it, so a later literal comparison is not judged on the declared literal type.
     pub compared_names: std::collections::HashSet<String>,
@@ -495,6 +497,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             current_class_ids: Vec::new(),
             in_constructor: false,
             compared_names: Default::default(),
+            abstract_members: Default::default(),
             bracket_access: false,
             implicit_this: false,
             next_function_has_no_this: false,

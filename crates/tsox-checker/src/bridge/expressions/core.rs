@@ -25,6 +25,11 @@ pub fn resolve_identifier_type(
         if ident.name == "undefined" {
             return ctx.arena.undefined();
         }
+        // `arguments` is the implicit object of every non-arrow function; it is not declared
+        // by any library file. Typed `any` rather than IArguments: indexing and `.length` work.
+        if ident.name == "arguments" {
+            return ctx.arena.any();
+        }
         // Oxc leaves a value read of an `import type` name without a symbol. The name is
         // declared and has a value side, but the import erased it: TS1361, not 2304/2693.
         if ctx.type_only_value_names.contains(ident.name.as_str()) {

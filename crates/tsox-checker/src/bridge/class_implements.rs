@@ -10,6 +10,40 @@ use super::context::CheckContext;
 // cannot see never produces a report; the cost is that such a class goes unchecked.
 pub fn check_class_implements<'ast>(program: &Program<'ast>, ctx: &mut CheckContext<'ast, '_>) {
     for statement in &program.body {
+        let class = match statement {
+            Statement::ClassDeclaration(class) => Some(class),
+            Statement::ExportDeclaration(export) => match &export.declaration {
+                oxc_ast::ast::Declaration::ClassDeclaration(class) => Some(class),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(class) = class
+            && let Some(id) = class.id.as_ref()
+        {
+            let names = class
+                .body
+                .body
+                .iter()
+                .filter_map(|element| match element {
+                    oxc_ast::ast::ClassElement::PropertyDefinition(p)
+                        if p.r#type
+                            == oxc_ast::ast::PropertyDefinitionType::TSAbstractPropertyDefinition => {
+                        p.key.static_name().map(|n| n.to_string())
+                    }
+                    oxc_ast::ast::ClassElement::MethodDefinition(m)
+                        if m.r#type
+                            == oxc_ast::ast::MethodDefinitionType::TSAbstractMethodDefinition =>
+                    {
+                        m.key.static_name().map(|n| n.to_string())
+                    }
+                    _ => None,
+                })
+                .collect();
+            ctx.abstract_members.insert(id.name.to_string(), names);
+        }
+    }
+    for statement in &program.body {
         match statement {
             Statement::ClassDeclaration(class) => check_class(class, ctx),
             Statement::TSInterfaceDeclaration(interface) => check_interface(interface, ctx),
@@ -313,7 +347,11 @@ fn report_missing_overrides<'ast>(
         let Some(name) = key.static_name() else {
             continue;
         };
-        if base_members.iter().any(|m| m.as_ref() == name.as_ref()) {
+        let is_abstract = ctx
+            .abstract_members
+            .get(base_name)
+            .is_some_and(|set| set.contains(name.as_ref()));
+        if !is_abstract && base_members.iter().any(|m| m.as_ref() == name.as_ref()) {
             ctx.error(
                 crate::diagnostic_messages::messages::missing_override_modifier(base_name),
                 key.span(),
