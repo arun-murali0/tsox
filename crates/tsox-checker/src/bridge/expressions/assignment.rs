@@ -278,6 +278,16 @@ fn resolve_assignment_target_type(
         }
         AssignmentTarget::ComputedMemberExpression(member) => {
             let object_type = infer_expression_type(&member.object, scoping, ctx);
+            if ctx.arena.is_readonly_array(object_type) {
+                ctx.error(
+                    crate::diagnostic_messages::messages::readonly_index_write(
+                        &ctx.arena,
+                        object_type,
+                    ),
+                    member.span(),
+                );
+                return None;
+            }
             Some(infer_computed_member_access_type(
                 object_type,
                 &member.expression,

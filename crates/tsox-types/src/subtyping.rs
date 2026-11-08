@@ -262,6 +262,12 @@ fn is_subtype_uncached(
 
         (Type::Function(a), Type::Function(b)) => function_is_subtype(arena, a, b, seen, binders),
 
+        // A readonly array is not assignable to a mutable one (tsc: TS4104).
+        (Type::Array(_), Type::Array(_))
+            if arena.is_readonly_array(sub) && !arena.is_readonly_array(sup) =>
+        {
+            false
+        }
         (Type::Array(a), Type::Array(b)) => is_subtype_inner(arena, *a, *b, seen, binders),
 
         (Type::Tuple(a), Type::Tuple(b)) => tuple_is_subtype(arena, a, b, seen, binders),

@@ -45,6 +45,13 @@ pub mod messages {
         expected: TypeId,
         plain: DiagnosticCode,
     ) -> DiagnosticMessage {
+        if matches!(
+            plain,
+            DiagnosticCode::DeclaredTypeMismatch | DiagnosticCode::ReturnTypeMismatch
+        ) && is_readonly_to_mutable(arena, actual, expected)
+        {
+            return readonly_to_mutable(arena, actual, expected);
+        }
         let levels = mismatch_levels(arena, actual, expected);
         DiagnosticMessage::new(top_code(&levels, plain), render(&levels))
     }
@@ -243,6 +250,9 @@ pub mod messages {
         instantiated: TypeId,
         expected: TypeId,
     ) -> DiagnosticMessage {
+        if is_readonly_to_mutable(arena, actual, expected) {
+            return readonly_to_mutable(arena, actual, expected);
+        }
         let levels = mismatch_levels_via(arena, actual, instantiated, expected);
         DiagnosticMessage::new(
             top_code(&levels, DiagnosticCode::DeclaredTypeMismatch),
@@ -284,6 +294,39 @@ pub mod messages {
             actual,
             expected,
             DiagnosticCode::DeclaredTypeMismatch,
+        )
+    }
+
+    fn is_readonly_to_mutable(arena: &TypeArena, actual: TypeId, expected: TypeId) -> bool {
+        matches!(arena.get(actual), Type::Array(_))
+            && matches!(arena.get(expected), Type::Array(_))
+            && arena.is_readonly_array(actual)
+            && !arena.is_readonly_array(expected)
+    }
+
+    // `readonly T[]` into `T[]` is TS4104 on its own line, not TS2322.
+    pub fn readonly_to_mutable(
+        arena: &TypeArena,
+        actual: TypeId,
+        expected: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ReadonlyToMutable,
+            format!(
+                "The type '{}' is 'readonly' and cannot be assigned to the mutable type '{}'.",
+                display_type(arena, actual),
+                display_type(arena, expected)
+            ),
+        )
+    }
+
+    pub fn readonly_index_write(arena: &TypeArena, object: TypeId) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ReadonlyIndexWrite,
+            format!(
+                "Index signature in type '{}' only permits reading.",
+                display_type(arena, object)
+            ),
         )
     }
 

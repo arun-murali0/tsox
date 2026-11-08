@@ -288,6 +288,9 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
         }
 
         Type::Array(element) => {
+            if arena.is_readonly_array(type_id) {
+                out.push_str("readonly ");
+            }
             // `A | B[]` reads as `A | (B[])`, not what an array of a union means, and
             // `(A & B)[]` is not `A & B[]` either. A named intersection prints as its name.
             let needs_parens = match arena.get(*element) {

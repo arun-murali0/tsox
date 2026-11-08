@@ -372,7 +372,7 @@ pub fn resolve_ts_type(
                 && arguments.params.len() == 1
             {
                 let element = resolve_ts_type(&arguments.params[0], namespace, arena)?;
-                return Some(arena.alloc(Type::Array(element)));
+                return Some(arena.alloc_readonly_array(element));
             }
             if id.name == "Awaited"
                 && let Some(alias) = crate::prelude::alias(id.name)
@@ -470,7 +470,11 @@ pub fn resolve_ts_type(
         {
             // A readonly tuple is left unresolved: reading one as a plain tuple would
             // check `const` type parameters (`lit<const T>(...)`), which are not modelled.
-            resolve_ts_type(&operator.type_annotation, namespace, arena)
+            let plain = resolve_ts_type(&operator.type_annotation, namespace, arena)?;
+            match arena.get(plain).clone() {
+                Type::Array(element) => Some(arena.alloc_readonly_array(element)),
+                _ => Some(plain),
+            }
         }
         TSType::TSTypeOperatorType(operator)
             if operator.operator == TSTypeOperatorOperator::Keyof =>

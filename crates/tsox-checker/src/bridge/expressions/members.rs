@@ -41,7 +41,26 @@ pub fn infer_member_access_type(
         _ => object_type,
     };
 
-    match lookup_with_augmentation(ctx, effective_type, property_name) {
+    // A readonly array has no method that changes it.
+    let mutator = ctx.arena.is_readonly_array(effective_type)
+        && matches!(
+            property_name,
+            "push"
+                | "pop"
+                | "shift"
+                | "unshift"
+                | "splice"
+                | "sort"
+                | "reverse"
+                | "fill"
+                | "copyWithin"
+        );
+    let found = if mutator {
+        None
+    } else {
+        lookup_with_augmentation(ctx, effective_type, property_name)
+    };
+    match found {
         Some(found) => {
             if ctx.options.no_property_access_from_index_signature
                 && !ctx.bracket_access
