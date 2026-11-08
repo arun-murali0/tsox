@@ -52,6 +52,14 @@ pub struct UnitContext<'a> {
     pub imports: Option<&'a dyn ImportSource>,
     // The compiler options the checker reads. The default is the checker's fixed behavior.
     pub options: crate::check_options::CheckOptions,
+    // Leave out the pass that checks the file's statements and declarations for errors, for
+    // a declaration file whose errors nobody reads. What the unit hands back to other files
+    // (its exports, ambient modules, globals, the names it uses) is the same either way, and
+    // only the errors that pass finds are missing; the ones found while declaring the file
+    // and collecting its exports are still there. A file that has a construct which could
+    // need the pass (an initializer, for one: `declare const n = 42` gets its type from
+    // there) is checked in full whatever this says, so asking is always safe.
+    pub skip_bodies: bool,
 }
 
 impl<'a> UnitContext<'a> {
@@ -64,6 +72,7 @@ impl<'a> UnitContext<'a> {
             module: None,
             imports: None,
             options: crate::check_options::CheckOptions::default(),
+            skip_bodies: false,
         }
     }
 
@@ -74,6 +83,13 @@ impl<'a> UnitContext<'a> {
 
     pub fn with_imports(mut self, imports: &'a dyn ImportSource) -> Self {
         self.imports = Some(imports);
+        self
+    }
+
+    /// Asks to skip the error-checking pass (see `skip_bodies`): the errors it would find are
+    /// not reported, and everything other files read from the unit is unchanged.
+    pub fn without_body_checks(mut self) -> Self {
+        self.skip_bodies = true;
         self
     }
 
@@ -228,6 +244,7 @@ impl Worker {
                     module: ctx.module,
                     imports: ctx.imports,
                     options: ctx.options,
+                    skip_bodies: ctx.skip_bodies,
                 },
             )
         })

@@ -2076,6 +2076,13 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                 if let Some(module) = graph.module_key(id) {
                     ctx = ctx.with_module(module);
                 }
+                // A dependency's declaration file is checked so that its declarations can be
+                // imported, and its errors are never reported (the driver drops its report),
+                // so the pass that finds them is left out. What other files read from the
+                // unit does not come from that pass.
+                if graph.is_dependency_declaration(id) {
+                    ctx = ctx.without_body_checks();
+                }
                 if let Some(cancel) = project.cancel {
                     ctx = ctx.with_cancel(cancel.clone());
                 }
