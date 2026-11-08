@@ -201,6 +201,11 @@ struct Project<'a> {
     // Check the members of a unit one after another on this thread. The query layer needs
     // it: a query's reads are recorded only on the thread that runs it.
     sequential: bool,
+    // Declarations already hashed for the library cache, so one asked for by many units is
+    // hashed once. Per project: its tables hold the declarations, and a memo outliving them
+    // would keep them alive (see `FingerprintMemo`).
+    #[cfg(feature = "snapshot")]
+    fingerprints: tsox_checker::probe_log::FingerprintMemo,
 }
 
 impl Project<'_> {
@@ -571,6 +576,8 @@ pub fn run_project(
             collect_global_decls: true,
             texts: options.texts,
             sequential: false,
+            #[cfg(feature = "snapshot")]
+            fingerprints: Default::default(),
         };
         let remembered: Option<Vec<Checked>> = options.memo.and_then(|memo| {
             let ask = || {
@@ -814,6 +821,8 @@ pub fn run_project(
                 collect_global_decls: true,
                 texts: options.texts,
                 sequential: false,
+                #[cfg(feature = "snapshot")]
+                fingerprints: Default::default(),
             };
             for (report, unit_exports) in check_files(&scripts, &script_sources) {
                 if let Some(unit_exports) = unit_exports {
@@ -1111,6 +1120,8 @@ fn run_pass(setup: &PassSetup<'_>, globals: Globals) -> UnitResult {
         collect_global_decls: false,
         texts: setup.texts,
         sequential: false,
+        #[cfg(feature = "snapshot")]
+        fingerprints: Default::default(),
     };
     for (id, unit) in setup.provider_units {
         project.publish(*id, unit.clone());
@@ -1261,6 +1272,8 @@ pub fn check_unit_isolated(
         collect_global_decls: false,
         texts: Some(texts),
         sequential: true,
+        #[cfg(feature = "snapshot")]
+        fingerprints: Default::default(),
     };
     for (id, unit) in provider_units {
         project.publish(*id, unit.clone());
@@ -1320,6 +1333,8 @@ pub fn check_provider_isolated(
         collect_global_decls: true,
         texts: Some(texts),
         sequential: true,
+        #[cfg(feature = "snapshot")]
+        fingerprints: Default::default(),
     };
     with_worker(|worker| check_file(&project, worker, id))
 }
@@ -2024,21 +2039,28 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                 // asked as it was answered then. The questions are put to a view of their
                 // own, so a variant that fails part-way leaves no reads behind.
                 #[cfg(feature = "snapshot")]
-                let hit = entry.as_ref().and_then(|entry| {
-                    entry.lookup(&ImportsOf {
-                        project,
-                        from: id,
-                        reads: std::sync::Mutex::new(Vec::new()),
-                        registry_applies: std::sync::OnceLock::new(),
-                    })
+                let hit = entry.as_mut().and_then(|entry| {
+                    entry.take_hit(
+                        &ImportsOf {
+                            project,
+                            from: id,
+                            reads: std::sync::Mutex::new(Vec::new()),
+                            registry_applies: std::sync::OnceLock::new(),
+                        },
+                        Some(&project.fingerprints),
+                    )
                 });
                 #[cfg(not(feature = "snapshot"))]
                 let hit: Option<(crate::unit::UnitOutput, Vec<DeclKey>)> = None;
                 // A miss on a cacheable file is run through a recorder, which keeps what the
                 // unit asked and was told.
                 #[cfg(feature = "snapshot")]
-                let recorder = (cache_key.is_some() && hit.is_none())
-                    .then(|| tsox_checker::probe_log::RecordingImports::new(&imports));
+                let recorder = (cache_key.is_some() && hit.is_none()).then(|| {
+                    tsox_checker::probe_log::RecordingImports::with_memo(
+                        &imports,
+                        &project.fingerprints,
+                    )
+                });
                 #[cfg(feature = "snapshot")]
                 let source_imports: &dyn ImportSource = match &recorder {
                     Some(recorder) => recorder,

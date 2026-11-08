@@ -16,7 +16,7 @@ use tsox_base::keys::{DeclKey, ENC_VERSION};
 use tsox_types::portable::{ImportSource, PortableDecl};
 
 use crate::bridge::IncompleteReason;
-use crate::probe_log::{ProbeRecord, all_hold};
+use crate::probe_log::{FingerprintMemo, ProbeRecord, all_hold};
 use crate::unit::{AmbientExports, ReturnRead, UnitOutput};
 
 /// Bump this when the fields below, or the meaning of one, change.
@@ -168,17 +168,39 @@ impl CacheEntry {
     /// The newest stored output whose probes all hold against `source`, with the declarations
     /// of other files that check read (sorted, without duplicates), which is what a fresh
     /// check would have reported. `source` should be a view that records nothing: a variant
-    /// that fails part-way has already asked some of its questions.
-    pub fn lookup(&self, source: &dyn ImportSource) -> Option<(UnitOutput, Vec<DeclKey>)> {
+    /// that fails part-way has already asked some of its questions. This copies the output;
+    /// the driver uses [`Self::take_hit`], which moves it out.
+    pub fn lookup(
+        &self,
+        source: &dyn ImportSource,
+        memo: Option<&FingerprintMemo>,
+    ) -> Option<(UnitOutput, Vec<DeclKey>)> {
         let variant = self
             .variants
             .iter()
             .rev()
-            .find(|variant| all_hold(&variant.probes, source))?;
+            .find(|variant| all_hold(&variant.probes, source, memo))?;
         Some((
             variant.snapshot.clone().into_output(),
             crate::probe_log::declarations_read(&variant.probes),
         ))
+    }
+
+    /// Like [`Self::lookup`], but the matching variant is removed from the entry and its output
+    /// handed over as it is, with no copy of what can be hundreds of kilobytes. A miss leaves
+    /// the entry whole, so a new output can still be added to it.
+    pub fn take_hit(
+        &mut self,
+        source: &dyn ImportSource,
+        memo: Option<&FingerprintMemo>,
+    ) -> Option<(UnitOutput, Vec<DeclKey>)> {
+        let index = self
+            .variants
+            .iter()
+            .rposition(|variant| all_hold(&variant.probes, source, memo))?;
+        let variant = self.variants.remove(index);
+        let reads = crate::probe_log::declarations_read(&variant.probes);
+        Some((variant.snapshot.into_output(), reads))
     }
 
     /// Adds an output, replacing one made under the same answers, and drops the oldest past

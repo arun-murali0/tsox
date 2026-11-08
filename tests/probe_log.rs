@@ -51,7 +51,7 @@ use tsox::{
     DeclKey, DeclProvider, FileId, ImportSource, ModuleKey, PortableDecl, UnitContext, UnitOutput,
     Worker,
 };
-use tsox_checker::probe_log::{RecordingImports, declarations_read};
+use tsox_checker::probe_log::{FingerprintMemo, RecordingImports, declarations_read};
 use tsox_checker::unit_snapshot::{CacheEntry, UnitSnapshot, Variant};
 
 #[derive(Default)]
@@ -151,13 +151,15 @@ fn an_output_made_without_a_global_is_not_given_to_a_project_that_declares_it() 
     );
 
     let entry = entry_of([made_without.clone()]);
-    let (hit, _) = entry.lookup(&without).expect("the project it was made for");
+    let (hit, _) = entry
+        .lookup(&without, None)
+        .expect("the project it was made for");
     assert_eq!(
         hit.exports,
         made_without.snapshot.clone().into_output().exports
     );
     assert!(
-        entry.lookup(&with).is_none(),
+        entry.lookup(&with, None).is_none(),
         "a name nobody declared when the output was made is declared now"
     );
 
@@ -165,11 +167,11 @@ fn an_output_made_without_a_global_is_not_given_to_a_project_that_declares_it() 
     let entry = entry_of([made_without.clone(), made_with.clone()]);
     assert_eq!(entry.len(), 2);
     assert_eq!(
-        entry.lookup(&without).unwrap().0.exports,
+        entry.lookup(&without, None).unwrap().0.exports,
         made_without.snapshot.clone().into_output().exports
     );
     assert_eq!(
-        entry.lookup(&with).unwrap().0.exports,
+        entry.lookup(&with, None).unwrap().0.exports,
         made_with.snapshot.clone().into_output().exports
     );
 }
@@ -182,9 +184,9 @@ fn an_output_made_against_one_export_is_not_given_to_a_project_with_another() {
 
     let made = recorded(dep, &first);
     let entry = entry_of([made.clone()]);
-    assert!(entry.lookup(&first).is_some());
+    assert!(entry.lookup(&first, None).is_some());
     assert!(
-        entry.lookup(&second).is_none(),
+        entry.lookup(&second, None).is_none(),
         "the imported declaration is not the one the output was made against"
     );
 }
@@ -199,7 +201,7 @@ fn a_hit_reports_the_reads_a_fresh_check_reports() {
         !reads.is_empty(),
         "the import is read through a declaration"
     );
-    let (_, from_hit) = entry_of([made]).lookup(&project).unwrap();
+    let (_, from_hit) = entry_of([made]).lookup(&project, None).unwrap();
     assert_eq!(from_hit, reads);
 }
 
@@ -211,10 +213,102 @@ fn an_entry_keeps_a_bounded_number_of_outputs_and_replaces_one_made_under_the_sa
     entry.push(recorded("export declare const a: string;\n", &project));
     // The same questions and answers: the newer output replaces the older.
     assert_eq!(entry.len(), 1);
-    let (hit, _) = entry.lookup(&project).unwrap();
+    let (hit, _) = entry.lookup(&project, None).unwrap();
     assert!(
         format!("{:?}", hit.exports).contains("String"),
         "{:?}",
         hit.exports
     );
+}
+
+// -- hits that move the output out, and the memo of fingerprints ---------------------------
+
+#[test]
+fn take_hit_gives_what_lookup_gives_and_removes_only_that_variant() {
+    let dep = "export declare function make(): Foo;\n";
+    let without = Project::default();
+    let with = Project::default().with_global_script("interface Foo { x: string }\n");
+    let mut entry = entry_of([recorded(dep, &without), recorded(dep, &with)]);
+
+    let (looked_up, reads) = entry.lookup(&with, None).unwrap();
+    let (taken, taken_reads) = entry.take_hit(&with, None).unwrap();
+    assert_eq!(taken.exports, looked_up.exports);
+    assert_eq!(taken.diagnostics, looked_up.diagnostics);
+    assert_eq!(taken_reads, reads);
+
+    // The variant made for the other project is still there; the one taken is gone.
+    assert_eq!(entry.len(), 1);
+    assert!(entry.lookup(&without, None).is_some());
+    assert!(entry.take_hit(&with, None).is_none());
+}
+
+#[test]
+fn a_take_hit_miss_leaves_the_entry_whole() {
+    let dep = "export declare function make(): Foo;\n";
+    let without = Project::default();
+    let with = Project::default().with_global_script("interface Foo { x: string }\n");
+    let mut entry = entry_of([recorded(dep, &without)]);
+    assert!(entry.take_hit(&with, None).is_none());
+    assert_eq!(entry.len(), 1, "a miss takes nothing out");
+    // So a variant for the project that missed can still be added, and both are kept.
+    entry.push(recorded(dep, &with));
+    assert_eq!(entry.len(), 2);
+}
+
+#[test]
+fn memoized_fingerprints_decide_exactly_as_unmemoized_ones_do() {
+    let dep = "import { User } from './a';\nexport declare const u: User;\nexport declare function make(): Foo;\n";
+    let first = Project::default()
+        .with_module("./a", "export interface User { name: string }")
+        .with_global_script("interface Foo { x: string }\n");
+    let same = Project::default()
+        .with_module("./a", "export interface User { name: string }")
+        .with_global_script("interface Foo { x: string }\n");
+    let changed = Project::default()
+        .with_module("./a", "export interface User { name: number }")
+        .with_global_script("interface Foo { x: string }\n");
+
+    let memo = FingerprintMemo::new();
+    let entry = entry_of([recorded(dep, &first)]);
+    for project in [&first, &same, &changed] {
+        let plain = entry.lookup(project, None).is_some();
+        // Asked twice through the same memo: the first fills it, the second reads it.
+        assert_eq!(entry.lookup(project, Some(&memo)).is_some(), plain);
+        assert_eq!(entry.lookup(project, Some(&memo)).is_some(), plain);
+    }
+    assert!(
+        !memo.is_empty(),
+        "the declarations were hashed through the memo"
+    );
+
+    // A recording made through a memo stores the same questions and answers as one made
+    // without.
+    let recorder = RecordingImports::with_memo(&first, &memo);
+    let output = unit("dep.d.ts", dep, Some(&recorder));
+    let through_memo = Variant {
+        probes: recorder.into_records(),
+        snapshot: UnitSnapshot::capture(&output),
+    };
+    assert_eq!(through_memo.probes, recorded(dep, &first).probes);
+}
+
+#[test]
+fn the_memo_keeps_a_declaration_alive_so_its_address_cannot_be_reused() {
+    let project = Project::default().with_global_script("interface Foo { x: string }\n");
+    let key = *project.decls.keys().next().expect("a global declaration");
+    let held = project.decl(key).unwrap();
+    let before = Arc::strong_count(&held);
+
+    let memo = FingerprintMemo::new();
+    let entry = entry_of([recorded("export declare function make(): Foo;\n", &project)]);
+    assert!(entry.lookup(&project, Some(&memo)).is_some());
+    assert_eq!(memo.len(), 1);
+    // The memo took its own reference to what it hashed: the allocation outlives every other
+    // holder, which is what makes the address a safe name for the declaration.
+    assert!(Arc::strong_count(&held) > before);
+
+    // A different declaration never answers for it, whatever address it has.
+    let other = Project::default().with_global_script("interface Foo { x: number }\n");
+    assert!(entry.lookup(&other, Some(&memo)).is_none());
+    assert!(entry.lookup(&project, Some(&memo)).is_some());
 }
