@@ -130,6 +130,9 @@ pub struct CheckContext<'ast, 'src> {
     pub current_class_ids: Vec<u64>,
     /// Checking the body of a constructor, where a `readonly` member of `this` may be assigned.
     pub in_constructor: bool,
+    /// Names already compared with `==` or `===`: such a comparison narrows the name for the
+    /// code after it, so a later literal comparison is not judged on the declared literal type.
+    pub compared_names: std::collections::HashSet<String>,
     /// Set while a bracket access with a literal key is looked up like a property read.
     pub bracket_access: bool,
 
@@ -491,6 +494,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             current_class_instance: None,
             current_class_ids: Vec::new(),
             in_constructor: false,
+            compared_names: Default::default(),
             bracket_access: false,
             implicit_this: false,
             next_function_has_no_this: false,

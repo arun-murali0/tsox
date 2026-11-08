@@ -101,6 +101,7 @@ pub fn infer_expression_type(
                 [(&bin.left, left), (&bin.right, right)],
                 ctx,
             );
+            let (left, right) = widen_if_narrowed(bin, left, right, ctx);
             infer_binary_expression_type(bin.operator, left, right, bin.span(), ctx)
         }
 
@@ -321,5 +322,43 @@ pub(super) fn import_specifier_text(source: &Expression<'_>) -> Option<String> {
             .and_then(|quasi| quasi.value.cooked.as_ref())
             .map(|cooked| cooked.to_string()),
         _ => None,
+    }
+}
+
+// For `x == 1` after an earlier comparison of `x`: tsc compares the type `x` was narrowed to,
+// which can be `never` or a smaller literal, and tsox does not narrow a literal that far. So a
+// name compared before is judged on its primitive, and a literal mismatch is left alone.
+fn widen_if_narrowed(
+    bin: &oxc_ast::ast::BinaryExpression,
+    left: TypeId,
+    right: TypeId,
+    ctx: &mut CheckContext<'_, '_>,
+) -> (TypeId, TypeId) {
+    use oxc_ast::ast::BinaryOperator as Op;
+    if !matches!(
+        bin.operator,
+        Op::Equality | Op::Inequality | Op::StrictEquality | Op::StrictInequality
+    ) {
+        return (left, right);
+    }
+    let name_of = |expression: &Expression| match expression {
+        Expression::Identifier(ident) => Some(ident.name.to_string()),
+        _ => None,
+    };
+    let names = [name_of(&bin.left), name_of(&bin.right)];
+    let seen = names
+        .iter()
+        .flatten()
+        .any(|name| ctx.compared_names.contains(name));
+    for name in names.into_iter().flatten() {
+        ctx.compared_names.insert(name);
+    }
+    if seen {
+        (
+            crate::types::widen(&ctx.arena, left),
+            crate::types::widen(&ctx.arena, right),
+        )
+    } else {
+        (left, right)
     }
 }
