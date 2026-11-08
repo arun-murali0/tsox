@@ -170,11 +170,18 @@ pub fn infer_expression_type(
         }
 
         Expression::ArrowFunctionExpression(arrow) => {
-            infer_arrow_function_type(arrow, scoping, expected, ctx)
+            // A nested function is not the constructor: `this.x = ...` in it is a write.
+            let outer = std::mem::replace(&mut ctx.in_constructor, false);
+            let result = infer_arrow_function_type(arrow, scoping, expected, ctx);
+            ctx.in_constructor = outer;
+            result
         }
 
         Expression::FunctionExpression(func) => {
-            infer_function_expression_type(func, scoping, expected, ctx)
+            let outer = std::mem::replace(&mut ctx.in_constructor, false);
+            let result = infer_function_expression_type(func, scoping, expected, ctx);
+            ctx.in_constructor = outer;
+            result
         }
 
         Expression::LogicalExpression(logical) => {

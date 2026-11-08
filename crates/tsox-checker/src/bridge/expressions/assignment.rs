@@ -116,6 +116,17 @@ pub(super) fn infer_update_expression_type(
         // The operand is read for its own errors (an undeclared name, say).
         resolve_identifier_type(ident, scoping, ctx);
     }
+    // `p.n++` writes the property, so a readonly one is an error as in a plain assignment.
+    if let SimpleAssignmentTarget::StaticMemberExpression(member) = &update.argument {
+        let object_type = infer_expression_type(&member.object, scoping, ctx);
+        super::super::accessibility::check_readonly_write(
+            ctx,
+            object_type,
+            matches!(member.object, oxc_ast::ast::Expression::ThisExpression(_)),
+            &member.property.name,
+            member.property.span,
+        );
+    }
     ctx.arena.number()
 }
 
