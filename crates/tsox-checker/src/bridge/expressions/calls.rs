@@ -333,6 +333,44 @@ fn promise_static_call(
     }
 }
 
+// `(resolve: (value: T | PromiseLike<T>) => void, reject: (reason?: any) => void) => void`,
+// with `Promise<T>` standing for `PromiseLike<T>`. For `T` = `void` the value may be left out.
+fn promise_executor_type(ctx: &mut CheckContext<'_, '_>, value: TypeId) -> TypeId {
+    use crate::types::{FunctionType, Param};
+    let void = ctx.arena.void();
+    let any = ctx.arena.any();
+    let promise = ctx.arena.alloc_promise(value);
+    let accepted = ctx.arena.alloc_union(vec![value, promise]);
+    let param = |type_id, optional, name: &str| Param {
+        type_id,
+        optional,
+        rest: false,
+        name: Some(name.into()),
+    };
+    let optional_value = matches!(ctx.arena.get(value), Type::Void);
+    let resolve = ctx.arena.alloc(Type::Function(FunctionType {
+        params: vec![param(accepted, optional_value, "value")],
+        return_type: void,
+        type_params: Vec::new(),
+        is_untyped: false,
+    }));
+    let reject = ctx.arena.alloc(Type::Function(FunctionType {
+        params: vec![param(any, true, "reason")],
+        return_type: void,
+        type_params: Vec::new(),
+        is_untyped: false,
+    }));
+    ctx.arena.alloc(Type::Function(FunctionType {
+        params: vec![
+            param(resolve, false, "resolve"),
+            param(reject, true, "reject"),
+        ],
+        return_type: void,
+        type_params: Vec::new(),
+        is_untyped: false,
+    }))
+}
+
 pub(super) fn infer_new_expression_type(
     new_expr: &oxc_ast::ast::NewExpression,
     scoping: &Scoping,
@@ -363,15 +401,25 @@ pub(super) fn infer_new_expression_type(
         && callee_ident.name == "Promise"
         && resolve_symbol_id(callee_ident, scoping).is_none()
     {
-        for argument in &new_expr.arguments {
+        let value = match explicit_type_args.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        };
+        for (index, argument) in new_expr.arguments.iter().enumerate() {
             if let Some(expression) = argument.as_expression() {
+                // The executor's own parameters: `resolve(value: T | PromiseLike<T>)` and
+                // `reject(reason?: any)`. Only when `T` is written; with none to read, the
+                // callbacks stay untyped rather than guessed.
+                if index == 0
+                    && let Some(value) = value
+                {
+                    ctx.contextual = Some(promise_executor_type(ctx, value));
+                }
                 infer_expression_type(expression, scoping, ctx);
+                ctx.contextual = None;
             }
         }
-        let value = match explicit_type_args.as_slice() {
-            [only] => *only,
-            _ => ctx.arena.unknown(),
-        };
+        let value = value.unwrap_or_else(|| ctx.arena.unknown());
         return ctx.arena.alloc_promise(value);
     }
 
@@ -1214,7 +1262,23 @@ fn check_callable(
                 Some(max) if arguments.len() > max => arguments[max].span(),
                 _ => span,
             };
-            ctx.error(arity_message(required, max, arguments.len()), arity_span);
+            // The `resolve` of `new Promise<T>(...)`: one parameter `value` of `T | Promise<T>`.
+            let is_promise_resolve = required == 1
+                && max == Some(1)
+                && arguments.is_empty()
+                && function_type.params.first().is_some_and(|param| {
+                    param.name.as_deref() == Some("value")
+                        && matches!(ctx.arena.get(param.type_id), Type::Union(members)
+                            if members.iter().any(|&m| ctx.arena.is_promise(m)))
+                });
+            if is_promise_resolve {
+                ctx.error(
+                    crate::diagnostic_messages::messages::promise_resolve_needs_value(0),
+                    arity_span,
+                );
+            } else {
+                ctx.error(arity_message(required, max, arguments.len()), arity_span);
+            }
         }
 
         for arg in arguments {

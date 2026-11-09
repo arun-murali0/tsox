@@ -594,6 +594,16 @@ pub mod messages {
         )
     }
 
+    // `resolve()` of a `Promise<T>` whose `T` is not `void`.
+    pub fn promise_resolve_needs_value(got: usize) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PromiseResolveNeedsValue,
+            format!(
+                "Expected 1 arguments, but got {got}. Did you forget to include 'void' in your type argument to 'Promise'?"
+            ),
+        )
+    }
+
     pub fn argument_arity_at_least(required: usize, got: usize) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::ArgumentArityAtLeast,

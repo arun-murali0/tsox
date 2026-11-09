@@ -30,6 +30,49 @@ pub(super) fn infer_assignment_expression_type(
             return right_type;
         }
     }
+    // `[a, b] = [1, "x"]`: tsc reads the literal as a tuple and checks each element against
+    // its target, so a mismatch is found at that element.
+    if matches!(assign.operator, AssignmentOperator::Assign)
+        && let AssignmentTarget::ArrayAssignmentTarget(pattern) = &assign.left
+        && let oxc_ast::ast::Expression::ArrayExpression(array) = &assign.right
+        && pattern.rest.is_none()
+        && pattern.elements.len() == array.elements.len()
+        && array.elements.iter().all(|e| e.as_expression().is_some())
+    {
+        let mut types = Vec::new();
+        for (target, source) in pattern.elements.iter().zip(&array.elements) {
+            let expression = source.as_expression().expect("checked above");
+            let target_type = target
+                .as_ref()
+                .and_then(|t| t.as_assignment_target())
+                .and_then(|t| resolve_assignment_target_type(t, scoping, ctx));
+            ctx.contextual = target_type;
+            let source_type = infer_expression_type(expression, scoping, ctx);
+            if let Some(target_type) = target_type
+                && !ctx.is_assignable_instantiating(source_type, target_type)
+            {
+                let whole = crate::diagnostic_messages::messages::declared_type_mismatch(
+                    &ctx.arena,
+                    source_type,
+                    target_type,
+                );
+                super::elaborate::report_mismatch(
+                    Some(expression),
+                    source_type,
+                    target_type,
+                    whole,
+                    expression.span(),
+                    ctx,
+                );
+            }
+            types.push(crate::types::TupleElement {
+                type_id: crate::types::widen(&ctx.arena, source_type),
+                optional: false,
+                rest: false,
+            });
+        }
+        return ctx.arena.alloc_tuple(types);
+    }
     // The target is the contextual type of the right-hand side. It is read first, which
     // reports nothing the right side's own inference would not (the target is only looked
     // up here), and an unresolvable target simply gives no context.
