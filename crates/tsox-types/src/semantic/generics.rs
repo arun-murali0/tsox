@@ -1256,6 +1256,62 @@ fn collect_inference_candidates_inner(
             let Type::Function(arg_fn) = arena.get(arg_type).clone() else {
                 return;
             };
+            // A generic function passed as the argument (`h(f)` with `f<T>(v: T)`): its own type
+            // parameters are inferred from what the callback is called with, as tsc does before
+            // reading the result. `f` against `(x: number) => R` becomes `(v: number) => number`.
+            let arg_fn = if arg_fn.type_params.is_empty() {
+                arg_fn
+            } else {
+                let own: Vec<_> = arg_fn.type_params.iter().map(|p| p.id).collect();
+                let mut found: Vec<RawInferenceCandidate> = Vec::new();
+                let mut inner_seen = HashSet::default();
+                for (argument, parameter) in arg_fn.params.iter().zip(&param_fn.params) {
+                    if !contains_type_param(arena, parameter.type_id) {
+                        collect_inference_candidates_inner(
+                            arena,
+                            argument.type_id,
+                            parameter.type_id,
+                            &[],
+                            InferenceVariance::Covariant,
+                            true,
+                            &mut found,
+                            cache,
+                            &mut inner_seen,
+                        );
+                    }
+                }
+                let bindings: Vec<_> = own
+                    .iter()
+                    .filter_map(|id| {
+                        found
+                            .iter()
+                            .find(|candidate| candidate.0 == *id)
+                            .map(|candidate| (*id, candidate.1))
+                    })
+                    .collect();
+                if bindings.len() != own.len() {
+                    // Not every parameter could be read from the callback's parameters: leave
+                    // the argument as it is rather than guess.
+                    arg_fn
+                } else {
+                    let params = arg_fn
+                        .params
+                        .iter()
+                        .map(|param| {
+                            let mut param = param.clone();
+                            param.type_id = substitute_type_params(arena, param.type_id, &bindings);
+                            param
+                        })
+                        .collect();
+                    let return_type = substitute_type_params(arena, arg_fn.return_type, &bindings);
+                    crate::types::FunctionType {
+                        params,
+                        return_type,
+                        type_params: Vec::new(),
+                        is_untyped: arg_fn.is_untyped,
+                    }
+                }
+            };
             let mut nested_locked = locked.to_vec();
             for parameter in &param_fn.type_params {
                 if !nested_locked.contains(&parameter.id) {
