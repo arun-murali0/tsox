@@ -152,6 +152,11 @@ fn check_identifier_declarator(
                 if matches!(ctx.arena.get(declared), crate::types::Type::Union(_))
                     && ctx.is_assignable_instantiating(actual, declared)
                 {
+                    ctx.shadow_note_assignment(
+                        declarator.node_id.get().index() as u32,
+                        declared,
+                        actual,
+                    );
                     narrow_on_assignment(symbol_id, declared, actual, ctx);
                 }
             }

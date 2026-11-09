@@ -158,6 +158,8 @@ pub enum DiagnosticCode {
     // 9100s: the checker itself failed (no tsc counterpart)
     InternalCheckerError,
     NestingTooDeep,
+    FlowShadowDisagreement,
+    FlowShadowRead,
 }
 
 impl DiagnosticCode {
@@ -290,6 +292,8 @@ impl DiagnosticCode {
             UnresolvableTypeParameterConstraint => "TSR9014",
             InternalCheckerError => "TSR9101",
             NestingTooDeep => "TSR9102",
+            FlowShadowDisagreement => "TSR9201",
+            FlowShadowRead => "TSR9202",
         }
     }
 }
@@ -428,7 +432,9 @@ impl DiagnosticCode {
             | UnresolvableDestructuringTypeAnnotation
             | UnresolvableTypeParameterConstraint
             | InternalCheckerError
-            | NestingTooDeep => return None,
+            | NestingTooDeep
+            | FlowShadowDisagreement
+            | FlowShadowRead => return None,
         })
     }
 

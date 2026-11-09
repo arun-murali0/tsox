@@ -113,6 +113,58 @@ checker cannot read (it resolves to an empty object while the library's `Promise
 unless the syntax of `T` settles it: a keyword, a literal type, a union of those. A name that
 would need resolving is left alone.
 
+## The backward resolver in shadow mode (F2)
+
+The forward overlay in `narrow.rs` threads "what is known about each variable" through the
+statements. The flow table answers the same question the other way: the type of a read is found by
+walking antecedents back from it. An assignment gives the assigned type, a condition narrows the
+type before it, a join unions its paths, a loop head iterates until its type stops changing, a
+`switch` clause narrows by its tests. `bridge/flow_shadow.rs` does that walk for every read of a
+variable and compares the answer with the overlay's, and changes nothing else.
+
+It is off unless asked for: `TSOX_FLOW_SHADOW=1` reports each difference as a warning (TSR9201),
+`TSOX_FLOW_SHADOW=all` also reports every read the walk answered (TSR9202) and prints a summary
+line. In a test, `flow_shadow::enable_for_current_thread`.
+
+What it reuses rather than rewrites, so a difference is about the graph walk and not about how one
+test narrows one type: a condition narrows by the overlay's own `narrow_condition` (a scratch
+overlay holding just that variable at the type being narrowed), a `switch` clause by
+`narrow_switch_case` / `narrow_switch_default`, and an assignment by the rule in
+`assigned_narrowed_type`, fed the assigned type the forward pass recorded at the assignment. The
+walks run after the whole file is checked, because a read at the top of a loop is met before the
+assignments in the loop's body.
+
+What it does not answer it says so and skips the read: an `a ?? b` edge, an assignment it was not
+told the type of (`x += 1`, a destructuring), a variable the checker has no type for.
+
+### What it has found
+
+`scripts/flow-stress/shadow.sh` generates narrowing-heavy code and joins three answers for each
+statement-level read: tsc's, the overlay's, the walk's. Over seeds 1 to 3 (100 files each, no
+`try`), about 19,000 statement-level reads:
+
+| Outcome | Share |
+| --- | --- |
+| both match tsc | 79% |
+| the walk matches tsc, the overlay does not | 8 to 9% |
+| both agree with each other, tsc differs | 7 to 11% |
+| neither matches tsc | about 2% |
+| the overlay matches tsc, the walk does not | 0.6 to 0.9% |
+
+So where the two differ, the walk is right about ten times as often. Known causes:
+
+- The overlay does not narrow a clause entered by falling through from the one above it
+  (`case "string": ... case "number":` leaves `string` out), nor does it reason through a loop head.
+  The walk gets both from the graph. These are the bulk of the second row.
+- The graph enters a `catch` from the end of its `try` only, where tsc enters it from the start and
+  from after every assignment. With `try` in the mix the walk-wrong share rises to about 1.5%. The
+  fix is in F1's exception edges, not in the walk.
+- Narrowing rules both sides share and tsc does not (the third row) are in `narrow_condition`, and
+  moving to the walk does not change them.
+
+The cutover per feature (the next step) goes in the order of how many reads each moves to tsc's
+answer, and the overlay is removed only when the second and fifth rows are empty.
+
 ## Flow nodes
 
 `Start`, `Join`, `LoopHead`, `Assign { target, at }`, `Condition { test, assume }` and
@@ -175,6 +227,7 @@ line:
 scripts/flow-stress/run.sh --seed 1 --files 400 --codes 7027,7029
 scripts/flow-stress/run.sh --mode assign --seed 1 --files 300 --codes 2454
 scripts/flow-stress/run.sh --mode return --seed 1 --files 300 --codes 2355,2366,2534,7030
+scripts/flow-stress/shadow.sh --seed 1 --files 100
 ```
 
 It prints, per code, how many lines agree and differ, then the statement around the first

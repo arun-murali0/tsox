@@ -6,6 +6,7 @@ mod declare;
 mod duplicates;
 mod exports;
 mod expressions;
+pub mod flow_shadow;
 mod implicit_any;
 mod imports;
 mod narrow;
@@ -235,7 +236,11 @@ fn bodies_phase<'ast>(
 ) {
     let scoping = semantic.scoping();
     unreachable_code::analyze_flow(program, scoping, ctx);
+    ctx.shadow = flow_shadow::FlowShadow::new(program, semantic).map(Box::new);
     statements::check_top_level(program, scoping, ctx);
+    if let Some(shadow) = ctx.shadow.take() {
+        shadow.report(ctx, scoping);
+    }
     if ctx.cancelled {
         return;
     }

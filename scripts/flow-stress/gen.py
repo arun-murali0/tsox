@@ -36,6 +36,8 @@ class G:
         return f"m({self.n});"
 
     def cond(self):
+        if self.mode.startswith("narrow") and self.r.random() < 0.8:
+            return self.narrow_cond()
         if self.mode == "assign" and self.vars and self.r.random() < 0.4:
             v, t = self.r.choice(self.vars)
             kind = "string" if t == "string" else "number"
@@ -45,6 +47,65 @@ class G:
                 f'typeof {v} === "undefined"',
             ])
         return self.r.choice(COND)
+
+    NARROW_CONDS = [
+        "{v}", "!{v}", "{v} === null", "{v} !== null", "{v} === undefined", "{v} !== undefined",
+        "{v} == null", "{v} != null", 'typeof {v} === "string"', 'typeof {v} === "number"',
+        'typeof {v} !== "string"', 'typeof {v} === "undefined"', 'typeof {v} === "object"',
+    ]
+
+    def narrow_cond(self):
+        r = self.r
+        v = r.choice(["u", "w"])
+        form = r.choice(self.NARROW_CONDS).format(v=v)
+        shape = r.random()
+        if shape < 0.12:
+            return f"c && {form}"
+        if shape < 0.24:
+            return f"{form} || {r.choice(self.NARROW_CONDS).format(v='u')}"
+        if shape < 0.3:
+            return f"k === {r.choice(['\"a\"', '\"b\"', '\"c\"'])}"
+        if shape < 0.34:
+            return f"!({form})"
+        return form
+
+    # Statements for narrowing: reads of the variables, assignments they can take, switches.
+    def narrow_stmt(self, depth, loop, switch, labels):
+        r = self.r
+        kinds = ["read", "read", "read", "assign", "assign"]
+        if depth < 3:
+            kinds += ["switchk", "switcht", "ifelse", "ifelse"]
+        k = r.choice(kinds)
+        if k == "read":
+            return [f"{r.choice(['u', 'w', 'k'])};"]
+        if k == "assign":
+            var, values = r.choice([
+                ("u", ["1", '"s"', "null", "undefined"]),
+                ("w", ["1", '"s"']),
+                ("k", ['"a"', '"b"', '"c"']),
+            ])
+            return [f"{var} = {r.choice(values)};"]
+        d = depth + 1
+        if k == "ifelse":
+            return ([f"if ({self.narrow_cond()}) {{"] + self.ind(self.block(d, loop, switch, labels)) +
+                    ["} else {"] + self.ind(self.block(d, loop, switch, labels)) + ["}"])
+        if k == "switchk":
+            out = ["switch (k) {"]
+            for lit in r.sample(['"a"', '"b"', '"c"'], r.randint(1, 3)):
+                out += [f"  case {lit}:"] + self.ind(self.ind(self.block(d, loop, True, labels)))
+                if r.random() < 0.8:
+                    out.append("    break;")
+            if r.random() < 0.5:
+                out += ["  default:"] + self.ind(self.ind(self.block(d, loop, True, labels)))
+            return out + ["}"]
+        out = ["switch (typeof u) {"]
+        for t in r.sample(['"string"', '"number"', '"object"', '"undefined"'], r.randint(1, 3)):
+            out += [f"  case {t}:"] + self.ind(self.ind(self.block(d, loop, True, labels)))
+            if r.random() < 0.8:
+                out.append("    break;")
+        if r.random() < 0.5:
+            out += ["  default:"] + self.ind(self.ind(self.block(d, loop, True, labels)))
+        return out + ["}"]
 
     VALUE = {"number": "1", "string": '"s"', "number | undefined": "1"}
 
@@ -98,6 +159,8 @@ class G:
     def stmt(self, depth, loop, switch, labels):
         if self.mode == "assign" and self.vars and self.r.random() < 0.5:
             return self.assign_stmt(depth, loop, switch, labels)
+        if self.mode.startswith("narrow") and self.r.random() < 0.55:
+            return self.narrow_stmt(depth, loop, switch, labels)
         if self.mode == "return" and self.in_func and self.r.random() < 0.2:
             # A function returns the values its declared type allows; one that returns nothing
             # has a bare `return;` here and there.
@@ -120,6 +183,8 @@ class G:
         compound = ["if", "ifelse", "while", "dowhile", "forever", "forcond", "forof", "forin",
                     "switch", "try", "labeled", "block", "arrow", "iife", "iife", "static",
                     "labelchain"]
+        if self.mode == "narrow":
+            compound = [c for c in compound if c != "try"]
         pool = simple if depth >= 3 else simple + compound * 2
         k = r.choice(pool)
         m = self.mark
@@ -313,8 +378,22 @@ def make_return_file(rnd, g, idx):
     declares = [f"declare const {v}: number;" for v in g.switch_vars]
     return "\n".join([PRELUDE.rstrip()] + declares + out) + "\n"
 
+def make_narrow_file(rnd, g, idx):
+    out = []
+    for f in range(rnd.randint(3, 6)):
+        g.in_func = True
+        body = g.block(0, False, False, [], count=rnd.randint(3, 8))
+        g.in_func = False
+        out += [f"function f{idx}_{f}(u: string | number | null | undefined, "
+                f'w: string | number, k: "a" | "b" | "c") {{'] + g.ind(body) + ["}"]
+    out.append("export {};")
+    declares = [f"declare const {v}: number;" for v in g.switch_vars]
+    return "\n".join([PRELUDE.rstrip()] + declares + out) + "\n"
+
 def make_file(rnd, mode, idx):
     g = G(rnd, mode)
+    if mode.startswith("narrow"):
+        return make_narrow_file(rnd, g, idx)
     if mode == "return":
         return make_return_file(rnd, g, idx)
     if mode == "assign":

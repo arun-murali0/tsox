@@ -99,8 +99,21 @@ pub fn resolve_identifier_type(
         }
     }
 
-    if let Some(narrowed) = ctx.narrow.get(symbol_id) {
-        return narrowed;
+    let result = match ctx.narrow.get(symbol_id) {
+        Some(narrowed) => Some(narrowed),
+        None => ctx.symbols.get(symbol_id),
+    };
+    if let Some(result) = result {
+        if let Some(shadow) = ctx.shadow.as_mut() {
+            shadow.note_read(
+                ident.node_id.get().index() as u32,
+                symbol_id,
+                &ident.name,
+                ident.span(),
+                result,
+            );
+        }
+        return result;
     }
 
     match ctx.symbols.get(symbol_id) {

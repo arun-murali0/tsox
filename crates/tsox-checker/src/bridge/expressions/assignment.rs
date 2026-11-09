@@ -115,6 +115,11 @@ pub(super) fn infer_assignment_expression_type(
                 );
             }
             if let Some((symbol_id, declared_type)) = declared {
+                ctx.shadow_note_assignment(
+                    assign.node_id.get().index() as u32,
+                    declared_type,
+                    right_type,
+                );
                 narrow_on_assignment(symbol_id, declared_type, right_type, ctx);
             }
             narrow_member_on_assignment(&assign.left, target_type, right_type, scoping, ctx);
@@ -227,24 +232,7 @@ pub fn narrow_on_assignment(
 ) {
     // Whatever was known about `x.a`, `x.a.b` described the old value of x.
     ctx.narrow.remove_paths_of(symbol_id);
-    let members = match ctx.arena.get(declared) {
-        Type::Union(members) => members.clone(),
-        _ => {
-            ctx.narrow.insert(symbol_id, declared);
-            return;
-        }
-    };
-    let mut kept = Vec::with_capacity(members.len());
-    for member in members {
-        if ctx.semantic().is_assignable(assigned, member) {
-            kept.push(member);
-        }
-    }
-    let narrowed = if kept.is_empty() {
-        declared
-    } else {
-        ctx.arena.alloc_union(kept)
-    };
+    let narrowed = super::super::narrow::assigned_narrowed_type(ctx, declared, assigned);
     ctx.narrow.insert(symbol_id, narrowed);
 }
 

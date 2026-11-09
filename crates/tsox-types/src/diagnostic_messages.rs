@@ -1187,6 +1187,22 @@ pub mod messages {
         )
     }
 
+    pub fn flow_shadow_disagreement(name: &str, overlay: &str, flow: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::FlowShadowDisagreement,
+            format!(
+                "flow shadow: '{name}' is '{overlay}' by the forward pass and '{flow}' by the flow walk."
+            ),
+        )
+    }
+
+    pub fn flow_shadow_read(name: &str, ty: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::FlowShadowRead,
+            format!("flow shadow: '{name}' is '{ty}' by both."),
+        )
+    }
+
     pub fn not_all_code_paths_return() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::NotAllCodePathsReturn,
