@@ -1114,7 +1114,11 @@ fn collect_inference_candidates_inner(
                 return;
             }
             let preserves_literals = bound.is_some_and(|b| bound_keeps_literals(arena, b));
-            let candidate = if preserves_literals {
+            // tsc widens only top-level candidates (`T` itself as the parameter type). A
+            // candidate found inside another type (`{ kind: T }`) keeps a literal the
+            // argument's declared type carries, so a contravariant use of the same
+            // parameter elsewhere (`(arg: { kind: T }) => void`) can still agree with it.
+            let candidate = if preserves_literals || !top_level {
                 arg_type
             } else {
                 crate::types::widen(arena, arg_type)
