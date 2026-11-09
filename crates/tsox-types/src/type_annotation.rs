@@ -374,6 +374,15 @@ pub fn resolve_ts_type(
                 let element = resolve_ts_type(&arguments.params[0], namespace, arena)?;
                 return Some(arena.alloc_readonly_array(element));
             }
+            // `Array<T>` is `T[]`. Left to the library's interface it was an application
+            // whose members the member lookup did not find (`xs.forEach` was TS2339).
+            if id.name == "Array"
+                && let Some(arguments) = reference.type_arguments.as_deref()
+                && arguments.params.len() == 1
+            {
+                let element = resolve_ts_type(&arguments.params[0], namespace, arena)?;
+                return Some(arena.alloc(Type::Array(element)));
+            }
             if id.name == "Awaited"
                 && let Some(alias) = crate::prelude::alias(id.name)
             {
