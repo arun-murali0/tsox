@@ -1001,18 +1001,111 @@ fn declare_class_constructor<'a>(
         ))),
         (None, own) => own,
     };
-    let value_type = match statics {
-        Some(statics) => ctx
-            .arena
-            .alloc_intersection(vec![constructor_type, statics])
-            .unwrap_or(constructor_type),
-        None => constructor_type,
+    // Constructor overloads: `new C(...)` is checked against each signature, and the
+    // implementation signature (the one with a body) is not one of them. One signature, or
+    // none, is the plain constructor above.
+    let mut constructors = vec![constructor_type];
+    {
+        use oxc_ast::ast::{ClassElement, MethodDefinitionKind};
+        let signatures: Vec<_> = class
+            .body
+            .body
+            .iter()
+            .filter_map(|element| match element {
+                ClassElement::MethodDefinition(method)
+                    if method.kind == MethodDefinitionKind::Constructor
+                        && method.value.body.is_none() =>
+                {
+                    Some(&*method.value)
+                }
+                _ => None,
+            })
+            .collect();
+        if signatures.len() > 1 {
+            let scope = ctx
+                .namespace
+                .push_decl_type_params(&mut ctx.arena, class.type_parameters.as_deref());
+            let mut overloads = Vec::new();
+            for signature in &signatures {
+                match resolve_function_params(&signature.params, &mut ctx.namespace, &mut ctx.arena)
+                {
+                    Some(params) => {
+                        let type_params = constructor_type_params_for_overload(class, ctx);
+                        overloads.push(ctx.arena.alloc(crate::types::Type::Function(
+                            crate::types::FunctionType {
+                                params,
+                                return_type: instance_type,
+                                type_params,
+                                is_untyped: false,
+                            },
+                        )));
+                    }
+                    None => {
+                        overloads.clear();
+                        break;
+                    }
+                }
+            }
+            ctx.namespace.pop_type_params(scope);
+            if !overloads.is_empty() {
+                constructors = overloads;
+            }
+        }
+    }
+    // A class with no constructor of its own takes the overloads of the class it extends.
+    if find_constructor(class).is_none()
+        && class.type_parameters.is_none()
+        && let Some(oxc_ast::ast::Expression::Identifier(base)) =
+            class.heritage.as_ref().map(|heritage| &heritage.expression)
+    {
+        let query = crate::type_annotation::typeof_value_name(&base.name);
+        if let crate::namespace::Resolution::Resolved(base_value) =
+            ctx.namespace.resolve(&query, &mut ctx.arena)
+            && let crate::types::Type::Intersection(parts) = ctx.arena.get(base_value).clone()
+        {
+            let functions: Vec<_> = parts
+                .iter()
+                .filter_map(|&part| match ctx.arena.get(part) {
+                    crate::types::Type::Function(f) if f.type_params.is_empty() => Some(f.clone()),
+                    _ => None,
+                })
+                .collect();
+            if functions.len() > 1 {
+                constructors = functions
+                    .into_iter()
+                    .map(|mut f| {
+                        f.return_type = instance_type;
+                        ctx.arena.alloc(crate::types::Type::Function(f))
+                    })
+                    .collect();
+            }
+        }
+    }
+    let mut members = constructors;
+    members.extend(statics);
+    let value_type = if members.len() == 1 {
+        members[0]
+    } else {
+        ctx.arena
+            .alloc_intersection(members.clone())
+            .unwrap_or(members[0])
     };
     ctx.declare_value(symbol_id, &name.name, value_type);
     let spaces = ctx.symbol_capabilities.entry(symbol_id).or_default();
     spaces.has_type = true;
     spaces.has_value = true;
     spaces.value_available = true;
+}
+
+fn constructor_type_params_for_overload(
+    class: &Class<'_>,
+    ctx: &mut CheckContext<'_, '_>,
+) -> Vec<crate::types::FunctionTypeParam> {
+    resolve_function_type_params(
+        class.type_parameters.as_deref(),
+        &mut ctx.namespace,
+        &mut ctx.arena,
+    )
 }
 
 // The parameters `new C(...)` takes. A class with a constructor takes that one's. A class
