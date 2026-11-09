@@ -201,6 +201,12 @@ struct Project<'a> {
     // Check the members of a unit one after another on this thread. The query layer needs
     // it: a query's reads are recorded only on the thread that runs it.
     sequential: bool,
+    // Whether the standard-library registry applies to this project (see
+    // `ImportsOf::standard_library_registry_applies`). It depends on the graph and its options
+    // and on nothing about a file, so it is worked out once per project: a check that reads
+    // it per file, or a replay of a cached unit that does, would otherwise work it out again
+    // for every one.
+    registry_applies: std::sync::OnceLock<bool>,
     // Declarations already hashed for the library cache, so one asked for by many units is
     // hashed once. Per project: its tables hold the declarations, and a memo outliving them
     // would keep them alive (see `FingerprintMemo`).
@@ -576,6 +582,7 @@ pub fn run_project(
             collect_global_decls: true,
             texts: options.texts,
             sequential: false,
+            registry_applies: Default::default(),
             #[cfg(feature = "snapshot")]
             fingerprints: Default::default(),
         };
@@ -821,6 +828,7 @@ pub fn run_project(
                 collect_global_decls: true,
                 texts: options.texts,
                 sequential: false,
+                registry_applies: Default::default(),
                 #[cfg(feature = "snapshot")]
                 fingerprints: Default::default(),
             };
@@ -1120,6 +1128,7 @@ fn run_pass(setup: &PassSetup<'_>, globals: Globals) -> UnitResult {
         collect_global_decls: false,
         texts: setup.texts,
         sequential: false,
+        registry_applies: Default::default(),
         #[cfg(feature = "snapshot")]
         fingerprints: Default::default(),
     };
@@ -1272,6 +1281,7 @@ pub fn check_unit_isolated(
         collect_global_decls: false,
         texts: Some(texts),
         sequential: true,
+        registry_applies: Default::default(),
         #[cfg(feature = "snapshot")]
         fingerprints: Default::default(),
     };
@@ -1333,6 +1343,7 @@ pub fn check_provider_isolated(
         collect_global_decls: true,
         texts: Some(texts),
         sequential: true,
+        registry_applies: Default::default(),
         #[cfg(feature = "snapshot")]
         fingerprints: Default::default(),
     };
@@ -1674,7 +1685,6 @@ struct ImportsOf<'a> {
     reads: std::sync::Mutex<Vec<DeclKey>>,
     // Whether the standard-library registry applies. The answer stats every library file,
     // and the checker asks once per global name, so it is worked out once per file.
-    registry_applies: std::sync::OnceLock<bool>,
 }
 
 impl ImportsOf<'_> {
@@ -1792,6 +1802,7 @@ impl ImportsOf<'_> {
     // checker already knows as it did before the libraries were loaded.
     fn standard_library_registry_applies(&self) -> bool {
         *self
+            .project
             .registry_applies
             .get_or_init(|| self.compute_registry_applies())
     }
@@ -2027,7 +2038,6 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                     project,
                     from: id,
                     reads: std::sync::Mutex::new(Vec::new()),
-                    registry_applies: std::sync::OnceLock::new(),
                 };
                 #[cfg(feature = "snapshot")]
                 let cache_key = dependency_cache_key(project, id, &name, &source);
@@ -2045,7 +2055,6 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                             project,
                             from: id,
                             reads: std::sync::Mutex::new(Vec::new()),
-                            registry_applies: std::sync::OnceLock::new(),
                         },
                         Some(&project.fingerprints),
                     )
