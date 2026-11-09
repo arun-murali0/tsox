@@ -71,6 +71,103 @@ pub(super) fn infer_call_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
+    let result = infer_call_expression_type_inner(call, scoping, ctx);
+    refine_by_type_guard(call, scoping, ctx, result)
+}
+
+// `array.find(isNumber)`, `array.filter((x): x is number => ...)`: the library has an overload
+// taking a type guard `(value: T) => value is S` that returns `S | undefined` / `S[]`. The array
+// methods here are typed by hand without it, so the narrowed result is put back when the
+// callback is a guard whose type is a subtype of the element.
+fn refine_by_type_guard(
+    call: &oxc_ast::ast::CallExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+    result: TypeId,
+) -> TypeId {
+    use oxc_ast::ast::{TSType, TSTypePredicateName};
+    let Expression::StaticMemberExpression(member) = &call.callee else {
+        return result;
+    };
+    let method = member.property.name.as_str();
+    if !matches!(method, "find" | "findLast" | "filter") {
+        return result;
+    }
+    let Some(first) = call.arguments.first().and_then(|a| a.as_expression()) else {
+        return result;
+    };
+    let claimed = match first {
+        Expression::Identifier(ident) => resolve_symbol_id(ident, scoping)
+            .and_then(|symbol| ctx.type_predicates.get(&symbol).copied())
+            .filter(|p| !p.asserts && p.param_index == 0)
+            .and_then(|p| p.type_id),
+        Expression::ArrowFunctionExpression(arrow) => {
+            guard_type_of(arrow.return_type.as_deref(), &arrow.params, ctx)
+        }
+        Expression::FunctionExpression(func) => {
+            guard_type_of(func.return_type.as_deref(), &func.params, ctx)
+        }
+        _ => None,
+    };
+    fn guard_type_of(
+        annotation: Option<&oxc_ast::ast::TSTypeAnnotation<'_>>,
+        params: &oxc_ast::ast::FormalParameters<'_>,
+        ctx: &mut CheckContext<'_, '_>,
+    ) -> Option<TypeId> {
+        let TSType::TSTypePredicate(predicate) = &annotation?.type_annotation else {
+            return None;
+        };
+        let TSTypePredicateName::Identifier(name) = &predicate.parameter_name else {
+            return None;
+        };
+        let first_param = params.items.first()?;
+        let matches_first = matches!(&first_param.pattern,
+            oxc_ast::ast::BindingPattern::BindingIdentifier(id) if id.name == name.name);
+        if predicate.asserts || !matches_first {
+            return None;
+        }
+        crate::type_annotation::resolve_type_annotation(
+            predicate.type_annotation.as_ref()?,
+            &mut ctx.namespace,
+            &mut ctx.arena,
+        )
+    }
+    let Some(claimed) = claimed else {
+        return result;
+    };
+    if method == "filter" {
+        let Type::Array(element) = ctx.arena.get(result).clone() else {
+            return result;
+        };
+        if crate::subtyping::is_subtype(&ctx.arena, claimed, element) {
+            return ctx.arena.alloc(Type::Array(claimed));
+        }
+        return result;
+    }
+    let Type::Union(members) = ctx.arena.get(result).clone() else {
+        return result;
+    };
+    let undefined = ctx.arena.undefined();
+    let rest: Vec<TypeId> = members
+        .iter()
+        .copied()
+        .filter(|&m| m != undefined)
+        .collect();
+    if rest.len() + 1 != members.len() {
+        return result;
+    }
+    let element = ctx.arena.alloc_union(rest);
+    if crate::subtyping::is_subtype(&ctx.arena, claimed, element) {
+        return ctx.arena.alloc_union(vec![claimed, undefined]);
+    }
+    result
+}
+
+fn infer_call_expression_type_inner(
+    call: &oxc_ast::ast::CallExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> TypeId {
     let return_context = ctx.call_return_context.take();
     let mut callee_is_declaration = false;
     let (callee_type, callee_name) = match &call.callee {

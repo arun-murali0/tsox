@@ -2199,7 +2199,22 @@ impl<'a> TypeNamespace<'a> {
             }
         }
 
-        Some(arena.alloc(Type::Object(ObjectType::new(properties))))
+        let own = arena.alloc(Type::Object(ObjectType::new(properties)));
+        // `class C<T> extends Array<T>`: the instance is an array as well as what the class adds,
+        // so it has the array's members and is assignable where an array is wanted.
+        if let Some(heritage) = &class.heritage
+            && let Expression::Identifier(base) = &heritage.expression
+            && base.name == "Array"
+            && let Some(arguments) = heritage.type_arguments.as_deref()
+            && let [element] = arguments.params.as_slice()
+            && let Some(element) = crate::type_annotation::resolve_ts_type(element, self, arena)
+        {
+            let array = arena.alloc(Type::Array(element));
+            if let Ok(both) = arena.alloc_intersection(vec![array, own]) {
+                return Some(both);
+            }
+        }
+        Some(own)
     }
 
     // Problem: a class's value was only its constructor, so `Widget.create()` and every other
