@@ -365,6 +365,15 @@ pub fn resolve_ts_type(
                     arena, case, operand,
                 ));
             }
+            // `ReadonlyArray<T>` is the same array type as `readonly T[]`; the library's
+            // interface of that name would otherwise make it an unrelated object.
+            if id.name == "ReadonlyArray"
+                && let Some(arguments) = reference.type_arguments.as_deref()
+                && arguments.params.len() == 1
+            {
+                let element = resolve_ts_type(&arguments.params[0], namespace, arena)?;
+                return Some(arena.alloc_readonly_array(element));
+            }
             if id.name == "Awaited"
                 && let Some(alias) = crate::prelude::alias(id.name)
             {
@@ -461,7 +470,11 @@ pub fn resolve_ts_type(
         {
             // A readonly tuple is left unresolved: reading one as a plain tuple would
             // check `const` type parameters (`lit<const T>(...)`), which are not modelled.
-            resolve_ts_type(&operator.type_annotation, namespace, arena)
+            let plain = resolve_ts_type(&operator.type_annotation, namespace, arena)?;
+            match arena.get(plain).clone() {
+                Type::Array(element) => Some(arena.alloc_readonly_array(element)),
+                _ => Some(plain),
+            }
         }
         TSType::TSTypeOperatorType(operator)
             if operator.operator == TSTypeOperatorOperator::Keyof =>
@@ -716,6 +729,15 @@ pub fn resolve_named_reference(
     // while the declaration is still resolving, substituting its placeholder sees
     // only an empty object and loses the arguments. Allocate a distinct pending
     // App/Ref pair and finish it when the generic declaration's body is available.
+    // The library's `Promise<T>` reads as the built-in Promise: the library body carries over
+    // only `finally`, so it would make every `Promise<X>` one type, and `await`, `Awaited` and
+    // inference find a promise by the built-in node.
+    if name == "Promise"
+        && let [(_, argument)] = bindings.as_slice()
+    {
+        return Some(arena.alloc_promise(*argument));
+    }
+
     arena.set_decl_params(
         base,
         bindings.iter().map(|(parameter, _)| *parameter).collect(),
@@ -805,7 +827,10 @@ fn check_type_argument_constraint(
     let Some(constraint) = namespace.type_param_constraint(arena, parameter_id) else {
         return;
     };
-    let constraint = crate::semantic::substitute_type_params(arena, constraint, bindings);
+    // The bound may name the parameter itself (`T extends Cmp<T>`), which stands for the argument.
+    let mut with_own: Vec<(TypeParameterId, TypeId)> = bindings.to_vec();
+    with_own.push((parameter_id, argument));
+    let constraint = crate::semantic::substitute_type_params(arena, constraint, &with_own);
     if crate::semantic::contains_type_param(arena, constraint) {
         return;
     }
@@ -1369,7 +1394,7 @@ struct DottedName<'n> {
 }
 
 // `A.B.C` as one string, or None for a name that is not a plain dotted path.
-fn dotted_type_name(name: &TSTypeName) -> Option<String> {
+pub fn dotted_type_name(name: &TSTypeName) -> Option<String> {
     match name {
         TSTypeName::IdentifierReference(id) => Some(id.name.to_string()),
         TSTypeName::QualifiedName(qualified) => Some(format!(

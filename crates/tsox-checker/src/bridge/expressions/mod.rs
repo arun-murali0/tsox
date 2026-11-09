@@ -17,6 +17,7 @@ mod functions;
 mod logical;
 mod members;
 mod objects;
+mod spelling;
 
 pub(super) use assignment::narrow_on_assignment;
 pub(super) use elaborate::report_mismatch;
@@ -100,6 +101,7 @@ pub fn infer_expression_type(
                 [(&bin.left, left), (&bin.right, right)],
                 ctx,
             );
+            let (left, right) = widen_if_narrowed(bin, left, right, scoping, ctx);
             infer_binary_expression_type(bin.operator, left, right, bin.span(), ctx)
         }
 
@@ -168,11 +170,18 @@ pub fn infer_expression_type(
         }
 
         Expression::ArrowFunctionExpression(arrow) => {
-            infer_arrow_function_type(arrow, scoping, expected, ctx)
+            // A nested function is not the constructor: `this.x = ...` in it is a write.
+            let outer = std::mem::replace(&mut ctx.in_constructor, false);
+            let result = infer_arrow_function_type(arrow, scoping, expected, ctx);
+            ctx.in_constructor = outer;
+            result
         }
 
         Expression::FunctionExpression(func) => {
-            infer_function_expression_type(func, scoping, expected, ctx)
+            let outer = std::mem::replace(&mut ctx.in_constructor, false);
+            let result = infer_function_expression_type(func, scoping, expected, ctx);
+            ctx.in_constructor = outer;
+            result
         }
 
         Expression::LogicalExpression(logical) => {
@@ -320,5 +329,55 @@ pub(super) fn import_specifier_text(source: &Expression<'_>) -> Option<String> {
             .and_then(|quasi| quasi.value.cooked.as_ref())
             .map(|cooked| cooked.to_string()),
         _ => None,
+    }
+}
+
+// For `x == 1` after an earlier comparison of `x`: tsc compares the type `x` was narrowed to,
+// which can be `never` or a smaller literal, and tsox does not narrow a literal that far. So a
+// name compared before is judged on its primitive, and a literal mismatch is left alone.
+fn widen_if_narrowed(
+    bin: &oxc_ast::ast::BinaryExpression,
+    left: TypeId,
+    right: TypeId,
+    scoping: &oxc_semantic::Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> (TypeId, TypeId) {
+    use oxc_ast::ast::BinaryOperator as Op;
+    if !matches!(
+        bin.operator,
+        Op::Equality | Op::Inequality | Op::StrictEquality | Op::StrictInequality
+    ) {
+        return (left, right);
+    }
+    let name_of = |expression: &Expression| match expression {
+        // The declaration the name refers to, so the same name in another function (or
+        // another scope) is a different variable.
+        Expression::Identifier(ident) => Some(
+            ident
+                .reference_id
+                .get()
+                .and_then(|reference| scoping.get_reference(reference).symbol_id())
+                .map_or_else(
+                    || ident.name.to_string(),
+                    |symbol| format!("{}#{}", ident.name, symbol.index()),
+                ),
+        ),
+        _ => None,
+    };
+    let names = [name_of(&bin.left), name_of(&bin.right)];
+    let seen = names
+        .iter()
+        .flatten()
+        .any(|name| ctx.compared_names.contains(name));
+    for name in names.into_iter().flatten() {
+        ctx.compared_names.insert(name);
+    }
+    if seen {
+        (
+            crate::types::widen(&ctx.arena, left),
+            crate::types::widen(&ctx.arena, right),
+        )
+    } else {
+        (left, right)
     }
 }

@@ -3,5 +3,5 @@ interface Cache {
 }
 
 function run(cache: Cache): void {
-    const value: string = cache.entries.anything;
+    const value: string = cache.entries["anything"];
 }

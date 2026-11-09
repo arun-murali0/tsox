@@ -201,6 +201,17 @@ struct Project<'a> {
     // Check the members of a unit one after another on this thread. The query layer needs
     // it: a query's reads are recorded only on the thread that runs it.
     sequential: bool,
+    // Whether the standard-library registry applies to this project (see
+    // `ImportsOf::standard_library_registry_applies`). It depends on the graph and its options
+    // and on nothing about a file, so it is worked out once per project: a check that reads
+    // it per file, or a replay of a cached unit that does, would otherwise work it out again
+    // for every one.
+    registry_applies: std::sync::OnceLock<bool>,
+    // Declarations already hashed for the library cache, so one asked for by many units is
+    // hashed once. Per project: its tables hold the declarations, and a memo outliving them
+    // would keep them alive (see `FingerprintMemo`).
+    #[cfg(feature = "snapshot")]
+    fingerprints: tsox_checker::probe_log::FingerprintMemo,
 }
 
 impl Project<'_> {
@@ -571,6 +582,9 @@ pub fn run_project(
             collect_global_decls: true,
             texts: options.texts,
             sequential: false,
+            registry_applies: Default::default(),
+            #[cfg(feature = "snapshot")]
+            fingerprints: Default::default(),
         };
         let remembered: Option<Vec<Checked>> = options.memo.and_then(|memo| {
             let ask = || {
@@ -814,6 +828,9 @@ pub fn run_project(
                 collect_global_decls: true,
                 texts: options.texts,
                 sequential: false,
+                registry_applies: Default::default(),
+                #[cfg(feature = "snapshot")]
+                fingerprints: Default::default(),
             };
             for (report, unit_exports) in check_files(&scripts, &script_sources) {
                 if let Some(unit_exports) = unit_exports {
@@ -1111,6 +1128,9 @@ fn run_pass(setup: &PassSetup<'_>, globals: Globals) -> UnitResult {
         collect_global_decls: false,
         texts: setup.texts,
         sequential: false,
+        registry_applies: Default::default(),
+        #[cfg(feature = "snapshot")]
+        fingerprints: Default::default(),
     };
     for (id, unit) in setup.provider_units {
         project.publish(*id, unit.clone());
@@ -1261,6 +1281,9 @@ pub fn check_unit_isolated(
         collect_global_decls: false,
         texts: Some(texts),
         sequential: true,
+        registry_applies: Default::default(),
+        #[cfg(feature = "snapshot")]
+        fingerprints: Default::default(),
     };
     for (id, unit) in provider_units {
         project.publish(*id, unit.clone());
@@ -1320,6 +1343,9 @@ pub fn check_provider_isolated(
         collect_global_decls: true,
         texts: Some(texts),
         sequential: true,
+        registry_applies: Default::default(),
+        #[cfg(feature = "snapshot")]
+        fingerprints: Default::default(),
     };
     with_worker(|worker| check_file(&project, worker, id))
 }
@@ -1526,7 +1552,7 @@ static TEST_DELAY_SALT: std::sync::atomic::AtomicUsize = std::sync::atomic::Atom
 // The pool is built once and kept, since each worker owns an arena that is reused
 // from file to file. If the threads cannot be created, None sends the caller to
 // rayon's global pool, which works but has the small default stack.
-fn worker_pool() -> Option<&'static rayon::ThreadPool> {
+pub(super) fn worker_pool() -> Option<&'static rayon::ThreadPool> {
     static POOL: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
     POOL.get_or_init(|| {
         rayon::ThreadPoolBuilder::new()
@@ -1659,7 +1685,6 @@ struct ImportsOf<'a> {
     reads: std::sync::Mutex<Vec<DeclKey>>,
     // Whether the standard-library registry applies. The answer stats every library file,
     // and the checker asks once per global name, so it is worked out once per file.
-    registry_applies: std::sync::OnceLock<bool>,
 }
 
 impl ImportsOf<'_> {
@@ -1777,6 +1802,7 @@ impl ImportsOf<'_> {
     // checker already knows as it did before the libraries were loaded.
     fn standard_library_registry_applies(&self) -> bool {
         *self
+            .project
             .registry_applies
             .get_or_init(|| self.compute_registry_applies())
     }
@@ -2012,7 +2038,6 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                     project,
                     from: id,
                     reads: std::sync::Mutex::new(Vec::new()),
-                    registry_applies: std::sync::OnceLock::new(),
                 };
                 #[cfg(feature = "snapshot")]
                 let cache_key = dependency_cache_key(project, id, &name, &source);
@@ -2024,21 +2049,27 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                 // asked as it was answered then. The questions are put to a view of their
                 // own, so a variant that fails part-way leaves no reads behind.
                 #[cfg(feature = "snapshot")]
-                let hit = entry.as_ref().and_then(|entry| {
-                    entry.lookup(&ImportsOf {
-                        project,
-                        from: id,
-                        reads: std::sync::Mutex::new(Vec::new()),
-                        registry_applies: std::sync::OnceLock::new(),
-                    })
+                let hit = entry.as_mut().and_then(|entry| {
+                    entry.take_hit(
+                        &ImportsOf {
+                            project,
+                            from: id,
+                            reads: std::sync::Mutex::new(Vec::new()),
+                        },
+                        Some(&project.fingerprints),
+                    )
                 });
                 #[cfg(not(feature = "snapshot"))]
                 let hit: Option<(crate::unit::UnitOutput, Vec<DeclKey>)> = None;
                 // A miss on a cacheable file is run through a recorder, which keeps what the
                 // unit asked and was told.
                 #[cfg(feature = "snapshot")]
-                let recorder = (cache_key.is_some() && hit.is_none())
-                    .then(|| tsox_checker::probe_log::RecordingImports::new(&imports));
+                let recorder = (cache_key.is_some() && hit.is_none()).then(|| {
+                    tsox_checker::probe_log::RecordingImports::with_memo(
+                        &imports,
+                        &project.fingerprints,
+                    )
+                });
                 #[cfg(feature = "snapshot")]
                 let source_imports: &dyn ImportSource = match &recorder {
                     Some(recorder) => recorder,
@@ -2053,6 +2084,13 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                 // exist) can import but exports nothing.
                 if let Some(module) = graph.module_key(id) {
                     ctx = ctx.with_module(module);
+                }
+                // A dependency's declaration file is checked so that its declarations can be
+                // imported, and its errors are never reported (the driver drops its report),
+                // so the pass that finds them is left out. What other files read from the
+                // unit does not come from that pass.
+                if graph.is_dependency_declaration(id) {
+                    ctx = ctx.without_body_checks();
                 }
                 if let Some(cancel) = project.cancel {
                     ctx = ctx.with_cancel(cancel.clone());

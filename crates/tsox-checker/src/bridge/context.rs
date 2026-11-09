@@ -69,6 +69,10 @@ pub struct CheckContext<'ast, 'src> {
     // checker collected them. The return-path report pairs these with the flow's facts.
     pub function_returns: std::collections::HashMap<u32, FunctionReturn>,
 
+    // The backward flow resolver, when it is switched on: it watches every read of a variable
+    // and compares its answer with the overlay's. Off in a normal run.
+    pub shadow: Option<Box<super::flow_shadow::FlowShadow<'ast>>>,
+
     // Memoizes is_subtype, is_assignable and is_disjoint answers by relation and the
     // exact TypeId pair asked about, for the lifetime of this one file's check. The
     // pair is ordered, never symmetrized for subtyping: subtyping is not symmetric
@@ -130,6 +134,13 @@ pub struct CheckContext<'ast, 'src> {
     pub current_class_ids: Vec<u64>,
     /// Checking the body of a constructor, where a `readonly` member of `this` may be assigned.
     pub in_constructor: bool,
+    /// Abstract member names per top-level class: implementing one needs no `override`.
+    pub abstract_members: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    /// Names already compared with `==` or `===`: such a comparison narrows the name for the
+    /// code after it, so a later literal comparison is not judged on the declared literal type.
+    pub compared_names: std::collections::HashSet<String>,
+    /// Set while a bracket access with a literal key is looked up like a property read.
+    pub bracket_access: bool,
 
     // True while checking the body of a function whose `this` has no type at all:
     // a plain function expression with no `this` parameter and no contextual
@@ -391,6 +402,14 @@ pub struct FunctionReturn {
 }
 
 impl<'ast, 'src> CheckContext<'ast, 'src> {
+    /// Tells the flow shadow what was just assigned, so its walk can apply the same narrowing at
+    /// the assignment node. Nothing happens when the shadow is off.
+    pub fn shadow_note_assignment(&mut self, node_index: u32, declared: TypeId, assigned: TypeId) {
+        if let Some(shadow) = self.shadow.as_mut() {
+            shadow.note_assignment(node_index, declared, assigned);
+        }
+    }
+
     pub fn note_function_return(
         &mut self,
         key: u32,
@@ -480,6 +499,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             narrow: NarrowState::new(),
             flow: crate::reachability::Reachability::default(),
             function_returns: std::collections::HashMap::new(),
+            shadow: None,
             relation_cache: RelationCache::default(),
             current_return_type: None,
             current_return_async: false,
@@ -489,6 +509,9 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             current_class_instance: None,
             current_class_ids: Vec::new(),
             in_constructor: false,
+            compared_names: Default::default(),
+            abstract_members: Default::default(),
+            bracket_access: false,
             implicit_this: false,
             next_function_has_no_this: false,
             call_return_context: None,

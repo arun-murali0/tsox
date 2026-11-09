@@ -6,6 +6,7 @@ mod declare;
 mod duplicates;
 mod exports;
 mod expressions;
+pub mod flow_shadow;
 mod implicit_any;
 mod imports;
 mod narrow;
@@ -80,6 +81,8 @@ pub struct FileEnv<'a> {
     pub module: Option<ModuleKey>,
     pub imports: Option<&'a dyn ImportSource>,
     pub options: crate::check_options::CheckOptions,
+    // Skip `bodies_phase`: the diagnostics-only pass (see `UnitContext::skip_bodies`).
+    pub skip_bodies: bool,
 }
 
 pub type Checked = (Vec<Diagnostic>, CheckMetrics, ExportTable);
@@ -100,6 +103,7 @@ pub fn check_file(
         module,
         imports,
         options,
+        skip_bodies,
     } = env;
     arena.clear();
     // A cut recorded by an earlier unit on this thread is not this unit's.
@@ -122,7 +126,10 @@ pub fn check_file(
     ctx.options = options;
 
     declare_phase(&program, semantic.scoping(), &mut ctx);
-    bodies_phase(&program, &semantic, &mut ctx);
+    // The pass is left out only when asked for and only when nothing in the file can need it.
+    if !(skip_bodies && !declarations_need_the_pass(&semantic)) {
+        bodies_phase(&program, &semantic, &mut ctx);
+    }
     // The guard in the namespace has no diagnostics of its own to write to, so it left a
     // flag. The position is the start of the file, since a cut chain has no one place.
     if ctx.namespace.take_depth_cut() | crate::stack_guard::take_cut() {
@@ -168,6 +175,49 @@ pub fn check_file(
     Ok(Some((diagnostics, metrics, exports)))
 }
 
+// Whether the file has a construct whose result could come from the pass that checks
+// expressions, which a declaration file leaves out when asked to (`UnitContext::skip_bodies`).
+// The one known case is the type of an ambient variable with an initializer and no
+// annotation (`declare const answer = 42`), which is inferred there and read from there when
+// the file's exports are collected. Anything else that holds an expression is treated the
+// same way, as a precaution: initializers of variables, class properties and enum members,
+// `export default` of an expression, `export =` of anything but a name, and a base class
+// that is not a plain (possibly dotted) name. A declaration file made of types and
+// signatures has none of these, and is nearly all of every dependency's text.
+fn declarations_need_the_pass(semantic: &Semantic<'_>) -> bool {
+    use oxc_ast::AstKind;
+    use oxc_ast::ast::{ExportDefaultDeclarationKind, Expression};
+
+    fn plain_name(expression: &Expression<'_>) -> bool {
+        match expression {
+            Expression::Identifier(_) => true,
+            Expression::StaticMemberExpression(member) => plain_name(&member.object),
+            _ => false,
+        }
+    }
+
+    semantic.nodes().iter().any(|node| match node.kind() {
+        AstKind::VariableDeclarator(declarator) => declarator.init.is_some(),
+        AstKind::PropertyDefinition(property) => property.value.is_some(),
+        AstKind::AccessorProperty(property) => property.value.is_some(),
+        AstKind::TSEnumMember(member) => member.initializer.is_some(),
+        AstKind::TSExportAssignment(assignment) => {
+            !matches!(assignment.expression, Expression::Identifier(_))
+        }
+        AstKind::ExportDefaultDeclaration(export) => !matches!(
+            export.declaration,
+            ExportDefaultDeclarationKind::FunctionDeclaration(_)
+                | ExportDefaultDeclarationKind::ClassDeclaration(_)
+                | ExportDefaultDeclarationKind::TSInterfaceDeclaration(_)
+        ),
+        AstKind::Class(class) => class
+            .heritage
+            .as_ref()
+            .is_some_and(|base| !plain_name(&base.expression)),
+        _ => false,
+    })
+}
+
 fn declare_phase<'ast>(
     program: &'ast Program<'ast>,
     scoping: &Scoping,
@@ -186,7 +236,11 @@ fn bodies_phase<'ast>(
 ) {
     let scoping = semantic.scoping();
     unreachable_code::analyze_flow(program, scoping, ctx);
+    ctx.shadow = flow_shadow::FlowShadow::new(program, semantic).map(Box::new);
     statements::check_top_level(program, scoping, ctx);
+    if let Some(shadow) = ctx.shadow.take() {
+        shadow.report(ctx, scoping);
+    }
     if ctx.cancelled {
         return;
     }

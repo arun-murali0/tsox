@@ -14,6 +14,15 @@ Most of a file's names come from its own declarations and its imports. Some do n
 | 2026-10-25 | Lazy imports that cannot close a cycle are read; async functions are checked | `ac6c6ad` | `await import("x")` had no type, and an unannotated `async function` was never declared |
 | 2026-10-31 | `types`, `typeRoots`, reference directives and project globals | `35e4962`, `36d0bd2` | A package's types come from configuration and from `/// <reference>` as well as from imports |
 | 2026-11-03 | The TypeScript 6.0.3 lib files are vendored as data | `0e76352` | The first step toward a real standard library |
+| 2026-11-06 | DOM-family lib files load only when the project can observe them | `fe1d6bf` | `lib.dom.d.ts` is 84% of the default library's bytes and most of its time |
+| 2026-11-07 | An opt-in cache of checked library files, then of every dependency declaration file, validated by what each asked | `b6102db`, `116a394`, `9263f3a`, `8e32f56` | Checking the same unchanged files on every run was most of a small project's time |
+| 2026-11-07 | The import scan of dependency files is cached too | `b0efa6a` | Finding what a file imports means parsing it, 70% of graph building once checking is cached |
+| 2026-11-07 | Discovery validates UTF-8 with `str::from_utf8` first | `fdbdb13` | The lossy conversion was half of a warm graph build |
+| 2026-11-08 | A cache hit is moved out of its entry; declarations are hashed once per run | `8680d79` | Copying a decoded entry and rehashing shared declarations were the largest parts left of replay |
+| 2026-11-08 | Discovery loads each round of files in parallel | `b25da6f` | One core read, hashed and parsed every file in turn |
+| 2026-11-08 | The error-checking pass is skipped for dependency declaration files that cannot need it | `2badb7c` | Cold: 60 of 167 ms of `lib.dom.d.ts`, and its errors are never reported |
+| 2026-11-09 | Whether the standard-library registry applies is worked out once per project | this patch | One kind of cache replay question was 80% of replay time |
+| 2026-11-09 | The library cache is on by default in the command line tool, private, bounded and optional | this patch | A cache that has to be asked for is a cache most runs do not have |
 
 ## 2. The shape of the problem
 
@@ -91,16 +100,59 @@ That is the rule behind every loosely typed library member: when the real type c
 
 ## 8. What is still not done
 
-- Real generic library shapes through the provider, which needs generic inference. The lib files are vendored and nothing reads them.
+- Real generic library shapes through the provider, which needs generic inference. The lib files are loaded and checked (section 9), but a generic method of `Array` or `Promise` is still typed loosely where inference cannot carry it.
 - A cheaper second pass for projects whose scripts use each other's names. The corpus cost above is the number to beat.
 - A generic interface merged across files, and the printing of merged interfaces.
 - `typeof import("x").A.b` and a dynamic specifier that is not a plain string.
 - An open observation (2026-10-25): in one of three full-suite runs, `a_very_long_alias_chain_is_cut_off_and_reported_once` in `crates/tsox-cli/tests/depth_guard.rs` got no nesting diagnostic. It passed alone three times and in the other full runs. It is not explained.
 
-## 9. Invariants to keep
+## 9. Loading and caching the standard library
+
+This section is the account of how a project's standard library is chosen, checked and kept, and of what was measured and rejected on the way. Numbers are from a single core, release build; `lib.dom.d.ts` is 2.3 MB.
+
+**What loads.** The set comes from `lib` or the target's default (`StandardLibrarySet`). The DOM-family files (`dom`, `dom.iterable`, `dom.asynciterable`, `webworker.importscripts`, `scripthost`) are left out of the first graph, and the project is read once (`project_needs_dom_libraries`) for any global only those files declare, `globalThis`, a script that declares such a name, `declare global`, or a file that does not parse. Any of these loads them; `--eager-libs` or `TSOX_EAGER_LIBS` always does. The test is one-sided: what it cannot rule out counts as a need.
+
+**What a unit's output depends on.** Its text, its options, and the answers its `ImportSource` gave. Nothing else reaches the checker. `RecordingImports` keeps each distinct question with a fingerprint of the answer (a declaration's whole content, export keys, module state, global names, the flags), and a stored output is used only if the project gives the same answer to every question as it did then. That covers questions answered with "nothing". An entry holds up to six outputs, each with its questions; a hit replays them against a view that records nothing and reports the reads a fresh check would. `tests/probe_log.rs` fails if a method is added to `ImportSource` or `DeclProvider` without being added to the recorder.
+
+**What is kept, and where.** The cache keeps, per bundled library file and per dependency declaration file, its unit entry and the import scan used to build the graph. Keys hash the file's bytes and name and the identity of the running program (its size, modification time and path), so a rebuilt checker never reads an older entry. Entries are read strictly and a damaged one is a miss. `FingerprintMemo` hashes each declaration once per `Project`, keyed by the address of its `Arc`; it holds a strong reference to each, so the address cannot be reused while the entry exists.
+
+**It is on by default in the command line tool**, in a per-user directory: `$XDG_CACHE_HOME/tsox/lib-cache` or `~/.cache/tsox/lib-cache` on Linux, `~/Library/Caches/tsox/lib-cache` on macOS, `%LOCALAPPDATA%\tsox\lib-cache` on Windows (`crates/tsox-cli/src/cache_dir.rs`). `--no-lib-cache` switches it off for a run, `TSOX_LIB_CACHE_DIR=off` for a shell, `--lib-cache <dir>` or `TSOX_LIB_CACHE_DIR=<dir>` names another directory, and the flag beats the variable. A directory that was asked for and cannot be used is an error; the default one that cannot be used is not, and the run goes on as if it were off. The library crate installs no cache unless its caller does (`install_library_unit_cache`), and a build without the `snapshot` feature has none. A default that writes to disk has to be private, bounded and optional, and is each:
+- *Private.* The default directory is created with mode 0700 and must be owned by the running user (a file the process makes in it has that owner, which is how this is checked without asking for the user id); a looser mode on a directory we own is tightened. What is read back is data about types that the checker believes, so a directory another user could have written to is refused.
+- *Bounded.* Entries older than 30 days go, and past 256 MiB the oldest go first, as do the temporary files of writers that stopped half-way. A sweep reads the metadata of every entry, which costs more than a small project's whole check, so it runs at most once an hour (the time of the last is the modification time of `.swept`).
+- *Optional.* The three switches above. The workspace's own `.cargo/config.toml` sets `TSOX_LIB_CACHE_DIR=off` so that running the tests never reads or writes a real per-user cache; the tests that need it on set their own environment.
+
+**What the cold cost is.** Per phase for `lib.dom.d.ts`, 167 ms: parse 11, semantic 6, declare 35, bodies 60, exports 55. The bodies pass only finds errors, and a dependency's errors are never reported, so `UnitContext::without_body_checks` leaves it out for dependency declaration files. The checker honors the ask only when the file has no initializer on a variable, class property or enum member, no `export default` of an expression, no `export =` of anything but a name, and no base class that is not a plain name. The equivalence test found the one case that needs the pass: an unannotated ambient `const` (`declare const answer = 42`) is typed there and read when exports are collected.
+
+**Measured at `9b8b21b`, one core, medians of 7 runs (15 for warm).** Output of 108 project configurations was identical to the unmodified tip in every one: uncached, with the default cache cold, and with it warm. The machine's timings vary by about a third from one run to the next, so the ratios are the claim and the milliseconds are a guide.
+
+| Project | Before, no cache | Now, default cache warm |
+| --- | --- | --- |
+| Plain code | 17 ms | 5 ms (4x) |
+| React and `@types/react` | 455 ms | 39 ms (12x) |
+| `@types/node` (`types: ["node"]`) | 456 ms | 74 ms (6x) |
+| React, with `types: ["node", "react"]` | 689 ms | 92 ms (7x) |
+
+A cold first run costs what the cache-free run costs, less the skipped error pass (see above): React 371 to 263 ms on a quiet machine.
+
+**A profile of the warm Node types project** (467 unit lookups for 185 files, every one a hit, at most five stored variants per file; the import cycle is settled over several rounds, and the second pass looks every file up again) split the replay by kind of question. One kind, `requires_registered_global_types`, took 23.6 ms of the roughly 29 ms of replay, 44 microseconds a question against under one for every other kind. It asks whether the standard-library registry applies, which depends on the graph and its options and on nothing about the file, and it was worked out once per `ImportsOf` instance. The replay view is a new instance per lookup, so it was worked out 539 times, and the check itself worked it out once per file. It is now worked out once per `Project`. That took the warm Node types project from 92 to 68 ms and the plain project from 9 to 5 ms, and it makes a run with no cache a little faster too. Sharing a decoded entry between rounds, which the first reading of the profile suggested, would have saved about 12 ms at most and was not built.
+
+**Tried and not done.**
+- *Building only the declarations a project reaches.* The DOM unit costs the same with and without declaration bodies (170 to 185 ms either way), so a selective build saves nothing; the time is in the declare, bodies and export passes over the file. Skipping those per declaration would need a lazy declare pass in the checker.
+- *A snapshot shipped with the binary.* Its key would have to name the checker's code, and a stale one would be silently wrong or silently unused. The cache above is written by the program that reads it.
+- *Caching a project's own files.* They change constantly, so an entry would be written and read once.
+- *Sharing a decoded cache entry between the rounds of a cycle.* Decoding is 12 ms of the warm Node types project, and sharing means copying a hit instead of moving it out, which gives back part of that. The registry question above was the larger cost by far.
+
+**Parallel discovery.** Each round of newly found files is loaded on the checking pool (big stacks, stack guard set) and then resolved one file at a time in id order. The published ids follow path order, so interning order cannot show in the result. One core takes the sequential path. Its speedup has not been measured: the machine it was written on has one core.
+
+## 10. Invariants to keep
 
 1. **The answer does not depend on file order.** Every table is built in path order, and each feature has a test that reverses the listing.
 2. **A name that cannot be typed becomes loose, not wrong.** An `any` that loses an error is better than a type that invents one.
 3. **A global is visible only where it is unresolved.** A file's own declarations win.
 4. **An augmentation never stands in for a declaration it does not know in full.**
 5. **A lazy import is read only when waiting for it cannot close a cycle.** Otherwise it stays unread.
+6. **A stored result is used only if everything it depended on is still true.** The questions a unit put to the project, with fingerprints of the answers, are the whole dependency. A cache never answers for a project it was not made for.
+7. **A cache never makes a run different, only faster.** Output with the cache cold, warm or off is identical, and a damaged or foreign entry is a miss.
+8. **Skipping work is allowed only where the equivalence test covers what the work contributes.** `tests/declaration_units_without_bodies.rs` runs each declaration file both ways; a new construct that can need the skipped pass belongs in `declarations_need_the_pass` first.
+9. **A default that writes to disk is private, bounded and optional.** The cache directory is the user's alone, has a size and an age limit, and has three ways to switch it off; a default that cannot be used is skipped, never an error.
+10. **Whatever a replay or a check asks more than once is worked out once.** A question whose answer does not depend on the file belongs to the project. The profile that found this was by kind of question, so a new kind of question gets its own line in it.

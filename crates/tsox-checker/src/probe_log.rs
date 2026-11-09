@@ -13,7 +13,7 @@
 //! method added to the trait without being added below would fall back to the trait's default
 //! and go unrecorded, so `tests/probe_log.rs` lists them and fails when the two drift.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
@@ -50,15 +50,78 @@ pub struct ProbeRecord {
 }
 
 impl ProbeRecord {
-    /// True when `source` gives the same answer to this question now.
-    pub fn holds(&self, source: &dyn ImportSource) -> bool {
-        answer_of(&self.call, source) == self.answer
+    /// True when `source` gives the same answer to this question now. `memo` saves hashing a
+    /// declaration that has been hashed already in this run.
+    pub fn holds(&self, source: &dyn ImportSource, memo: Option<&FingerprintMemo>) -> bool {
+        answer_of(&self.call, source, memo) == self.answer
     }
 }
 
 /// True when every record still holds.
-pub fn all_hold(records: &[ProbeRecord], source: &dyn ImportSource) -> bool {
-    records.iter().all(|record| record.holds(source))
+pub fn all_hold(
+    records: &[ProbeRecord],
+    source: &dyn ImportSource,
+    memo: Option<&FingerprintMemo>,
+) -> bool {
+    records.iter().all(|record| record.holds(source, memo))
+}
+
+/// The fingerprints of declarations already hashed, so a declaration that many units ask for
+/// (`Array`, `Promise`, an HTML element) is hashed once and not once per unit.
+///
+/// A declaration is told apart by the address of its `Arc`, and the memo keeps a strong
+/// reference to every `Arc` it has an entry for. While the entry exists the allocation cannot
+/// be freed, so its address cannot be handed to another declaration, and a declaration behind
+/// an `Arc` is never changed. A hit is therefore always the same declaration and the same
+/// content, and the hash is the one a fresh computation would give. Make one per run: it holds
+/// what it has seen until it is dropped.
+#[derive(Default)]
+pub struct FingerprintMemo {
+    seen: std::sync::RwLock<HashMap<usize, (Arc<PortableDecl>, u128)>>,
+}
+
+impl FingerprintMemo {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn decl(&self, decl: &Arc<PortableDecl>) -> u128 {
+        let address = Arc::as_ptr(decl) as usize;
+        if let Some((_, fingerprint)) = self
+            .seen
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&address)
+        {
+            return *fingerprint;
+        }
+        // Hashed outside the lock. Two threads may both do it; they get the same value.
+        let fingerprint = fp_decl(Some(decl));
+        self.seen
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(address, (Arc::clone(decl), fingerprint));
+        fingerprint
+    }
+
+    /// How many declarations have been hashed.
+    pub fn len(&self) -> usize {
+        self.seen
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+fn fp_decl_memo(decl: Option<Arc<PortableDecl>>, memo: Option<&FingerprintMemo>) -> u128 {
+    match (decl, memo) {
+        (Some(decl), Some(memo)) => memo.decl(&decl),
+        (decl, _) => fp_decl(decl.as_deref()),
+    }
 }
 
 /// The declarations the questions asked for, sorted and without duplicates: what
@@ -76,9 +139,9 @@ pub fn declarations_read(records: &[ProbeRecord]) -> Vec<DeclKey> {
     keys
 }
 
-fn answer_of(call: &ProbeCall, source: &dyn ImportSource) -> u128 {
+fn answer_of(call: &ProbeCall, source: &dyn ImportSource, memo: Option<&FingerprintMemo>) -> u128 {
     match call {
-        ProbeCall::Decl(key) => fp_decl(source.decl(*key).as_deref()),
+        ProbeCall::Decl(key) => fp_decl_memo(source.decl(*key), memo),
         ProbeCall::ExportKeys(specifier, name) => fp_keys(&source.export_keys(specifier, name)),
         ProbeCall::ModuleExports(specifier) => fp_module_exports(source.module_exports(specifier)),
         ProbeCall::ExportAll(specifier) => fp_pairs(&source.export_all(specifier)),
@@ -166,6 +229,7 @@ fn fp_generics(value: Option<Vec<(String, bool)>>) -> u128 {
 /// An `ImportSource` that forwards to another and keeps each distinct question it was asked.
 pub struct RecordingImports<'a> {
     inner: &'a dyn ImportSource,
+    memo: Option<&'a FingerprintMemo>,
     log: Mutex<Log>,
 }
 
@@ -179,7 +243,16 @@ impl<'a> RecordingImports<'a> {
     pub fn new(inner: &'a dyn ImportSource) -> Self {
         Self {
             inner,
+            memo: None,
             log: Mutex::new(Log::default()),
+        }
+    }
+
+    /// Like `new`, hashing declarations through `memo`.
+    pub fn with_memo(inner: &'a dyn ImportSource, memo: &'a FingerprintMemo) -> Self {
+        Self {
+            memo: Some(memo),
+            ..Self::new(inner)
         }
     }
 
@@ -214,7 +287,10 @@ impl<'a> RecordingImports<'a> {
 impl DeclProvider for RecordingImports<'_> {
     fn decl(&self, key: DeclKey) -> Option<Arc<PortableDecl>> {
         let answer = self.inner.decl(key);
-        self.note(|| ProbeCall::Decl(key), || fp_decl(answer.as_deref()));
+        self.note(
+            || ProbeCall::Decl(key),
+            || fp_decl_memo(answer.clone(), self.memo),
+        );
         answer
     }
 }

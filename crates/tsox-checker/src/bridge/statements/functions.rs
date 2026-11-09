@@ -12,6 +12,16 @@ pub(super) fn check_function_declaration(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) {
+    let outer = std::mem::replace(&mut ctx.in_constructor, false);
+    check_function_declaration_inner(func, scoping, ctx);
+    ctx.in_constructor = outer;
+}
+
+fn check_function_declaration_inner(
+    func: &Function,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) {
     report_implicit_any_params(&func.params, ctx);
 
     let Some(body) = &func.body else {

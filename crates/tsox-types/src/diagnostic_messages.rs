@@ -45,6 +45,13 @@ pub mod messages {
         expected: TypeId,
         plain: DiagnosticCode,
     ) -> DiagnosticMessage {
+        if matches!(
+            plain,
+            DiagnosticCode::DeclaredTypeMismatch | DiagnosticCode::ReturnTypeMismatch
+        ) && is_readonly_to_mutable(arena, actual, expected)
+        {
+            return readonly_to_mutable(arena, actual, expected);
+        }
         let levels = mismatch_levels(arena, actual, expected);
         DiagnosticMessage::new(top_code(&levels, plain), render(&levels))
     }
@@ -243,6 +250,9 @@ pub mod messages {
         instantiated: TypeId,
         expected: TypeId,
     ) -> DiagnosticMessage {
+        if is_readonly_to_mutable(arena, actual, expected) {
+            return readonly_to_mutable(arena, actual, expected);
+        }
         let levels = mismatch_levels_via(arena, actual, instantiated, expected);
         DiagnosticMessage::new(
             top_code(&levels, DiagnosticCode::DeclaredTypeMismatch),
@@ -284,6 +294,39 @@ pub mod messages {
             actual,
             expected,
             DiagnosticCode::DeclaredTypeMismatch,
+        )
+    }
+
+    fn is_readonly_to_mutable(arena: &TypeArena, actual: TypeId, expected: TypeId) -> bool {
+        matches!(arena.get(actual), Type::Array(_))
+            && matches!(arena.get(expected), Type::Array(_))
+            && arena.is_readonly_array(actual)
+            && !arena.is_readonly_array(expected)
+    }
+
+    // `readonly T[]` into `T[]` is TS4104 on its own line, not TS2322.
+    pub fn readonly_to_mutable(
+        arena: &TypeArena,
+        actual: TypeId,
+        expected: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ReadonlyToMutable,
+            format!(
+                "The type '{}' is 'readonly' and cannot be assigned to the mutable type '{}'.",
+                display_type(arena, actual),
+                display_type(arena, expected)
+            ),
+        )
+    }
+
+    pub fn readonly_index_write(arena: &TypeArena, object: TypeId) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ReadonlyIndexWrite,
+            format!(
+                "Index signature in type '{}' only permits reading.",
+                display_type(arena, object)
+            ),
         )
     }
 
@@ -551,6 +594,16 @@ pub mod messages {
         )
     }
 
+    // `resolve()` of a `Promise<T>` whose `T` is not `void`.
+    pub fn promise_resolve_needs_value(got: usize) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PromiseResolveNeedsValue,
+            format!(
+                "Expected 1 arguments, but got {got}. Did you forget to include 'void' in your type argument to 'Promise'?"
+            ),
+        )
+    }
+
     pub fn argument_arity_at_least(required: usize, got: usize) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::ArgumentArityAtLeast,
@@ -678,6 +731,60 @@ pub mod messages {
             format!(
                 "Property '{property_name}' does not exist on type '{}'.",
                 display_type(arena, object_type)
+            ),
+        )
+    }
+
+    pub fn property_does_not_exist_suggestion(
+        arena: &TypeArena,
+        property_name: &str,
+        object_type: TypeId,
+        suggestion: &str,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PropertyDoesNotExistSuggestion,
+            format!(
+                "Property '{property_name}' does not exist on type '{}'. Did you mean '{suggestion}'?",
+                display_type(arena, object_type)
+            ),
+        )
+    }
+
+    pub fn property_from_index_signature(property_name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PropertyFromIndexSignature,
+            format!(
+                "Property '{property_name}' comes from an index signature, so it must be accessed with ['{property_name}']."
+            ),
+        )
+    }
+
+    pub fn conversion_may_be_mistake(
+        arena: &TypeArena,
+        source: TypeId,
+        target: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ConversionMayBeMistake,
+            format!(
+                "Conversion of type '{}' to type '{}' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
+                display_type(arena, source),
+                display_type(arena, target)
+            ),
+        )
+    }
+
+    pub fn comparison_no_overlap(
+        arena: &TypeArena,
+        left: TypeId,
+        right: TypeId,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ComparisonNoOverlap,
+            format!(
+                "This comparison appears to be unintentional because the types '{}' and '{}' have no overlap.",
+                display_type(arena, left),
+                display_type(arena, right)
             ),
         )
     }
@@ -1077,6 +1184,22 @@ pub mod messages {
         DiagnosticMessage::new(
             DiagnosticCode::FallthroughCaseInSwitch,
             "Fallthrough case in switch.",
+        )
+    }
+
+    pub fn flow_shadow_disagreement(name: &str, overlay: &str, flow: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::FlowShadowDisagreement,
+            format!(
+                "flow shadow: '{name}' is '{overlay}' by the forward pass and '{flow}' by the flow walk."
+            ),
+        )
+    }
+
+    pub fn flow_shadow_read(name: &str, ty: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::FlowShadowRead,
+            format!("flow shadow: '{name}' is '{ty}' by both."),
         )
     }
 

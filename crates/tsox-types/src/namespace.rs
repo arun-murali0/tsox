@@ -2032,6 +2032,23 @@ impl<'a> TypeNamespace<'a> {
                         member_modifiers(class, self.file_id, prop.accessibility, prop.readonly),
                     );
                 }
+                // `accessor x: T` is a property for the checker: its type comes from the
+                // annotation, else `any` (an unannotated one is reported as an implicit any).
+                ClassElement::AccessorProperty(prop) if !prop.r#static => {
+                    let name = static_member_name(&prop.key)?;
+                    let type_id = match &prop.type_annotation {
+                        Some(annotation) => resolve_type_annotation(annotation, self, arena)?,
+                        None => arena.any(),
+                    };
+                    upsert_property(
+                        &mut properties,
+                        name,
+                        type_id,
+                        false,
+                        false,
+                        member_modifiers(class, self.file_id, prop.accessibility, false),
+                    );
+                }
                 ClassElement::MethodDefinition(method)
                     if !method.r#static && method.kind == MethodDefinitionKind::Method =>
                 {
@@ -2182,7 +2199,22 @@ impl<'a> TypeNamespace<'a> {
             }
         }
 
-        Some(arena.alloc(Type::Object(ObjectType::new(properties))))
+        let own = arena.alloc(Type::Object(ObjectType::new(properties)));
+        // `class C<T> extends Array<T>`: the instance is an array as well as what the class adds,
+        // so it has the array's members and is assignable where an array is wanted.
+        if let Some(heritage) = &class.heritage
+            && let Expression::Identifier(base) = &heritage.expression
+            && base.name == "Array"
+            && let Some(arguments) = heritage.type_arguments.as_deref()
+            && let [element] = arguments.params.as_slice()
+            && let Some(element) = crate::type_annotation::resolve_ts_type(element, self, arena)
+        {
+            let array = arena.alloc(Type::Array(element));
+            if let Ok(both) = arena.alloc_intersection(vec![array, own]) {
+                return Some(both);
+            }
+        }
+        Some(own)
     }
 
     // Problem: a class's value was only its constructor, so `Widget.create()` and every other

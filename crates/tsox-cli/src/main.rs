@@ -1,3 +1,5 @@
+mod cache_dir;
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -87,10 +89,23 @@ fn main() -> ExitCode {
         Ordering::Relaxed,
     );
 
-    if let Some(dir) = lib_cache_dir(&args) {
-        if let Err(message) = install_lib_cache(&dir) {
-            eprintln!("error: {message}");
-            return ExitCode::from(2);
+    match cache_dir::choose(&args, &|name| env::var_os(name)) {
+        cache_dir::Choice::Off => {}
+        cache_dir::Choice::Explicit(dir) => {
+            if let Err(message) = install_lib_cache(&dir) {
+                eprintln!("error: {message}");
+                return ExitCode::from(2);
+            }
+        }
+        // The default is a convenience: if it cannot be used the run goes on without it.
+        cache_dir::Choice::Default(dir) => {
+            // A build without the cache has nothing to keep in it, so it makes no directory.
+            #[cfg(feature = "snapshot")]
+            if cache_dir::ensure_private_dir(&dir).is_ok() {
+                let _ = install_lib_cache(&dir);
+            }
+            #[cfg(not(feature = "snapshot"))]
+            let _ = dir;
         }
     }
 
@@ -471,16 +486,6 @@ fn report_project(
     tally
 }
 
-// `--lib-cache <dir>`, or `TSOX_LIB_CACHE_DIR`: where the checked bundled library files are
-// kept between runs. Off unless one is given.
-fn lib_cache_dir(args: &[String]) -> Option<PathBuf> {
-    let position = args.iter().position(|arg| arg == "--lib-cache");
-    match position {
-        Some(index) => args.get(index + 1).map(PathBuf::from),
-        None => env::var_os("TSOX_LIB_CACHE_DIR").map(PathBuf::from),
-    }
-}
-
 #[cfg(feature = "snapshot")]
 fn install_lib_cache(dir: &std::path::Path) -> Result<(), String> {
     let cache = tsox::DiskLibraryUnitCache::new(dir)
@@ -558,7 +563,7 @@ fn print_help() {
     println!(
         "tsox: a from-scratch TypeScript type checker (experimental CLI)\n\n\
          USAGE:\n    \
-         tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--eager-libs] [--lib-cache <dir>] [--tsc-codes]\n    \
+         tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--eager-libs] [--lib-cache <dir> | --no-lib-cache] [--tsc-codes]\n    \
          [--incremental | --watch]\n\n\
          OPTIONS:\n    \
          --project <path>    Read the tsconfig.json at <path> and check the files its\n                         \
@@ -572,6 +577,12 @@ fn print_help() {
          --partial           Print each file whose exports are partial, and why, then a\n                         \
          summary by reason with the project files each one reaches\n                         \
          (module graph builds only).\n    \
+         --lib-cache <dir>   Keep what checking the standard library and a project's\n                         \
+         dependency declaration files produced in <dir>, and read it\n                         \
+         back on the next run. Output is the same with or without it.\n                         \
+         The default is a per-user cache directory (~/.cache/tsox on\n                         \
+         Linux); TSOX_LIB_CACHE_DIR names another, or `off`.\n    \
+         --no-lib-cache      Do not use the cache for this run.\n    \
          --tsc-codes         Print each diagnostic under the tsc code it maps to\n                         \
          (TS2322) instead of tsox's own (TSR1003).\n    \
          --incremental       Check through the query layer. One run costs about twice the\n                         \

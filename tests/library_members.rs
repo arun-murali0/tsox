@@ -124,8 +124,8 @@ fn a_member_that_does_not_exist_is_still_reported() {
 
 #[test]
 fn element_types_flow_through_the_methods_that_keep_them() {
-    // `slice` and `concat` keep the element type, so `string` from them is wrong; `map` and
-    // `filter` return `any[]` and say nothing about their elements.
+    // `slice`, `concat` and `filter` keep the element type, so `string` from them is wrong;
+    // `map` gives what its callback returns, here a string.
     let result = errors(
         "elements",
         &with(
@@ -135,7 +135,7 @@ fn element_types_flow_through_the_methods_that_keep_them() {
              export const e4: string[] = arr.filter((x) => x > 1);\n",
         ),
     );
-    assert_eq!(result, ["Some(2322)"]);
+    assert_eq!(result, ["Some(2322)", "Some(2322)"]);
 }
 
 #[test]

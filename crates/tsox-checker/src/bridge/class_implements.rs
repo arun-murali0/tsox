@@ -1,4 +1,4 @@
-use oxc_ast::ast::{Class, Program, Statement, TSTypeName};
+use oxc_ast::ast::{Class, Program, Statement};
 use oxc_span::GetSpan;
 
 use crate::namespace::Resolution;
@@ -9,6 +9,40 @@ use super::context::CheckContext;
 // class and an interface that both resolve completely are compared, so a shape this checker
 // cannot see never produces a report; the cost is that such a class goes unchecked.
 pub fn check_class_implements<'ast>(program: &Program<'ast>, ctx: &mut CheckContext<'ast, '_>) {
+    for statement in &program.body {
+        let class = match statement {
+            Statement::ClassDeclaration(class) => Some(class),
+            Statement::ExportDeclaration(export) => match &export.declaration {
+                oxc_ast::ast::Declaration::ClassDeclaration(class) => Some(class),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(class) = class
+            && let Some(id) = class.id.as_ref()
+        {
+            let names = class
+                .body
+                .body
+                .iter()
+                .filter_map(|element| match element {
+                    oxc_ast::ast::ClassElement::PropertyDefinition(p)
+                        if p.r#type
+                            == oxc_ast::ast::PropertyDefinitionType::TSAbstractPropertyDefinition => {
+                        p.key.static_name().map(|n| n.to_string())
+                    }
+                    oxc_ast::ast::ClassElement::MethodDefinition(m)
+                        if m.r#type
+                            == oxc_ast::ast::MethodDefinitionType::TSAbstractMethodDefinition =>
+                    {
+                        m.key.static_name().map(|n| n.to_string())
+                    }
+                    _ => None,
+                })
+                .collect();
+            ctx.abstract_members.insert(id.name.to_string(), names);
+        }
+    }
     for statement in &program.body {
         match statement {
             Statement::ClassDeclaration(class) => check_class(class, ctx),
@@ -37,11 +71,11 @@ fn check_class<'ast>(class: &Class<'ast>, ctx: &mut CheckContext<'ast, '_>) {
     };
     check_extends(class, id, instance, ctx);
     for implemented in &class.implements {
-        let TSTypeName::IdentifierReference(name) = &implemented.expression else {
+        let Some(name) = crate::type_annotation::dotted_type_name(&implemented.expression) else {
             continue;
         };
         let Some(interface) = crate::type_annotation::resolve_named_reference(
-            &name.name,
+            &name,
             implemented.type_arguments.as_deref(),
             implemented.span(),
             &mut ctx.namespace,
@@ -52,30 +86,53 @@ fn check_class<'ast>(class: &Class<'ast>, ctx: &mut CheckContext<'ast, '_>) {
         if crate::subtyping::is_subtype(&ctx.arena, instance, interface) {
             continue;
         }
-        match first_incompatible_property(ctx, instance, interface) {
-            // A property both sides have, with types that disagree: tsc reports it at the
-            // class member (TS2416). Without a member to point at, the class takes it.
-            Some((property, true)) => {
-                let span = member_span(class, &property).unwrap_or_else(|| implemented.span());
-                ctx.error(
-                    crate::diagnostic_messages::messages::class_property_incompatible(
-                        &ctx.arena, &property, &id.name, interface,
-                    ),
-                    span,
-                );
-            }
-            _ => ctx.error(
+        // Every property both sides have with disagreeing types is reported at the class
+        // member (TS2416), as tsc does; with none of those, a missing member is reported once
+        // at the class (TS2420).
+        let conflicts = conflicting_properties(ctx, instance, interface);
+        if conflicts.is_empty() {
+            ctx.error(
                 crate::diagnostic_messages::messages::class_incorrectly_implements(
                     &ctx.arena, &id.name, interface,
                 ),
                 implemented.span(),
-            ),
+            );
+        }
+        for property in conflicts {
+            let span = member_span(class, &property).unwrap_or_else(|| implemented.span());
+            ctx.error(
+                crate::diagnostic_messages::messages::class_property_incompatible(
+                    &ctx.arena, &property, &id.name, interface,
+                ),
+                span,
+            );
         }
     }
 }
 
-/// The first property of `interface` the instance lacks (`false`) or has with an
-/// incompatible type (`true`).
+fn conflicting_properties(
+    ctx: &CheckContext<'_, '_>,
+    instance: crate::arena::TypeId,
+    interface: crate::arena::TypeId,
+) -> Vec<String> {
+    use crate::types::Type;
+    let (Type::Object(have), Type::Object(want)) =
+        (ctx.arena.get(instance), ctx.arena.get(interface))
+    else {
+        return Vec::new();
+    };
+    want.properties
+        .iter()
+        .filter(|property| {
+            have.properties.iter().any(|own| {
+                own.name == property.name
+                    && !crate::subtyping::is_subtype(&ctx.arena, own.type_id, property.type_id)
+            })
+        })
+        .map(|property| property.name.to_string())
+        .collect()
+}
+
 fn first_incompatible_property(
     ctx: &CheckContext<'_, '_>,
     instance: crate::arena::TypeId,
@@ -313,7 +370,11 @@ fn report_missing_overrides<'ast>(
         let Some(name) = key.static_name() else {
             continue;
         };
-        if base_members.iter().any(|m| m.as_ref() == name.as_ref()) {
+        let is_abstract = ctx
+            .abstract_members
+            .get(base_name)
+            .is_some_and(|set| set.contains(name.as_ref()));
+        if !is_abstract && base_members.iter().any(|m| m.as_ref() == name.as_ref()) {
             ctx.error(
                 crate::diagnostic_messages::messages::missing_override_modifier(base_name),
                 key.span(),

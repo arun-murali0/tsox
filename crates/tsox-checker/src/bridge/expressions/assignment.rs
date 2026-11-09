@@ -30,6 +30,49 @@ pub(super) fn infer_assignment_expression_type(
             return right_type;
         }
     }
+    // `[a, b] = [1, "x"]`: tsc reads the literal as a tuple and checks each element against
+    // its target, so a mismatch is found at that element.
+    if matches!(assign.operator, AssignmentOperator::Assign)
+        && let AssignmentTarget::ArrayAssignmentTarget(pattern) = &assign.left
+        && let oxc_ast::ast::Expression::ArrayExpression(array) = &assign.right
+        && pattern.rest.is_none()
+        && pattern.elements.len() == array.elements.len()
+        && array.elements.iter().all(|e| e.as_expression().is_some())
+    {
+        let mut types = Vec::new();
+        for (target, source) in pattern.elements.iter().zip(&array.elements) {
+            let expression = source.as_expression().expect("checked above");
+            let target_type = target
+                .as_ref()
+                .and_then(|t| t.as_assignment_target())
+                .and_then(|t| resolve_assignment_target_type(t, scoping, ctx));
+            ctx.contextual = target_type;
+            let source_type = infer_expression_type(expression, scoping, ctx);
+            if let Some(target_type) = target_type
+                && !ctx.is_assignable_instantiating(source_type, target_type)
+            {
+                let whole = crate::diagnostic_messages::messages::declared_type_mismatch(
+                    &ctx.arena,
+                    source_type,
+                    target_type,
+                );
+                super::elaborate::report_mismatch(
+                    Some(expression),
+                    source_type,
+                    target_type,
+                    whole,
+                    expression.span(),
+                    ctx,
+                );
+            }
+            types.push(crate::types::TupleElement {
+                type_id: crate::types::widen(&ctx.arena, source_type),
+                optional: false,
+                rest: false,
+            });
+        }
+        return ctx.arena.alloc_tuple(types);
+    }
     // The target is the contextual type of the right-hand side. It is read first, which
     // reports nothing the right side's own inference would not (the target is only looked
     // up here), and an unresolvable target simply gives no context.
@@ -72,6 +115,11 @@ pub(super) fn infer_assignment_expression_type(
                 );
             }
             if let Some((symbol_id, declared_type)) = declared {
+                ctx.shadow_note_assignment(
+                    assign.node_id.get().index() as u32,
+                    declared_type,
+                    right_type,
+                );
                 narrow_on_assignment(symbol_id, declared_type, right_type, ctx);
             }
             narrow_member_on_assignment(&assign.left, target_type, right_type, scoping, ctx);
@@ -115,6 +163,17 @@ pub(super) fn infer_update_expression_type(
         }
         // The operand is read for its own errors (an undeclared name, say).
         resolve_identifier_type(ident, scoping, ctx);
+    }
+    // `p.n++` writes the property, so a readonly one is an error as in a plain assignment.
+    if let SimpleAssignmentTarget::StaticMemberExpression(member) = &update.argument {
+        let object_type = infer_expression_type(&member.object, scoping, ctx);
+        super::super::accessibility::check_readonly_write(
+            ctx,
+            object_type,
+            matches!(member.object, oxc_ast::ast::Expression::ThisExpression(_)),
+            &member.property.name,
+            member.property.span,
+        );
     }
     ctx.arena.number()
 }
@@ -173,24 +232,7 @@ pub fn narrow_on_assignment(
 ) {
     // Whatever was known about `x.a`, `x.a.b` described the old value of x.
     ctx.narrow.remove_paths_of(symbol_id);
-    let members = match ctx.arena.get(declared) {
-        Type::Union(members) => members.clone(),
-        _ => {
-            ctx.narrow.insert(symbol_id, declared);
-            return;
-        }
-    };
-    let mut kept = Vec::with_capacity(members.len());
-    for member in members {
-        if ctx.semantic().is_assignable(assigned, member) {
-            kept.push(member);
-        }
-    }
-    let narrowed = if kept.is_empty() {
-        declared
-    } else {
-        ctx.arena.alloc_union(kept)
-    };
+    let narrowed = super::super::narrow::assigned_narrowed_type(ctx, declared, assigned);
     ctx.narrow.insert(symbol_id, narrowed);
 }
 
@@ -267,6 +309,16 @@ fn resolve_assignment_target_type(
         }
         AssignmentTarget::ComputedMemberExpression(member) => {
             let object_type = infer_expression_type(&member.object, scoping, ctx);
+            if ctx.arena.is_readonly_array(object_type) {
+                ctx.error(
+                    crate::diagnostic_messages::messages::readonly_index_write(
+                        &ctx.arena,
+                        object_type,
+                    ),
+                    member.span(),
+                );
+                return None;
+            }
             Some(infer_computed_member_access_type(
                 object_type,
                 &member.expression,

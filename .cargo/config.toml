@@ -1,0 +1,3 @@
+# Tests that run the binary must not read or write a real per-user library cache.
+[env]
+TSOX_LIB_CACHE_DIR = "off"

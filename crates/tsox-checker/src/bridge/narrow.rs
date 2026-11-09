@@ -36,6 +36,11 @@ impl NarrowState {
         Self(Vec::new(), Vec::new())
     }
 
+    /// A state holding just one variable at one type.
+    pub fn single(symbol_id: SymbolId, type_id: TypeId) -> Self {
+        Self::from_single(symbol_id, type_id)
+    }
+
     fn from_single(symbol_id: SymbolId, type_id: TypeId) -> Self {
         Self(vec![(symbol_id, type_id)], Vec::new())
     }
@@ -296,6 +301,32 @@ pub fn join_states(a: &NarrowState, b: &NarrowState, arena: &mut TypeArena) -> N
 // a literal value, a bare identifier's own truthiness, and `!` or parentheses
 // wrapping any of those); anything else narrows nothing in either branch, which
 // is always safe, just less precise.
+// After `x = value`, x reads as the members of its declared union that the assigned type can be
+// assigned to (tsc's assignment narrowing), or as the declared type when that leaves nothing or the
+// declared type is not a union. The one rule for it: the forward pass applies it where it assigns,
+// and the flow resolver applies it at an assignment node.
+pub fn assigned_narrowed_type(
+    ctx: &mut CheckContext<'_, '_>,
+    declared: TypeId,
+    assigned: TypeId,
+) -> TypeId {
+    let members = match ctx.arena.get(declared) {
+        Type::Union(members) => members.clone(),
+        _ => return declared,
+    };
+    let mut kept = Vec::with_capacity(members.len());
+    for member in members {
+        if ctx.semantic().is_assignable(assigned, member) {
+            kept.push(member);
+        }
+    }
+    if kept.is_empty() {
+        declared
+    } else {
+        ctx.arena.alloc_union(kept)
+    }
+}
+
 pub fn narrow_condition(
     test: &Expression,
     scoping: &Scoping,

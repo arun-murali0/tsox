@@ -69,7 +69,8 @@ fn other_keys_of_a_record_are_still_the_value_type() {
         "declare const o: Record<string, string>;\n\
          const n: number = o.other;\n",
     );
-    assert_eq!(found, vec![2322]);
+    // tsc also says the dot access reads an index signature (TS4111).
+    assert_eq!(found, vec![2322, 4111]);
 }
 
 #[test]

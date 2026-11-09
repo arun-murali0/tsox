@@ -71,10 +71,125 @@ pub(super) fn infer_call_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
+    let result = infer_call_expression_type_inner(call, scoping, ctx);
+    refine_by_type_guard(call, scoping, ctx, result)
+}
+
+// `array.find(isNumber)`, `array.filter((x): x is number => ...)`: the library has an overload
+// taking a type guard `(value: T) => value is S` that returns `S | undefined` / `S[]`. The array
+// methods here are typed by hand without it, so the narrowed result is put back when the
+// callback is a guard whose type is a subtype of the element.
+fn refine_by_type_guard(
+    call: &oxc_ast::ast::CallExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+    result: TypeId,
+) -> TypeId {
+    use oxc_ast::ast::{TSType, TSTypePredicateName};
+    let Expression::StaticMemberExpression(member) = &call.callee else {
+        return result;
+    };
+    let method = member.property.name.as_str();
+    if !matches!(method, "find" | "findLast" | "filter") {
+        return result;
+    }
+    let Some(first) = call.arguments.first().and_then(|a| a.as_expression()) else {
+        return result;
+    };
+    let claimed = match first {
+        Expression::Identifier(ident) => resolve_symbol_id(ident, scoping)
+            .and_then(|symbol| ctx.type_predicates.get(&symbol).copied())
+            .filter(|p| !p.asserts && p.param_index == 0)
+            .and_then(|p| p.type_id),
+        Expression::ArrowFunctionExpression(arrow) => {
+            guard_type_of(arrow.return_type.as_deref(), &arrow.params, ctx)
+        }
+        Expression::FunctionExpression(func) => {
+            guard_type_of(func.return_type.as_deref(), &func.params, ctx)
+        }
+        _ => None,
+    };
+    fn guard_type_of(
+        annotation: Option<&oxc_ast::ast::TSTypeAnnotation<'_>>,
+        params: &oxc_ast::ast::FormalParameters<'_>,
+        ctx: &mut CheckContext<'_, '_>,
+    ) -> Option<TypeId> {
+        let TSType::TSTypePredicate(predicate) = &annotation?.type_annotation else {
+            return None;
+        };
+        let TSTypePredicateName::Identifier(name) = &predicate.parameter_name else {
+            return None;
+        };
+        let first_param = params.items.first()?;
+        let matches_first = matches!(&first_param.pattern,
+            oxc_ast::ast::BindingPattern::BindingIdentifier(id) if id.name == name.name);
+        if predicate.asserts || !matches_first {
+            return None;
+        }
+        crate::type_annotation::resolve_type_annotation(
+            predicate.type_annotation.as_ref()?,
+            &mut ctx.namespace,
+            &mut ctx.arena,
+        )
+    }
+    let Some(claimed) = claimed else {
+        return result;
+    };
+    if method == "filter" {
+        let Type::Array(element) = ctx.arena.get(result).clone() else {
+            return result;
+        };
+        if crate::subtyping::is_subtype(&ctx.arena, claimed, element) {
+            return ctx.arena.alloc(Type::Array(claimed));
+        }
+        return result;
+    }
+    let Type::Union(members) = ctx.arena.get(result).clone() else {
+        return result;
+    };
+    let undefined = ctx.arena.undefined();
+    let rest: Vec<TypeId> = members
+        .iter()
+        .copied()
+        .filter(|&m| m != undefined)
+        .collect();
+    if rest.len() + 1 != members.len() {
+        return result;
+    }
+    let element = ctx.arena.alloc_union(rest);
+    if crate::subtyping::is_subtype(&ctx.arena, claimed, element) {
+        return ctx.arena.alloc_union(vec![claimed, undefined]);
+    }
+    result
+}
+
+fn infer_call_expression_type_inner(
+    call: &oxc_ast::ast::CallExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> TypeId {
     let return_context = ctx.call_return_context.take();
     let mut callee_is_declaration = false;
     let (callee_type, callee_name) = match &call.callee {
         Expression::Identifier(ident) => {
+            // The global `String(x)`, `Number(x)` and `Boolean(x)` are calls through the call
+            // signature of their constructor interface, which has no model here: they
+            // convert, so the result is the primitive whatever the argument is.
+            if resolve_symbol_id(ident, scoping).is_none()
+                && let Some(primitive) = match ident.name.as_str() {
+                    "String" => Some(ctx.arena.string()),
+                    "Number" => Some(ctx.arena.number()),
+                    "Boolean" => Some(ctx.arena.boolean()),
+                    _ => None,
+                }
+            {
+                for argument in &call.arguments {
+                    if let Some(expression) = argument.as_expression() {
+                        infer_expression_type(expression, scoping, ctx);
+                    }
+                }
+                return primitive;
+            }
             let callee_symbol = resolve_symbol_id(ident, scoping)
                 .filter(|symbol_id| scoping.symbol_flags(*symbol_id).is_function());
             callee_is_declaration = callee_symbol.is_some();
@@ -90,7 +205,12 @@ pub(super) fn infer_call_expression_type(
                 ident.name.to_string(),
             )
         }
-        Expression::StaticMemberExpression(member) => member_callee(member, scoping, ctx),
+        Expression::StaticMemberExpression(member) => {
+            if let Some(result) = promise_static_call(call, member, scoping, ctx) {
+                return result;
+            }
+            member_callee(member, scoping, ctx)
+        }
         _ => {
             ctx.warning(
                 crate::diagnostic_messages::messages::unimplemented_call_expression_kind(),
@@ -147,6 +267,207 @@ fn member_callee(
 // Picked: take the member's type the way a call on `a.b` does (member_callee) and run the
 // same check as for a plain name. The namespace's value already holds the class's
 // constructor as a property, so there is nothing new to look up.
+// `PromiseSettledResult` for one input: `{ status: "fulfilled", value: T }` or
+// `{ status: "rejected", reason: any }`, one member of it built here.
+fn settled_result(
+    ctx: &mut CheckContext<'_, '_>,
+    status: &str,
+    field: &str,
+    value: TypeId,
+) -> TypeId {
+    let status_literal = ctx.arena.alloc(Type::StringLiteral(status.into()));
+    let entry = |name: &str, type_id: TypeId| crate::types::PropertyEntry {
+        name: name.into(),
+        type_id,
+        optional: false,
+        is_method: false,
+        modifiers: Default::default(),
+    };
+    let properties = vec![entry("status", status_literal), entry(field, value)];
+    ctx.arena
+        .alloc(Type::Object(crate::types::ObjectType::new(properties)))
+}
+
+// The value a promise settles to: `number` for `Promise<number>`, the type itself otherwise.
+fn awaited_type(ctx: &CheckContext<'_, '_>, mut type_id: TypeId) -> TypeId {
+    for _ in 0..16 {
+        match ctx.arena.promise_value_type(type_id) {
+            Some(inner) => type_id = inner,
+            None => break,
+        }
+    }
+    type_id
+}
+
+// `Promise.resolve(v)`, `Promise.reject(e)`, `Promise.all([...])` and `Promise.race([...])` on the
+// global Promise. The constructor object is not modelled, so these are typed here from what the
+// library declares: `resolve<T>(v: T): Promise<Awaited<T>>`, `reject<T = never>(): Promise<T>`,
+// `all` mapping a tuple of inputs to a tuple of what each settles to. Anything else on `Promise`
+// (or a `Promise` the program declared itself) is left to the ordinary path.
+fn promise_static_call(
+    call: &oxc_ast::ast::CallExpression,
+    member: &oxc_ast::ast::StaticMemberExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> Option<TypeId> {
+    let Expression::Identifier(object) = &member.object else {
+        return None;
+    };
+    if object.name != "Promise" || resolve_symbol_id(object, scoping).is_some() {
+        return None;
+    }
+    let method = member.property.name.as_str();
+    if !matches!(method, "resolve" | "reject" | "all" | "race" | "allSettled") {
+        return None;
+    }
+    let mut argument_types = Vec::new();
+    let mut array_elements: Option<Vec<TypeId>> = None;
+    for argument in &call.arguments {
+        let Some(expression) = argument.as_expression() else {
+            return None;
+        };
+        if let Expression::ArrayExpression(array) = expression {
+            let mut elements = Vec::new();
+            for element in &array.elements {
+                let element = element.as_expression()?;
+                elements.push(infer_expression_type(element, scoping, ctx));
+            }
+            let tuple = ctx.arena.alloc_tuple(
+                elements
+                    .iter()
+                    .map(|&type_id| crate::types::TupleElement {
+                        type_id,
+                        optional: false,
+                        rest: false,
+                    })
+                    .collect(),
+            );
+            array_elements = Some(elements);
+            argument_types.push(tuple);
+        } else {
+            argument_types.push(infer_expression_type(expression, scoping, ctx));
+        }
+    }
+    match method {
+        "resolve" => {
+            let value = match argument_types.first() {
+                Some(&first) => {
+                    let first = awaited_type(ctx, first);
+                    crate::types::widen(&ctx.arena, first)
+                }
+                None => ctx.arena.void(),
+            };
+            Some(ctx.arena.alloc_promise(value))
+        }
+        "reject" => {
+            let never = ctx.arena.never();
+            Some(ctx.arena.alloc_promise(never))
+        }
+        _ => {
+            // An array that is not a literal (`Promise.all(promises)`): one element type
+            // for all of it, so the result is an array of the awaited element.
+            let Some(elements) = array_elements else {
+                let &first = argument_types.first()?;
+                let crate::types::Type::Array(element) = ctx.arena.get(first).clone() else {
+                    return None;
+                };
+                let awaited = awaited_type(ctx, element);
+                let inner = match method {
+                    "race" => awaited,
+                    "all" => ctx.arena.alloc(crate::types::Type::Array(awaited)),
+                    _ => {
+                        let fulfilled = settled_result(ctx, "fulfilled", "value", awaited);
+                        let any = ctx.arena.any();
+                        let rejected = settled_result(ctx, "rejected", "reason", any);
+                        let result = ctx.arena.alloc_union(vec![fulfilled, rejected]);
+                        ctx.arena.alloc(crate::types::Type::Array(result))
+                    }
+                };
+                return Some(ctx.arena.alloc_promise(inner));
+            };
+            let settled: Vec<TypeId> = elements
+                .iter()
+                .map(|&element| {
+                    let awaited = awaited_type(ctx, element);
+                    crate::types::widen(&ctx.arena, awaited)
+                })
+                .collect();
+            let inner = if method == "allSettled" {
+                // Each input becomes `{ status: "fulfilled", value } | { status: "rejected", reason }`.
+                let mut results = Vec::new();
+                for &type_id in &settled {
+                    let fulfilled = settled_result(ctx, "fulfilled", "value", type_id);
+                    let any = ctx.arena.any();
+                    let rejected = settled_result(ctx, "rejected", "reason", any);
+                    results.push(ctx.arena.alloc_union(vec![fulfilled, rejected]));
+                }
+                ctx.arena.alloc_tuple(
+                    results
+                        .into_iter()
+                        .map(|type_id| crate::types::TupleElement {
+                            type_id,
+                            optional: false,
+                            rest: false,
+                        })
+                        .collect(),
+                )
+            } else if method == "all" {
+                ctx.arena.alloc_tuple(
+                    settled
+                        .into_iter()
+                        .map(|type_id| crate::types::TupleElement {
+                            type_id,
+                            optional: false,
+                            rest: false,
+                        })
+                        .collect(),
+                )
+            } else {
+                ctx.arena.alloc_union(settled)
+            };
+            Some(ctx.arena.alloc_promise(inner))
+        }
+    }
+}
+
+// `(resolve: (value: T | PromiseLike<T>) => void, reject: (reason?: any) => void) => void`,
+// with `Promise<T>` standing for `PromiseLike<T>`. For `T` = `void` the value may be left out.
+fn promise_executor_type(ctx: &mut CheckContext<'_, '_>, value: TypeId) -> TypeId {
+    use crate::types::{FunctionType, Param};
+    let void = ctx.arena.void();
+    let any = ctx.arena.any();
+    let promise = ctx.arena.alloc_promise(value);
+    let accepted = ctx.arena.alloc_union(vec![value, promise]);
+    let param = |type_id, optional, name: &str| Param {
+        type_id,
+        optional,
+        rest: false,
+        name: Some(name.into()),
+    };
+    let optional_value = matches!(ctx.arena.get(value), Type::Void);
+    let resolve = ctx.arena.alloc(Type::Function(FunctionType {
+        params: vec![param(accepted, optional_value, "value")],
+        return_type: void,
+        type_params: Vec::new(),
+        is_untyped: false,
+    }));
+    let reject = ctx.arena.alloc(Type::Function(FunctionType {
+        params: vec![param(any, true, "reason")],
+        return_type: void,
+        type_params: Vec::new(),
+        is_untyped: false,
+    }));
+    ctx.arena.alloc(Type::Function(FunctionType {
+        params: vec![
+            param(resolve, false, "resolve"),
+            param(reject, true, "reject"),
+        ],
+        return_type: void,
+        type_params: Vec::new(),
+        is_untyped: false,
+    }))
+}
+
 pub(super) fn infer_new_expression_type(
     new_expr: &oxc_ast::ast::NewExpression,
     scoping: &Scoping,
@@ -169,6 +490,35 @@ pub(super) fn infer_new_expression_type(
     };
     let explicit_type_args =
         resolve_explicit_type_arguments(new_expr.type_arguments.as_deref(), ctx);
+
+    // `new Promise<T>(executor)` on the global Promise: the library's constructor is not
+    // modelled, so the result is `Promise<T>`, or `Promise<unknown>` when no `T` is written, as tsc
+    // gives when nothing is inferred. The executor is still checked as an expression.
+    if let Expression::Identifier(callee_ident) = &new_expr.callee
+        && callee_ident.name == "Promise"
+        && resolve_symbol_id(callee_ident, scoping).is_none()
+    {
+        let value = match explicit_type_args.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        };
+        for (index, argument) in new_expr.arguments.iter().enumerate() {
+            if let Some(expression) = argument.as_expression() {
+                // The executor's own parameters: `resolve(value: T | PromiseLike<T>)` and
+                // `reject(reason?: any)`. Only when `T` is written; with none to read, the
+                // callbacks stay untyped rather than guessed.
+                if index == 0
+                    && let Some(value) = value
+                {
+                    ctx.contextual = Some(promise_executor_type(ctx, value));
+                }
+                infer_expression_type(expression, scoping, ctx);
+                ctx.contextual = None;
+            }
+        }
+        let value = value.unwrap_or_else(|| ctx.arena.unknown());
+        return ctx.arena.alloc_promise(value);
+    }
 
     check_callable(
         callee_type,
@@ -1009,7 +1359,23 @@ fn check_callable(
                 Some(max) if arguments.len() > max => arguments[max].span(),
                 _ => span,
             };
-            ctx.error(arity_message(required, max, arguments.len()), arity_span);
+            // The `resolve` of `new Promise<T>(...)`: one parameter `value` of `T | Promise<T>`.
+            let is_promise_resolve = required == 1
+                && max == Some(1)
+                && arguments.is_empty()
+                && function_type.params.first().is_some_and(|param| {
+                    param.name.as_deref() == Some("value")
+                        && matches!(ctx.arena.get(param.type_id), Type::Union(members)
+                            if members.iter().any(|&m| ctx.arena.is_promise(m)))
+                });
+            if is_promise_resolve {
+                ctx.error(
+                    crate::diagnostic_messages::messages::promise_resolve_needs_value(0),
+                    arity_span,
+                );
+            } else {
+                ctx.error(arity_message(required, max, arguments.len()), arity_span);
+            }
         }
 
         for arg in arguments {

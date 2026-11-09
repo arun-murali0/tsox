@@ -62,6 +62,13 @@ pub enum DiagnosticCode {
     // 1200s: name / member resolution
     UnresolvedIdentifier,
     PropertyDoesNotExist,
+    PropertyDoesNotExistSuggestion,
+    PropertyFromIndexSignature,
+    ConversionMayBeMistake,
+    ComparisonNoOverlap,
+    ReadonlyToMutable,
+    ReadonlyIndexWrite,
+    PromiseResolveNeedsValue,
     ModuleNotFound,
     TypeDefinitionNotFound,
     ReferencedFileNotFound,
@@ -151,6 +158,8 @@ pub enum DiagnosticCode {
     // 9100s: the checker itself failed (no tsc counterpart)
     InternalCheckerError,
     NestingTooDeep,
+    FlowShadowDisagreement,
+    FlowShadowRead,
 }
 
 impl DiagnosticCode {
@@ -196,6 +205,13 @@ impl DiagnosticCode {
 
             UnresolvedIdentifier => "TSR1201",
             PropertyDoesNotExist => "TSR1202",
+            PropertyDoesNotExistSuggestion => "TSR1210",
+            PropertyFromIndexSignature => "TSR1211",
+            ConversionMayBeMistake => "TSR1212",
+            ComparisonNoOverlap => "TSR1213",
+            ReadonlyToMutable => "TSR1214",
+            ReadonlyIndexWrite => "TSR1215",
+            PromiseResolveNeedsValue => "TSR1216",
             ModuleNotFound => "TSR1203",
             TypeDefinitionNotFound => "TSR1207",
             ReferencedFileNotFound => "TSR1208",
@@ -276,6 +292,8 @@ impl DiagnosticCode {
             UnresolvableTypeParameterConstraint => "TSR9014",
             InternalCheckerError => "TSR9101",
             NestingTooDeep => "TSR9102",
+            FlowShadowDisagreement => "TSR9201",
+            FlowShadowRead => "TSR9202",
         }
     }
 }
@@ -329,6 +347,13 @@ impl DiagnosticCode {
 
             UnresolvedIdentifier => 2304,
             PropertyDoesNotExist => 2339,
+            PropertyDoesNotExistSuggestion => 2551,
+            PropertyFromIndexSignature => 4111,
+            ConversionMayBeMistake => 2352,
+            ComparisonNoOverlap => 2367,
+            ReadonlyToMutable => 4104,
+            ReadonlyIndexWrite => 2542,
+            PromiseResolveNeedsValue => 2794,
             ModuleNotFound => 2307,
             TypeDefinitionNotFound => 2688,
             ReferencedFileNotFound => 6053,
@@ -407,7 +432,9 @@ impl DiagnosticCode {
             | UnresolvableDestructuringTypeAnnotation
             | UnresolvableTypeParameterConstraint
             | InternalCheckerError
-            | NestingTooDeep => return None,
+            | NestingTooDeep
+            | FlowShadowDisagreement
+            | FlowShadowRead => return None,
         })
     }
 

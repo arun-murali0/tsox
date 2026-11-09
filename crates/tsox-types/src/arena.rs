@@ -246,6 +246,11 @@ pub struct TypeArena {
     // (see type_annotation), which no declaration key is registered under, so an export
     // asks for the declaration it applies through this and `body_origins`.
     app_bases: FxHashMap<DeclSlot, TypeId>,
+
+    // Arrays written `readonly T[]` or `ReadonlyArray<T>`. Such an array is a slot of its own
+    // with the content of `T[]`, so the id says it is readonly and everything that does not
+    // ask treats it as the plain array. Cleared with the arena.
+    readonly_arrays: std::collections::HashSet<TypeId, std::hash::BuildHasherDefault<FxHasher>>,
     // A generic alias is left unnamed, so its body is all an application has of it. This
     // names the declaration slot a body belongs to, registered by whoever knows the key.
     body_origins: FxHashMap<TypeId, DeclSlot>,
@@ -299,6 +304,7 @@ impl TypeArena {
             mapped_keys: FxHashMap::default(),
             active_app_instantiations: Vec::new(),
             app_bases: FxHashMap::default(),
+            readonly_arrays: Default::default(),
             body_origins: FxHashMap::default(),
             app_conditionals: FxHashMap::default(),
             decl_params: FxHashMap::default(),
@@ -488,6 +494,17 @@ impl TypeArena {
     #[cfg(test)]
     pub fn alloc_fresh(&mut self, ty: Type) -> TypeId {
         self.push(ty)
+    }
+
+    /// `readonly element[]`: an array with its own id, marked readonly.
+    pub fn alloc_readonly_array(&mut self, element: TypeId) -> TypeId {
+        let id = self.push(Type::Array(element));
+        self.readonly_arrays.insert(id);
+        id
+    }
+
+    pub fn is_readonly_array(&self, id: TypeId) -> bool {
+        self.readonly_arrays.contains(&id)
     }
 
     fn push(&mut self, ty: Type) -> TypeId {
@@ -1515,6 +1532,7 @@ impl TypeArena {
         self.mapped_keys.clear();
         self.active_app_instantiations.clear();
         self.app_bases.clear();
+        self.readonly_arrays.clear();
         self.body_origins.clear();
         self.app_conditionals.clear();
         self.enum_name_slots.clear();
