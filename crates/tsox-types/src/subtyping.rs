@@ -37,6 +37,30 @@ thread_local! {
 // as true (coinductively: two types that only differ by "going in circles"
 // are equivalent) rather than as a fresh comparison to keep making; this is
 // the standard rule for equirecursive subtyping and is what breaks the loop.
+// What stands for "an instance of the same generic declaration" in the rule above. An
+// application names its declaration. An instantiated body keeps no origin, so a body with
+// four or more members is told by the names of its members: two different types sharing a
+// whole list of four names, three levels deep in one comparison, is rare, and the rule can
+// only make a comparison succeed (a missed error, never a wrong one).
+fn growth_key(arena: &TypeArena, id: TypeId) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = crate::fxhash::FxHasher::default();
+    match arena.get(id) {
+        Type::App(slot, ..) => {
+            0u8.hash(&mut hasher);
+            slot.hash(&mut hasher);
+        }
+        Type::Object(object) if object.properties.len() >= 4 => {
+            1u8.hash(&mut hasher);
+            for property in object.properties.iter() {
+                property.name.hash(&mut hasher);
+            }
+        }
+        _ => return None,
+    }
+    Some(hasher.finish())
+}
+
 fn is_subtype_inner(
     arena: &TypeArena,
     sub: TypeId,
@@ -89,6 +113,25 @@ fn is_subtype_inner(
     if seen.contains(&pair) {
         PAIR_MEMO.with(|memo| memo.borrow_mut().assumptions_used += 1);
         return true;
+    }
+    // tsc's rule for types that keep growing: when three comparisons of instances of the
+    // same two generic declarations are already open, a fourth is taken as holding. A
+    // generic method's own type parameters are made afresh at each level, so the pair is
+    // never the same twice and the identical-pair rule above cannot end the descent (an
+    // interface of eleven such methods, compared with a subinterface that redeclares them,
+    // is eleven to the power of the depth).
+    if let (Some(sub_key), Some(sup_key)) = (growth_key(arena, sub), growth_key(arena, sup)) {
+        let open = seen
+            .iter()
+            .filter(|(open_sub, open_sup)| {
+                growth_key(arena, *open_sub) == Some(sub_key)
+                    && growth_key(arena, *open_sup) == Some(sup_key)
+            })
+            .count();
+        if open >= 3 {
+            PAIR_MEMO.with(|memo| memo.borrow_mut().assumptions_used += 1);
+            return true;
+        }
     }
     let memoizable = binders.is_empty();
     let before = PAIR_MEMO.with(|memo| {

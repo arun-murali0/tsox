@@ -2,6 +2,11 @@
 //! TypeScript issue #54491) is instantiated at each step of its expansion. Working out which
 //! type parameters each step mentions walked everything reachable from it afresh, so the
 //! check ran for minutes. It must finish in moments, as tsc does.
+//!
+//! The second test is the comparison of an interface with a subinterface that redeclares
+//! eleven generic methods returning itself: each level makes fresh type parameters, so the
+//! pair compared is never the same twice, and the comparison was eleven to the power of its
+//! depth.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -21,6 +26,24 @@ declare class ArrayValidator<T extends unknown[], I = T[number]> {
 }
 "#;
 
+fn finishes(source: &'static str) -> Vec<tsox::Diagnostic> {
+    let (done, finished) = mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            let result = TypeChecker::new().check_source(source, "grow.ts");
+            let _ = done.send(
+                result
+                    .map(|checked| checked.diagnostics)
+                    .unwrap_or_default(),
+            );
+        })
+        .unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the check did not finish within 60 seconds")
+}
+
 #[test]
 fn a_growing_recursive_alias_is_checked_in_moments() {
     let (done, finished) = mpsc::channel();
@@ -37,4 +60,48 @@ fn a_growing_recursive_alias_is_checked_in_moments() {
         .recv_timeout(Duration::from_secs(60))
         .expect("the check did not finish within 60 seconds");
     assert!(ok);
+}
+
+const SUBINTERFACE: &str = r#"export declare type ThenArg<T> = T extends any ? any : T extends PromiseLike<infer U> ? U : T;
+export interface InterfaceA<T> {
+    filter(callback: (newValue: T, oldValue: T) => boolean): InterfaceA<T>;
+    map<D>(callback: (value: T) => D): InterfaceA<D>;
+    await<R extends ThenArg<T>>(): InterfaceA<R>;
+    awaitLatest<R extends ThenArg<T>>(): InterfaceA<R>;
+    awaitOrdered<R extends ThenArg<T>>(): InterfaceA<R>;
+    awaitOrdered1<R extends ThenArg<T>>(): InterfaceA<R>;
+    awaitOrdered2<R extends ThenArg<T>>(): InterfaceA<R>;
+    awaitOrdered3<R extends ThenArg<T>>(): InterfaceA<R>;
+    awaitOrdered4<R extends ThenArg<T>>(): InterfaceA<R>;
+    awaitOrdered5<R extends ThenArg<T>>(): InterfaceA<R>;
+    awaitOrdered6<R extends ThenArg<T>>(): InterfaceA<R>;
+    awaitOrdered7<R extends ThenArg<T>>(): InterfaceA<R>;
+    awaitOrdered8<R extends ThenArg<T>>(): InterfaceA<R>;
+}
+export interface InterfaceB<T> extends InterfaceA<T> {
+    filter(callback: (newValue: T, oldValue: T) => boolean): InterfaceB<T>;
+    map<D>(callback: (value: T) => D): InterfaceB<D>;
+    await<R extends ThenArg<T>>(): InterfaceB<R>;
+    awaitLatest<R extends ThenArg<T>>(): InterfaceB<R>;
+    awaitOrdered<R extends ThenArg<T>>(): InterfaceB<R>;
+    awaitOrdered1<R extends ThenArg<T>>(): InterfaceB<R>;
+    awaitOrdered2<R extends ThenArg<T>>(): InterfaceB<R>;
+    awaitOrdered3<R extends ThenArg<T>>(): InterfaceB<R>;
+    awaitOrdered4<R extends ThenArg<T>>(): InterfaceB<R>;
+    awaitOrdered5<R extends ThenArg<T>>(): InterfaceB<R>;
+    awaitOrdered6<R extends ThenArg<T>>(): InterfaceB<R>;
+    awaitOrdered7<R extends ThenArg<T>>(): InterfaceB<R>;
+    awaitOrdered8<R extends ThenArg<T>>(): InterfaceB<R>;
+}
+declare const b: InterfaceB<string>;
+export const a: InterfaceA<string> = b;
+"#;
+
+#[test]
+fn comparing_an_interface_with_a_subinterface_of_generic_methods_is_checked_in_moments() {
+    let errors: Vec<_> = finishes(SUBINTERFACE)
+        .into_iter()
+        .filter(|diagnostic| diagnostic.severity == tsox::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
 }
