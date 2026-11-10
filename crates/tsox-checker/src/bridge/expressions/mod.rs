@@ -120,6 +120,7 @@ fn infer_expression_type_inner(
         }
 
         Expression::CallExpression(call) => {
+            truthiness::note_indirect_call(&call.callee, ctx);
             ctx.call_return_context = expected;
             infer_call_expression_type(call, scoping, ctx)
         }
@@ -340,7 +341,25 @@ fn infer_expression_type_inner(
             let mut result = ctx.arena.undefined();
             for (index, part) in sequence.expressions.iter().enumerate() {
                 result = infer_expression_type(part, scoping, ctx);
-                if index < last && !truthiness::has_side_effects(part) {
+                // `(assert(x), x)`: an assertion call among the discarded parts narrows
+                // what follows it, as the same call as a statement does.
+                if index < last {
+                    let mut call_part = part;
+                    while let Expression::ParenthesizedExpression(inner) = call_part {
+                        call_part = &inner.expression;
+                    }
+                    if let Expression::CallExpression(call) = call_part
+                        && let Some((narrowed, _)) = crate::bridge::narrow::narrow_by_predicate_call(
+                            call, scoping, ctx, true,
+                        )
+                    {
+                        ctx.narrow.extend(narrowed);
+                    }
+                }
+                if index < last
+                    && !truthiness::has_side_effects(part)
+                    && !ctx.indirect_call_sequences.contains(&sequence.span.start)
+                {
                     ctx.error(
                         crate::diagnostic_messages::messages::comma_left_no_side_effect(),
                         part.span(),

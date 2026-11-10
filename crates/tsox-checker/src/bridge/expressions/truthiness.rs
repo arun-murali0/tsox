@@ -140,7 +140,14 @@ pub(super) fn check_delete_operand(
     }
     match operand {
         Expression::StaticMemberExpression(member) => {
-            check_named_member(&member.object, member.property.name.as_str(), member.span(), None, scoping, ctx);
+            check_named_member(
+                &member.object,
+                member.property.name.as_str(),
+                member.span(),
+                None,
+                scoping,
+                ctx,
+            );
         }
         Expression::ComputedMemberExpression(member) => {
             // Only a string-literal key names a property reliably; `delete o[k]` is
@@ -148,7 +155,14 @@ pub(super) fn check_delete_operand(
             match &member.expression {
                 Expression::StringLiteral(key) => {
                     infer_expression_of(&member.expression, scoping, ctx);
-                    check_named_member(&member.object, key.value.as_str(), member.span(), None, scoping, ctx);
+                    check_named_member(
+                        &member.object,
+                        key.value.as_str(),
+                        member.span(),
+                        None,
+                        scoping,
+                        ctx,
+                    );
                 }
                 key => {
                     infer_expression_of(key, scoping, ctx);
@@ -163,13 +177,27 @@ pub(super) fn check_delete_operand(
         }
         Expression::ChainExpression(chain) => match &chain.expression {
             oxc_ast::ast::ChainElement::StaticMemberExpression(member) => {
-                check_named_member(&member.object, member.property.name.as_str(), member.span(), None, scoping, ctx);
+                check_named_member(
+                    &member.object,
+                    member.property.name.as_str(),
+                    member.span(),
+                    None,
+                    scoping,
+                    ctx,
+                );
             }
             oxc_ast::ast::ChainElement::ComputedMemberExpression(member) => {
                 match &member.expression {
                     Expression::StringLiteral(key) => {
                         infer_expression_of(&member.expression, scoping, ctx);
-                        check_named_member(&member.object, key.value.as_str(), member.span(), None, scoping, ctx);
+                        check_named_member(
+                            &member.object,
+                            key.value.as_str(),
+                            member.span(),
+                            None,
+                            scoping,
+                            ctx,
+                        );
                     }
                     key => {
                         infer_expression_of(key, scoping, ctx);
@@ -271,5 +299,33 @@ pub(super) fn has_side_effects(expr: &Expression) -> bool {
         }
         Expression::ParenthesizedExpression(inner) => has_side_effects(&inner.expression),
         _ => false,
+    }
+}
+
+// tsc's `isIndirectCall`: `(0, o.f)()` and `(0, eval)()` call a function without its `this`,
+// and the `0` on the left is how that is written, so it is not reported as unused. The comma
+// expression must be exactly `0, <access>` (or `0, eval`), parenthesized, and the callee.
+pub(super) fn note_indirect_call(callee: &Expression, ctx: &mut CheckContext<'_, '_>) {
+    let Expression::ParenthesizedExpression(paren) = callee else {
+        return;
+    };
+    let Expression::SequenceExpression(sequence) = &paren.expression else {
+        return;
+    };
+    let [Expression::NumericLiteral(zero), right] = sequence.expressions.as_slice() else {
+        return;
+    };
+    if zero.raw.as_ref().is_none_or(|raw| raw.as_str() != "0") {
+        return;
+    }
+    let is_access = matches!(
+        right,
+        Expression::StaticMemberExpression(_)
+            | Expression::ComputedMemberExpression(_)
+            | Expression::PrivateFieldExpression(_)
+    );
+    let is_eval = matches!(right, Expression::Identifier(name) if name.name == "eval");
+    if is_access || is_eval {
+        ctx.indirect_call_sequences.insert(sequence.span.start);
     }
 }

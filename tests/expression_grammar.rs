@@ -142,10 +142,22 @@ fn literal_conditions_classify_like_tsc() {
     let diagnostics = check_fixture("always_falsy_and_truthy_conditions.ts");
     assert_eq!(diagnostics.len(), 4, "got: {diagnostics:?}");
     let expected = [
-        (DiagnosticCode::AlwaysFalsyExpression, "This kind of expression is always falsy."),
-        (DiagnosticCode::AlwaysFalsyExpression, "This kind of expression is always falsy."),
-        (DiagnosticCode::AlwaysTruthyExpression, "This kind of expression is always truthy."),
-        (DiagnosticCode::AlwaysTruthyExpression, "This kind of expression is always truthy."),
+        (
+            DiagnosticCode::AlwaysFalsyExpression,
+            "This kind of expression is always falsy.",
+        ),
+        (
+            DiagnosticCode::AlwaysFalsyExpression,
+            "This kind of expression is always falsy.",
+        ),
+        (
+            DiagnosticCode::AlwaysTruthyExpression,
+            "This kind of expression is always truthy.",
+        ),
+        (
+            DiagnosticCode::AlwaysTruthyExpression,
+            "This kind of expression is always truthy.",
+        ),
     ];
     for (diagnostic, (code, text)) in diagnostics.iter().zip(expected) {
         assert_eq!(diagnostic.code, code, "got: {diagnostics:?}");
@@ -161,4 +173,17 @@ fn the_numbers_zero_and_one_and_booleans_stay_quiet() {
 #[test]
 fn an_undefined_typed_condition_is_not_a_void_truthiness() {
     assert_clean(&check_fixture("undefined_typed_condition_is_quiet.ts"));
+}
+
+// tsc's isIndirectCall exempts `(0, o.f)()`, and an assertion call among the discarded
+// parts of a comma expression narrows what follows it. A call through a parenthesized
+// comma expression is a kind of call tsox does not check yet (it warns), so only errors
+// count here.
+#[test]
+fn an_indirect_call_and_an_assertion_in_a_comma_expression_are_quiet() {
+    let errors: Vec<_> = check_fixture("comma_indirect_call_and_assertion_are_quiet.ts")
+        .into_iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
 }
