@@ -197,6 +197,9 @@ pub struct CheckContext<'ast, 'src> {
     // threaded through every checker function.
     pub cancel: Option<CancelToken>,
     pub cancelled: bool,
+    // Set when a caller asked what type is at an offset (see probe.rs). Expressions that
+    // hold the offset offer their type to it as they are typed.
+    pub probe: Option<super::probe::ProbeState>,
     // Set once the stack guard has stopped a descent, so one file gives one diagnostic
     // for it however many branches of the nesting hit the limit.
     nesting_reported: bool,
@@ -501,6 +504,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             function_returns: std::collections::HashMap::new(),
             shadow: None,
             relation_cache: RelationCache::default(),
+            probe: None,
             current_return_type: None,
             current_return_async: false,
             inferred_returns: None,

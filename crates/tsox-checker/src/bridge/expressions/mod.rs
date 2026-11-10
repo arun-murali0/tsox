@@ -62,6 +62,18 @@ pub fn infer_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
+    let type_id = infer_expression_type_inner(expr, scoping, ctx);
+    // When someone asked what type is at an offset, an expression that holds it says what it
+    // has. Inner expressions are typed first, so the innermost is the one kept.
+    super::probe::offer(ctx, expr.span(), type_id);
+    type_id
+}
+
+fn infer_expression_type_inner(
+    expr: &Expression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> TypeId {
     let expected = ctx.contextual.take();
     if crate::stack_guard::exhausted() {
         return ctx.nesting_too_deep(expr.span());

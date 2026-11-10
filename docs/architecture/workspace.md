@@ -15,6 +15,7 @@ it moves code and adds boundaries, and changes no behavior. `cargo test --worksp
 | `tsox-project` | Many files: `module_resolution/` (graph, config, discovery, resolver, check, schedule, partial results), `scc`. Feature `incremental` switches on the hooks the query layer needs | base, types, checker | oxc_resolver, rayon |
 | `tsox-db` | The Salsa query layer over the project driver (`incremental`, `incremental/project.rs`) | base, types, checker, project | salsa |
 | `tsox-cli` | The `tsox` command line: `src/main.rs` and its integration tests in `tests/` (`cli_project`, `corpus_aborts`, `depth_guard`, `determinism`, `partial_reasons`, `recursion_guards`). The binary is still named `tsox`, so `target/release/tsox` and `cargo build --bin tsox` are unchanged | `tsox` (facade only) | mimalloc (optional) |
+| `tsox-lsp` | The language server: a stdio `tower` service with a worker that owns the incremental project, hover, navigation, symbols and diagnostics (see [lsp](lsp.md)) | `tsox` (facade, with its `incremental` feature), `tsox-base` | tokio, tower-lsp-server, oxc parser and semantic, tracing |
 | `tsox-wasm` | The browser front end: `TsoxChecker`, a wasm-bindgen `cdylib` (`src/lib.rs`) | `tsox` (facade only, with its `wasm` feature) | wasm-bindgen, serde, serde-wasm-bindgen, console_error_panic_hook |
 | `tsox-xtask` | The development tools: the `harness` and `compare-tsc` binaries (`src/bin/`) and `harness_launcher` | `tsox` (facade only) | xxhash-rust |
 | `tsox` (root) | The facade: `src/lib.rs` re-exports the public API. Also the library's integration tests in `tests/`, the benches and the examples | base, types, checker, project, db | oxc crates, tracing |
@@ -24,7 +25,7 @@ it moves code and adds boundaries, and changes no behavior. `cargo test --worksp
 A crate depends only on crates above it in the table. The order is
 
 ```text
-tsox-base < tsox-types < tsox-checker < tsox-project < tsox-db < tsox < tsox-cli | tsox-wasm | tsox-xtask
+tsox-base < tsox-types < tsox-checker < tsox-project < tsox-db < tsox < tsox-cli | tsox-lsp | tsox-wasm | tsox-xtask
 ```
 
 The three on the right are the front ends. They share a layer: each depends on the `tsox` facade and none on another.

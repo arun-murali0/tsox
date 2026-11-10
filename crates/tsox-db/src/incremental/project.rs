@@ -42,7 +42,7 @@ use super::{Database, IncrementalDb, SourceFile, SourceKind};
 use crate::keys::DeclKey;
 use crate::module_resolution::check::{
     Checked, RunOptions, UnitExports, UnitMemo, UnitResult, check_provider_isolated,
-    check_unit_isolated, provider_ids, run_project, unit_environment,
+    check_unit_isolated, probe_unit_isolated, provider_ids, run_project, unit_environment,
 };
 use crate::module_resolution::{
     FileState, ModuleGraph, ModuleRequestKind, ModuleResolver, ProjectConfig, ProjectReport,
@@ -1421,6 +1421,58 @@ impl IncrementalProject {
             FileRef::new(&self.db, key, self.env),
         )?;
         Some(view.report.clone())
+    }
+
+    /// The type at `offset` of the file at `path`: the type of the innermost expression that
+    /// holds it, or of the name declared there, written as the checker writes types in its
+    /// messages. The file is checked once more to find out, against what the last `check`
+    /// left its dependencies exporting; nothing is memoized, so this costs one file. `None`
+    /// when nothing typed holds the offset, the file is not in the project, or the last
+    /// `check` did not finish (a dependency not brought up to date, so there is nothing sound
+    /// to check against).
+    pub fn type_at(&self, path: &Path, offset: u32) -> Option<tsox_checker::bridge::TypeAtOffset> {
+        let bundle = self
+            .db
+            .current_project()
+            .and_then(|data| data.downcast::<Bundle>().ok())?;
+        let index = *bundle.file_by_key.get(&path_key(Some(&canonical(path))))?;
+        let id = FileId::new(index);
+        let unit = *bundle.file_scc.get(index as usize)?;
+        let generation = bundle.generation.load(Ordering::SeqCst);
+        let mut dependency_exports: Vec<(FileId, Arc<UnitExports>)> = Vec::new();
+        for &dependency in &bundle.sccs[unit].dependencies {
+            if bundle.verified[dependency].load(Ordering::SeqCst) != generation {
+                return None;
+            }
+            let output = bundle.outputs[dependency]
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .upgrade()?;
+            dependency_exports.extend(output.shared.iter().cloned());
+        }
+        let refs: Vec<(FileId, &UnitExports)> = dependency_exports
+            .iter()
+            .map(|(id, exports)| (*id, exports.as_ref()))
+            .collect();
+        let mut texts: HashMap<FileId, Arc<str>> = HashMap::new();
+        for member in &bundle.graph.sccs()[unit] {
+            if let Some(text) = bundle.text(&self.db, *member) {
+                texts.insert(*member, text);
+            }
+        }
+        let lookup = move |id: FileId| texts.get(&id).cloned();
+        let providers = current_providers(&self.db);
+        probe_unit_isolated(
+            &bundle.graph,
+            unit,
+            &bundle.in_cycle,
+            &refs,
+            &lookup,
+            None,
+            &providers.units,
+            id,
+            offset,
+        )
     }
 
     /// Bounds how many unit outputs Salsa keeps memoized; the rest are recomputed when asked.

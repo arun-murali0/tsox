@@ -18,7 +18,7 @@ LAYERS = [
     ["tsox-project"],
     ["tsox-db"],
     ["tsox"],
-    ["tsox-cli", "tsox-wasm", "tsox-xtask"],
+    ["tsox-cli", "tsox-lsp", "tsox-wasm", "tsox-xtask"],
 ]
 RANK = {name: rank for rank, layer in enumerate(LAYERS) for name in layer}
 

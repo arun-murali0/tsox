@@ -31,6 +31,7 @@ pub use portable::{
 };
 pub use stable_hash::Prim;
 pub use stack_guard::with_deep_stack;
+pub use tsox_checker::bridge::TypeAtOffset;
 pub use unit::{
     AmbientExports, CancelToken, ReturnRead, UnitContext, UnitError, UnitOutput, Worker,
 };

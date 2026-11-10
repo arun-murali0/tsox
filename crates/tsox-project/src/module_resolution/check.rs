@@ -212,6 +212,9 @@ struct Project<'a> {
     // would keep them alive (see `FingerprintMemo`).
     #[cfg(feature = "snapshot")]
     fingerprints: tsox_checker::probe_log::FingerprintMemo,
+    // A question about the type at an offset of one file, answered when that file is checked
+    // (see `probe_unit_isolated`). Never set by a project check.
+    probe: Option<(FileId, &'a crate::bridge::ProbeRequest)>,
 }
 
 impl Project<'_> {
@@ -585,6 +588,7 @@ pub fn run_project(
             registry_applies: Default::default(),
             #[cfg(feature = "snapshot")]
             fingerprints: Default::default(),
+            probe: None,
         };
         let remembered: Option<Vec<Checked>> = options.memo.and_then(|memo| {
             let ask = || {
@@ -831,6 +835,7 @@ pub fn run_project(
                 registry_applies: Default::default(),
                 #[cfg(feature = "snapshot")]
                 fingerprints: Default::default(),
+                probe: None,
             };
             for (report, unit_exports) in check_files(&scripts, &script_sources) {
                 if let Some(unit_exports) = unit_exports {
@@ -1131,6 +1136,7 @@ fn run_pass(setup: &PassSetup<'_>, globals: Globals) -> UnitResult {
         registry_applies: Default::default(),
         #[cfg(feature = "snapshot")]
         fingerprints: Default::default(),
+        probe: None,
     };
     for (id, unit) in setup.provider_units {
         project.publish(*id, unit.clone());
@@ -1284,6 +1290,7 @@ pub fn check_unit_isolated(
         registry_applies: Default::default(),
         #[cfg(feature = "snapshot")]
         fingerprints: Default::default(),
+        probe: None,
     };
     for (id, unit) in provider_units {
         project.publish(*id, unit.clone());
@@ -1304,6 +1311,68 @@ pub fn check_unit_isolated(
         memo: None,
     };
     run_unit(&project, &setup, unit)
+}
+
+/// Checks the component that holds `file` as `check_unit_isolated` does, and says what type is
+/// at `offset` of that file: the type of the innermost expression that holds it, or of the name
+/// declared there. The file is checked again to find out, since types do not outlive a check;
+/// what its dependencies exported is taken as given, so this costs one file. `None` when
+/// nothing typed holds the offset, or the file could not be checked.
+#[cfg(feature = "incremental")]
+#[allow(clippy::too_many_arguments)]
+pub fn probe_unit_isolated(
+    graph: &ModuleGraph,
+    unit: usize,
+    in_cycle: &std::collections::HashSet<FileId>,
+    dependencies: &[(FileId, &UnitExports)],
+    texts: &TextFn,
+    cancel: Option<&CancelToken>,
+    provider_units: &[(FileId, UnitExports)],
+    file: FileId,
+    offset: u32,
+) -> Option<crate::bridge::TypeAtOffset> {
+    let provider_refs: Vec<(FileId, &UnitExports)> =
+        provider_units.iter().map(|(id, u)| (*id, u)).collect();
+    let mut globals = Globals::build(graph, &provider_refs);
+    let wildcard_declared = provider_refs
+        .iter()
+        .flat_map(|(_, unit)| unit.ambient.iter())
+        .any(|module| module.specifier.contains('*'));
+    globals.bare_reportable = bare_specifiers_are_reportable(graph, wildcard_declared);
+    let request = crate::bridge::ProbeRequest::new(offset);
+    let project = Project {
+        graph,
+        tables: RwLock::new(Tables::default()),
+        globals,
+        cancel,
+        collect_global_decls: false,
+        texts: Some(texts),
+        sequential: true,
+        registry_applies: Default::default(),
+        #[cfg(feature = "snapshot")]
+        fingerprints: Default::default(),
+        probe: Some((file, &request)),
+    };
+    for (id, unit) in provider_units {
+        project.publish(*id, unit.clone());
+    }
+    for (id, exports) in dependencies {
+        project.publish_ref(*id, exports);
+    }
+    let providers: std::collections::HashSet<FileId> =
+        provider_units.iter().map(|(id, _)| *id).collect();
+    let setup = PassSetup {
+        graph,
+        providers: &providers,
+        provider_units,
+        in_cycle,
+        max_cycle_rounds: None,
+        cancel,
+        texts: Some(texts),
+        memo: None,
+    };
+    run_unit(&project, &setup, unit);
+    request.take()
 }
 
 /// Everything a unit reads from the graph besides its own edges and its dependencies' exports:
@@ -1346,6 +1415,7 @@ pub fn check_provider_isolated(
         registry_applies: Default::default(),
         #[cfg(feature = "snapshot")]
         fingerprints: Default::default(),
+        probe: None,
     };
     with_worker(|worker| check_file(&project, worker, id))
 }
@@ -2094,6 +2164,11 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                 }
                 if let Some(cancel) = project.cancel {
                     ctx = ctx.with_cancel(cancel.clone());
+                }
+                if let Some((target, request)) = project.probe
+                    && target == id
+                {
+                    ctx = ctx.with_probe(request);
                 }
                 let (checked, from_cache_reads) = match hit {
                     Some((output, keys)) => (Ok(output), Some(keys)),
