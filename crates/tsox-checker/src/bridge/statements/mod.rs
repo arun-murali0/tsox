@@ -135,6 +135,7 @@ pub fn check_statement(stmt: &Statement, scoping: &Scoping, ctx: &mut CheckConte
         return;
     }
     crate::stack_guard::reset_instantiations();
+    crate::subtyping::clear_relation_overflow();
     // A chain of `else if`, or blocks nested through control flow, recurses here once per
     // level; past the stack budget the rest is left unchecked and the file says so once.
     if crate::stack_guard::exhausted() {

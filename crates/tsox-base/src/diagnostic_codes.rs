@@ -138,6 +138,7 @@ pub enum DiagnosticCode {
     TupleRestAfterRest,
     TupleOptionalAfterRest,
     TupleNegativeIndex,
+    ExcessiveComplexity,
 
     // 1900s: expression grammar and conditions (each maps to the tsc code the
     // syntactic check matches; update/assignment-target grammar codes are not
@@ -285,6 +286,7 @@ impl DiagnosticCode {
             TupleRestAfterRest => "TSR1803",
             TupleOptionalAfterRest => "TSR1804",
             TupleNegativeIndex => "TSR1805",
+            ExcessiveComplexity => "TSR1806",
 
             CommaLeftNoSideEffect => "TSR1901",
             VoidTruthiness => "TSR1902",
@@ -424,6 +426,7 @@ impl DiagnosticCode {
             TupleRestAfterRest => 1265,
             TupleOptionalAfterRest => 1266,
             TupleNegativeIndex => 2514,
+            ExcessiveComplexity => 2859,
 
             CommaLeftNoSideEffect => 2695,
             VoidTruthiness => 1345,

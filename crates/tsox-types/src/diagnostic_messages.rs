@@ -1289,4 +1289,11 @@ pub mod messages {
             "The operand of a 'delete' operator must be optional.",
         )
     }
+
+    pub fn excessive_complexity(source: &str, target: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ExcessiveComplexity,
+            format!("Excessive complexity comparing types '{source}' and '{target}'."),
+        )
+    }
 }

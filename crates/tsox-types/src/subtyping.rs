@@ -23,6 +23,12 @@ pub fn is_subtype(arena: &TypeArena, sub: TypeId, sup: TypeId) -> bool {
 struct PairMemo {
     depth: u32,
     assumptions_used: u64,
+    // Comparisons that may still be completed under the current outermost one (tsc's
+    // `relationCount`). When it is spent the comparison fails and `overflowed` says why, so
+    // the checker can report tsc's TS2859 instead of a mismatch.
+    budget: i64,
+    overflowed: bool,
+    top: Option<(TypeId, TypeId)>,
     results: crate::fxhash::FxHashMap<(TypeId, TypeId), bool>,
 }
 
@@ -32,6 +38,43 @@ struct PairMemo {
 // simply not remembered: the comparison itself is unchanged, so this bounds memory
 // without touching any answer.
 const PAIR_MEMO_CAP: usize = 1 << 20;
+
+// tsc allows (16e6 - cache size) >> 3, about two million completed structured comparisons, for
+// one top-level relation check before it gives up with TS2859.
+const RELATION_BUDGET: i64 = 2_000_000;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_BUDGET: std::cell::Cell<i64> = const { std::cell::Cell::new(RELATION_BUDGET) };
+}
+
+fn relation_budget() -> i64 {
+    #[cfg(test)]
+    {
+        TEST_BUDGET.with(|budget| budget.get())
+    }
+    #[cfg(not(test))]
+    {
+        RELATION_BUDGET
+    }
+}
+
+thread_local! {
+    // The pair whose comparison last ran out of budget, until the checker reports it.
+    static RELATION_OVERFLOW: std::cell::Cell<Option<(TypeId, TypeId)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The two types of the outermost comparison that last ran out of its budget (tsc's
+/// "excessive complexity"), if it has not been taken yet.
+pub fn take_relation_overflow() -> Option<(TypeId, TypeId)> {
+    RELATION_OVERFLOW.with(|cell| cell.take())
+}
+
+/// Forgets an overflow nothing reported (a probe whose answer was not shown).
+pub fn clear_relation_overflow() {
+    RELATION_OVERFLOW.with(|cell| cell.set(None));
+}
 
 thread_local! {
     static PAIR_MEMO: std::cell::RefCell<PairMemo> = std::cell::RefCell::new(PairMemo::default());
@@ -52,6 +95,13 @@ impl Drop for PairMemoGuard {
             let mut memo = memo.borrow_mut();
             memo.depth -= 1;
             if memo.depth == 0 {
+                if memo.overflowed
+                    && let Some(top) = memo.top
+                {
+                    RELATION_OVERFLOW.with(|cell| cell.set(Some(top)));
+                }
+                memo.overflowed = false;
+                memo.top = None;
                 memo.results.clear();
                 memo.assumptions_used = 0;
             }
@@ -168,6 +218,14 @@ fn is_subtype_inner(
         if memoizable && let Some(known) = memo.results.get(&pair) {
             return Err(*known);
         }
+        if memo.depth == 0 {
+            memo.budget = relation_budget();
+            memo.overflowed = false;
+            memo.top = Some(pair);
+        } else if memo.budget <= 0 {
+            memo.overflowed = true;
+            return Err(false);
+        }
         memo.depth += 1;
         Ok(memo.assumptions_used)
     });
@@ -185,6 +243,7 @@ fn is_subtype_inner(
     let memoizable = guard.memoizable;
     PAIR_MEMO.with(|memo| {
         let mut memo = memo.borrow_mut();
+        memo.budget -= 1;
         if memoizable
             && (!result || memo.assumptions_used == before)
             && memo.results.len() < PAIR_MEMO_CAP
@@ -310,17 +369,28 @@ fn is_subtype_uncached(
         // union may accept the whole intersection (`A & B` into `A | C`) or one member
         // of it may fit inside the union (`A & B` into `(A | C)` because `A` does).
         (Type::Intersection(sub_members), Type::Union(sup_members)) => {
-            sup_members
-                .iter()
-                .any(|&member| is_subtype_inner(arena, sub, member, seen, binders))
+            // A constituent that is itself a member of the union settles it at once, as in
+            // tsc, which looks a source up among the target's members before comparing it with
+            // each. Without this `"0000" & { a: string }` was compared with each of the four
+            // thousand members of a union of string literals that contains `"0000"`.
+            sup_members.contains(&sub)
+                || sub_members
+                    .iter()
+                    .any(|member| sup_members.contains(member))
+                || sup_members
+                    .iter()
+                    .any(|&member| is_subtype_inner(arena, sub, member, seen, binders))
                 || sub_members
                     .iter()
                     .any(|&member| is_subtype_inner(arena, member, sup, seen, binders))
         }
 
-        (_, Type::Union(sup_members)) => sup_members
-            .iter()
-            .any(|&member| is_subtype_inner(arena, sub, member, seen, binders)),
+        (_, Type::Union(sup_members)) => {
+            sup_members.contains(&sub)
+                || sup_members
+                    .iter()
+                    .any(|&member| is_subtype_inner(arena, sub, member, seen, binders))
+        }
 
         // Neither member of `{ a: number } & { b: string }` is assignable to `{ a:
         // number; b: string }`, but together they are. So an object target is also
@@ -1754,5 +1824,47 @@ mod intersection_relation_tests {
             );
             assert_eq!(memo.assumptions_used, 0);
         });
+    }
+
+    // A comparison that runs out of its budget fails and says why, so the checker can report
+    // tsc's TS2859; one that finishes within it does not.
+    #[test]
+    fn a_comparison_past_its_budget_fails_and_records_the_overflow() {
+        let mut arena = TypeArena::new();
+        let number = arena.number();
+        let names: Vec<String> = (0..40).map(|i| format!("k{i}")).collect();
+        let left: Vec<TypeId> = names
+            .iter()
+            .map(|name| {
+                object(
+                    &mut arena,
+                    &[(name.as_str(), number, false), ("l", number, false)],
+                )
+            })
+            .collect();
+        let right: Vec<TypeId> = names
+            .iter()
+            .map(|name| {
+                object(
+                    &mut arena,
+                    &[(name.as_str(), number, false), ("r", number, false)],
+                )
+            })
+            .collect();
+        let sub = arena.alloc(Type::Union(left));
+        let sup = arena.alloc(Type::Union(right));
+        TEST_BUDGET.with(|budget| budget.set(10));
+        clear_relation_overflow();
+        assert!(!is_subtype(&arena, sub, sup));
+        assert_eq!(take_relation_overflow(), Some((sub, sup)));
+        assert_eq!(take_relation_overflow(), None, "taken once");
+
+        TEST_BUDGET.with(|budget| budget.set(RELATION_BUDGET));
+        assert!(!is_subtype(&arena, sub, sup));
+        assert_eq!(
+            take_relation_overflow(),
+            None,
+            "within budget: a plain mismatch"
+        );
     }
 }

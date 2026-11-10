@@ -628,7 +628,17 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
         self.arena.error()
     }
 
-    pub fn error(&mut self, message: DiagnosticMessage, span: Span) {
+    pub fn error(&mut self, mut message: DiagnosticMessage, span: Span) {
+        // A comparison that ran out of its budget fails, and tsc reports that as TS2859 in
+        // place of the mismatch it would otherwise give.
+        if matches!(message.code.tsc_code(), Some(2322 | 2345))
+            && let Some((source, target)) = crate::subtyping::take_relation_overflow()
+        {
+            message = crate::diagnostic_messages::messages::excessive_complexity(
+                &crate::type_display::display_type(&self.arena, source),
+                &crate::type_display::display_type(&self.arena, target),
+            );
+        }
         let text = self.message_text(message.text);
         self.diagnostics.push(Diagnostic {
             severity: Severity::Error,
