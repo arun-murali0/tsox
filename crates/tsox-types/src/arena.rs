@@ -201,6 +201,13 @@ pub struct TypeArena {
     // all. New slots need no invalidation: an id nobody has asked about is just absent.
     param_scan: RefCell<Vec<u8>>,
 
+    // The free type parameters of a type that has some, as settled by
+    // semantic::generics::free_generic_params. Without it every call walks everything
+    // reachable from its type again, and a recursive conditional alias that grows as it is
+    // instantiated is asked about at each step: quadratic in the size of the graph at best.
+    // Emptied wherever param_scan is, for the same reason.
+    free_param_sets: RefCell<FxHashMap<TypeId, std::rc::Rc<[(TypeParameterId, TypeId)]>>>,
+
     // Answers already given by structurally_equal_cached, one entry per unordered
     // pair (equality is symmetric, so (a, b) and (b, a) share a slot).
     //
@@ -296,6 +303,7 @@ impl TypeArena {
             collided: FxHashMap::default(),
             interned_unions: FxHashMap::default(),
             param_scan: RefCell::new(Vec::new()),
+            free_param_sets: RefCell::new(FxHashMap::default()),
             equality_cache: FxHashMap::default(),
             empty_intersections: RefCell::new(FxHashMap::default()),
             generation: 0,
@@ -1332,6 +1340,7 @@ impl TypeArena {
         self.decls[slot.0 as usize].state = DeclState::Resolved(body);
         self.generation = self.generation.wrapping_add(1);
         self.param_scan.get_mut().clear();
+        self.free_param_sets.get_mut().clear();
         // Two unfinished declarations compare equal (both read as empty objects), and
         // that answer stops being true the moment either one is resolved.
         self.equality_cache.clear();
@@ -1344,6 +1353,17 @@ impl TypeArena {
         if let Some(slot) = self.slot_of(reference) {
             self.decls[slot.0 as usize].state = DeclState::Failed;
         }
+    }
+
+    pub fn cached_free_params(
+        &self,
+        id: TypeId,
+    ) -> Option<std::rc::Rc<[(TypeParameterId, TypeId)]>> {
+        self.free_param_sets.borrow().get(&id).cloned()
+    }
+
+    pub fn remember_free_params(&self, id: TypeId, set: std::rc::Rc<[(TypeParameterId, TypeId)]>) {
+        self.free_param_sets.borrow_mut().insert(id, set);
     }
 
     // The remembered answer for `id`, if contains_type_param has settled it.
@@ -1546,6 +1566,7 @@ impl TypeArena {
         self.collided.clear();
         self.interned_unions.clear();
         self.param_scan.get_mut().clear();
+        self.free_param_sets.get_mut().clear();
         self.equality_cache.clear();
         self.empty_intersections.get_mut().clear();
         debug_assert_eq!(self.types.len() as u32, FIXED_SLOTS);

@@ -2569,6 +2569,9 @@ fn same_free_set(arena: &TypeArena, a: &[FreeParam], b: &[FreeParam]) -> bool {
 // parameter" answer is published for every node reached, so the next contains_type_param on
 // any of them is one lookup.
 fn free_generic_params(arena: &TypeArena, type_id: TypeId) -> Rc<[FreeParam]> {
+    if let Some(known) = arena.cached_free_params(type_id) {
+        return known;
+    }
     // Every type reachable from the start, each once, in the order it was found. `position`
     // doubles as the visited set.
     let mut nodes: Vec<TypeId> = Vec::new();
@@ -2576,10 +2579,18 @@ fn free_generic_params(arena: &TypeArena, type_id: TypeId) -> Rc<[FreeParam]> {
     let mut position: FxHashMap<TypeId, usize> = FxHashMap::default();
     reach(arena, type_id, &mut nodes, &mut parts, &mut position);
 
+    // A node whose set an earlier call settled is a fixed leaf: its set already covers
+    // everything reachable from it, so it is not walked or recomputed.
+    let fixed: Vec<Option<Rc<[FreeParam]>>> = nodes
+        .iter()
+        .map(|&node| arena.cached_free_params(node))
+        .collect();
     let mut sets: Vec<Vec<FreeParam>> = nodes
         .iter()
-        .map(|&node| match arena.get(node) {
-            Type::GenericParameter(id, _, _) => vec![(*id, node)],
+        .enumerate()
+        .map(|(index, &node)| match (&fixed[index], arena.get(node)) {
+            (Some(known), _) => known.to_vec(),
+            (None, Type::GenericParameter(id, _, _)) => vec![(*id, node)],
             _ => Vec::new(),
         })
         .collect();
@@ -2590,6 +2601,9 @@ fn free_generic_params(arena: &TypeArena, type_id: TypeId) -> Rc<[FreeParam]> {
     loop {
         let mut changed = false;
         for index in (0..nodes.len()).rev() {
+            if fixed[index].is_some() {
+                continue;
+            }
             let mut free: Vec<FreeParam> = match arena.get(nodes[index]) {
                 Type::GenericParameter(id, _, _) => vec![(*id, nodes[index])],
                 _ => Vec::new(),
@@ -2640,8 +2654,11 @@ fn free_generic_params(arena: &TypeArena, type_id: TypeId) -> Rc<[FreeParam]> {
         }
     }
 
-    for (node, set) in nodes.iter().zip(&sets) {
+    for (index, (node, set)) in nodes.iter().zip(&sets).enumerate() {
         arena.remember_mentions_type_param(*node, !set.is_empty());
+        if !set.is_empty() && fixed[index].is_none() {
+            arena.remember_free_params(*node, Rc::from(set.clone()));
+        }
     }
     Rc::from(sets[position[&type_id]].clone())
 }
@@ -2663,7 +2680,9 @@ fn reach(
     position.insert(type_id, slot);
     nodes.push(type_id);
     parts.push(SmallVec::new());
-    if arena.cached_mentions_type_param(type_id) != Some(false) {
+    if arena.cached_mentions_type_param(type_id) != Some(false)
+        && arena.cached_free_params(type_id).is_none()
+    {
         let children: SmallVec<[usize; 8]> = parts_of(arena, type_id)
             .into_iter()
             .map(|child| reach(arena, child, nodes, parts, position))
