@@ -1244,4 +1244,49 @@ pub mod messages {
             "Type annotation for this destructuring pattern could not be resolved.",
         )
     }
+
+    // The expression-grammar diagnostics below carry tsc's exact wording (tsc 6.0.3),
+    // because the checker's own code here is a direct port of the syntactic rules the
+    // compiler applies, and the ts-diag-tool compare reads the text back.
+    pub fn comma_left_no_side_effect() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::CommaLeftNoSideEffect,
+            "Left side of comma operator is unused and has no side effects.",
+        )
+    }
+
+    pub fn void_truthiness() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::VoidTruthiness,
+            "An expression of type 'void' cannot be tested for truthiness.",
+        )
+    }
+
+    pub fn always_truthy_expression() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AlwaysTruthyExpression,
+            "This kind of expression is always truthy.",
+        )
+    }
+
+    pub fn always_falsy_expression() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AlwaysFalsyExpression,
+            "This kind of expression is always falsy.",
+        )
+    }
+
+    pub fn delete_operand_not_property() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::DeleteOperandNotProperty,
+            "The operand of a 'delete' operator must be a property reference.",
+        )
+    }
+
+    pub fn delete_operand_required() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::DeleteOperandRequired,
+            "The operand of a 'delete' operator must be optional.",
+        )
+    }
 }

@@ -71,7 +71,8 @@ pub(super) fn infer_conditional_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
-    infer_expression_type(&conditional.test, scoping, ctx);
+    let test_type = infer_expression_type(&conditional.test, scoping, ctx);
+    super::truthiness::check_truthiness(&conditional.test, test_type, ctx);
     let (true_overrides, false_overrides) = narrow_condition(&conditional.test, scoping, ctx);
     let outer_narrow = ctx.narrow.clone();
 

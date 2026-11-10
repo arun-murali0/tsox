@@ -33,7 +33,8 @@ pub(super) fn check_if_statement(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) {
-    infer_expression_type(&if_stmt.test, scoping, ctx);
+    let test_type = infer_expression_type(&if_stmt.test, scoping, ctx);
+    super::super::expressions::check_truthiness(&if_stmt.test, test_type, ctx);
 
     let (true_overrides, false_overrides) = narrow_condition(&if_stmt.test, scoping, ctx);
     let outer_narrow = ctx.narrow.clone();
@@ -201,7 +202,8 @@ pub(super) fn check_while_statement(
     let label = ctx.pending_loop_label.take();
     let never_exits_by_test = is_constant_true(&while_stmt.test);
     run_loop(ctx, while_stmt.span(), |ctx| {
-        infer_expression_type(&while_stmt.test, scoping, ctx);
+        let test_type = infer_expression_type(&while_stmt.test, scoping, ctx);
+        super::super::expressions::check_truthiness(&while_stmt.test, test_type, ctx);
         let (true_overrides, false_overrides) = narrow_condition(&while_stmt.test, scoping, ctx);
         let at_test = ctx.narrow.clone();
         ctx.narrow.extend(true_overrides);
@@ -237,7 +239,8 @@ pub(super) fn check_for_statement(
     run_loop(ctx, for_stmt.span(), |ctx| {
         let (true_overrides, false_overrides) = match &for_stmt.test {
             Some(test) => {
-                infer_expression_type(test, scoping, ctx);
+                let test_type = infer_expression_type(test, scoping, ctx);
+                super::super::expressions::check_truthiness(test, test_type, ctx);
                 let (on_true, on_false) = narrow_condition(test, scoping, ctx);
                 (on_true, Some(on_false))
             }
@@ -290,7 +293,8 @@ pub(super) fn check_do_while_statement(
         match back_edge(end, continues, &mut ctx.arena) {
             Some(at_test) => {
                 ctx.narrow = at_test.clone();
-                infer_expression_type(&do_while.test, scoping, ctx);
+                let test_type = infer_expression_type(&do_while.test, scoping, ctx);
+                super::super::expressions::check_truthiness(&do_while.test, test_type, ctx);
                 let (true_overrides, false_overrides) =
                     narrow_condition(&do_while.test, scoping, ctx);
                 let mut back = at_test.clone();
@@ -310,7 +314,8 @@ pub(super) fn check_do_while_statement(
             }
             None => {
                 // The test is never reached; it is still checked.
-                infer_expression_type(&do_while.test, scoping, ctx);
+                let test_type = infer_expression_type(&do_while.test, scoping, ctx);
+                super::super::expressions::check_truthiness(&do_while.test, test_type, ctx);
                 LoopPass {
                     back: None,
                     exit: None,

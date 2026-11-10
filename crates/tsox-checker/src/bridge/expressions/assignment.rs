@@ -150,6 +150,10 @@ pub(super) fn infer_assignment_expression_type(
 // `x++` and `--x`. The operand is read for its own errors; a `const` or an import cannot be
 // written to; the result is `number`. This checker has no `bigint` type, so a bigint operand
 // reads as `number` too.
+//
+// tsc's TS2357 (the operand of `++`/`--` must be a variable or a property access) is not
+// checked here: oxc's parser rejects an operand that is not an assignment target outright
+// ("Cannot assign to this expression"), so an invalid shape never reaches the checker.
 pub(super) fn infer_update_expression_type(
     update: &oxc_ast::ast::UpdateExpression,
     scoping: &Scoping,

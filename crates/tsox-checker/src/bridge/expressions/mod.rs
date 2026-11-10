@@ -18,11 +18,13 @@ mod logical;
 mod members;
 mod objects;
 mod spelling;
+mod truthiness;
 
 pub(super) use assignment::narrow_on_assignment;
 pub(super) use elaborate::report_mismatch;
 pub(super) use excess::check_excess_properties;
 pub(super) use members::infer_member_access_type;
+pub(super) use truthiness::check_truthiness;
 
 use assignment::infer_assignment_expression_type;
 use binary::infer_binary_expression_type;
@@ -235,11 +237,13 @@ fn infer_expression_type_inner(
 
         // Same shape as typeof just above: check the operand for its own errors,
         // but !'s result is always boolean regardless of what the operand is, so
-        // its inferred type is discarded rather than reused.
+        // its inferred type is discarded rather than reused. tsc applies its
+        // truthiness rules to the operand as well (TS1345, TS2872, TS2873).
         Expression::UnaryExpression(unary)
             if unary.operator == oxc_ast::ast::UnaryOperator::LogicalNot =>
         {
-            infer_expression_type(&unary.argument, scoping, ctx);
+            let operand_type = infer_expression_type(&unary.argument, scoping, ctx);
+            truthiness::check_truthiness(&unary.argument, operand_type, ctx);
             ctx.arena.boolean()
         }
 
@@ -254,6 +258,14 @@ fn infer_expression_type_inner(
         // that for `-"a"` only under stricter rules, so nothing is lost today.
         Expression::UnaryExpression(unary) => {
             use oxc_ast::ast::UnaryOperator;
+            // `delete` owns its operand's checking entirely: the operand must be a
+            // property reference (TS2703) and, for `delete o.p`, the property must
+            // be optional (TS2790), and the object is inferred inside that check so
+            // its parts are not visited twice.
+            if unary.operator == UnaryOperator::Delete {
+                truthiness::check_delete_operand(&unary.argument, scoping, ctx);
+                return ctx.arena.boolean();
+            }
             let operand = infer_expression_type(&unary.argument, scoping, ctx);
             match unary.operator {
                 UnaryOperator::UnaryNegation => match &unary.argument {
@@ -262,7 +274,6 @@ fn infer_expression_type_inner(
                 },
                 UnaryOperator::UnaryPlus | UnaryOperator::BitwiseNot => ctx.arena.number(),
                 UnaryOperator::Void => ctx.arena.undefined(),
-                UnaryOperator::Delete => ctx.arena.boolean(),
                 _ => {
                     let _ = operand;
                     ctx.arena.error()
@@ -318,6 +329,25 @@ fn infer_expression_type_inner(
             }
             let any = ctx.arena.any();
             ctx.arena.alloc_promise(any)
+        }
+
+        // `a, b` reads every part for its own errors and is typed by its last part, as
+        // tsc types a sequence. Every part but the last is discarded, so tsc checks the
+        // discarded ones for side effects (TS2695) — that check runs here, on each
+        // non-final part.
+        Expression::SequenceExpression(sequence) => {
+            let last = sequence.expressions.len().saturating_sub(1);
+            let mut result = ctx.arena.undefined();
+            for (index, part) in sequence.expressions.iter().enumerate() {
+                result = infer_expression_type(part, scoping, ctx);
+                if index < last && !truthiness::has_side_effects(part) {
+                    ctx.error(
+                        crate::diagnostic_messages::messages::comma_left_no_side_effect(),
+                        part.span(),
+                    );
+                }
+            }
+            result
         }
 
         _ => {

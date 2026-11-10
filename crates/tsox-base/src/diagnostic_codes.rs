@@ -139,6 +139,16 @@ pub enum DiagnosticCode {
     TupleOptionalAfterRest,
     TupleNegativeIndex,
 
+    // 1900s: expression grammar and conditions (each maps to the tsc code the
+    // syntactic check matches; update/assignment-target grammar codes are not
+    // here because oxc's parser rejects those shapes before the checker runs)
+    CommaLeftNoSideEffect,
+    VoidTruthiness,
+    AlwaysTruthyExpression,
+    AlwaysFalsyExpression,
+    DeleteOperandNotProperty,
+    DeleteOperandRequired,
+
     // 9000s: not yet implemented (all currently emitted as warnings)
     UnimplementedCallExpressionKind,
     UnimplementedNewExpressionTarget,
@@ -276,6 +286,13 @@ impl DiagnosticCode {
             TupleOptionalAfterRest => "TSR1804",
             TupleNegativeIndex => "TSR1805",
 
+            CommaLeftNoSideEffect => "TSR1901",
+            VoidTruthiness => "TSR1902",
+            AlwaysTruthyExpression => "TSR1903",
+            AlwaysFalsyExpression => "TSR1904",
+            DeleteOperandNotProperty => "TSR1905",
+            DeleteOperandRequired => "TSR1906",
+
             UnimplementedCallExpressionKind => "TSR9001",
             UnimplementedNewExpressionTarget => "TSR9002",
             UntypedParameterSkipsArityCheck => "TSR9003",
@@ -407,6 +424,13 @@ impl DiagnosticCode {
             TupleRestAfterRest => 1265,
             TupleOptionalAfterRest => 1266,
             TupleNegativeIndex => 2514,
+
+            CommaLeftNoSideEffect => 2695,
+            VoidTruthiness => 1345,
+            AlwaysTruthyExpression => 2872,
+            AlwaysFalsyExpression => 2873,
+            DeleteOperandNotProperty => 2703,
+            DeleteOperandRequired => 2790,
 
             UnreachableCode => 7027,
             FallthroughCaseInSwitch => 7029,

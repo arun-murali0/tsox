@@ -23,11 +23,40 @@ pub fn is_subtype(arena: &TypeArena, sub: TypeId, sup: TypeId) -> bool {
 struct PairMemo {
     depth: u32,
     assumptions_used: u64,
-    results: std::collections::HashMap<(TypeId, TypeId), bool>,
+    results: crate::fxhash::FxHashMap<(TypeId, TypeId), bool>,
 }
+
+// A file with very large unions can decide millions of pairs before the outermost
+// comparison ends, and every one of them lives in the memo until then (GAP-CHECKLIST
+// section 6 measured part-09 at 663 MB on exactly this). Past the cap new results are
+// simply not remembered: the comparison itself is unchanged, so this bounds memory
+// without touching any answer.
+const PAIR_MEMO_CAP: usize = 1 << 20;
 
 thread_local! {
     static PAIR_MEMO: std::cell::RefCell<PairMemo> = std::cell::RefCell::new(PairMemo::default());
+}
+
+// Owns one level of the memo's depth counter. Dropping it — including through a panic
+// unwinding out of `is_subtype_uncached`, which the checker catches in `Worker::contained`
+// — undoes that level, and the outermost drop clears the memo. Without it a panic left
+// `depth` stuck above zero, the clear never ran again on that thread, and the next unit's
+// arena (whose TypeIds start over at the same small numbers) could read stale results.
+struct PairMemoGuard {
+    memoizable: bool,
+}
+
+impl Drop for PairMemoGuard {
+    fn drop(&mut self) {
+        PAIR_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            memo.depth -= 1;
+            if memo.depth == 0 {
+                memo.results.clear();
+                memo.assumptions_used = 0;
+            }
+        });
+    }
 }
 
 // A recursive type (Node { next: Node }, whose declaration's Ref namespace::resolve
@@ -146,20 +175,24 @@ fn is_subtype_inner(
         Ok(before) => before,
         Err(known) => return known,
     };
+    // The guard is what makes the depth counter unwind-safe: if the comparison below
+    // panics, its Drop still runs and the outermost level clears the memo (see the
+    // struct comment).
+    let guard = PairMemoGuard { memoizable };
     seen.push(pair);
     let result = is_subtype_uncached(arena, sub, sup, seen, binders);
     seen.pop();
+    let memoizable = guard.memoizable;
     PAIR_MEMO.with(|memo| {
         let mut memo = memo.borrow_mut();
-        memo.depth -= 1;
-        if memoizable && (!result || memo.assumptions_used == before) {
+        if memoizable
+            && (!result || memo.assumptions_used == before)
+            && memo.results.len() < PAIR_MEMO_CAP
+        {
             memo.results.insert(pair, result);
         }
-        if memo.depth == 0 {
-            memo.results.clear();
-            memo.assumptions_used = 0;
-        }
     });
+    drop(guard);
     result
 }
 
@@ -1669,5 +1702,57 @@ mod intersection_relation_tests {
         assert!(is_subtype(&arena, t_and_a, t));
         assert!(is_subtype(&arena, t_and_a, a));
         assert!(!is_subtype(&arena, t, t_and_a));
+    }
+
+    // The memo's depth counter and result table must be empty after a comparison
+    // ends; if cleanup ever runs only on the normal-return path again, a panic
+    // caught by the worker would leave the table poisoning later units on the
+    // same thread (whose fresh arena reuses the same low TypeIds).
+    #[test]
+    fn pair_memo_is_empty_after_a_nested_comparison() {
+        let mut arena = TypeArena::new();
+        let number = arena.number();
+        let a = object(&mut arena, &[("a", number, false)]);
+        let b = object(&mut arena, &[("b", number, false)]);
+        assert!(is_subtype(&arena, a, a));
+        assert!(!is_subtype(&arena, a, b));
+        PAIR_MEMO.with(|memo| {
+            let memo = memo.borrow();
+            assert_eq!(memo.depth, 0, "depth leaked");
+            assert!(
+                memo.results.is_empty(),
+                "results were kept past the outermost comparison"
+            );
+            assert_eq!(memo.assumptions_used, 0);
+        });
+    }
+
+    // The guard's cleanup on unwind is the same Drop that runs on the normal path;
+    // exercise it through a scope that ends without reaching the insert step, the
+    // way a panic out of is_subtype_uncached would. The depth counter goes in first,
+    // exactly as is_subtype_inner does before it constructs the guard.
+    #[test]
+    fn pair_memo_cleans_up_when_a_comparison_is_abandoned() {
+        let mut arena = TypeArena::new();
+        let number = arena.number();
+        let a = object(&mut arena, &[("a", number, false)]);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let seen = &mut PairStack::new();
+            let pair = (a, a);
+            PAIR_MEMO.with(|memo| memo.borrow_mut().depth += 1);
+            let _guard = PairMemoGuard { memoizable: true };
+            seen.push(pair);
+            panic!("simulated checker bug mid-comparison");
+        }));
+        assert!(outcome.is_err());
+        PAIR_MEMO.with(|memo| {
+            let memo = memo.borrow();
+            assert_eq!(memo.depth, 0, "a caught panic left the memo depth stuck");
+            assert!(
+                memo.results.is_empty(),
+                "a caught panic left stale results behind"
+            );
+            assert_eq!(memo.assumptions_used, 0);
+        });
     }
 }
