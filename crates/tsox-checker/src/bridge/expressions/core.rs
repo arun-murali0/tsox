@@ -103,6 +103,7 @@ pub fn resolve_identifier_type(
         Some(narrowed) => Some(narrowed),
         None => ctx.symbols.get(symbol_id),
     };
+    let result = result.map(|r| super::super::expando::apply(symbol_id, r, ctx));
     if let Some(result) = result {
         if let Some(shadow) = ctx.shadow.as_mut() {
             shadow.note_read(

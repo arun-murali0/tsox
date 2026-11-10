@@ -142,6 +142,7 @@ pub struct CheckContext<'ast, 'src> {
     /// Start offsets of comma expressions that are the callee of an indirect call, `(0, o.f)()`,
     /// whose unused left side tsc does not report (its `isIndirectCall`).
     pub indirect_call_sequences: std::collections::HashSet<u32>,
+    pub expandos: super::expando::ExpandoMap,
     /// Set while a bracket access with a literal key is looked up like a property read.
     pub bracket_access: bool,
 
@@ -518,6 +519,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             in_constructor: false,
             compared_names: Default::default(),
             indirect_call_sequences: Default::default(),
+            expandos: Default::default(),
             abstract_members: Default::default(),
             bracket_access: false,
             implicit_this: false,

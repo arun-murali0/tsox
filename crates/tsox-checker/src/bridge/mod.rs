@@ -4,6 +4,7 @@ mod class_implements;
 mod context;
 mod declare;
 mod duplicates;
+mod expando;
 mod exports;
 mod expressions;
 pub mod flow_shadow;

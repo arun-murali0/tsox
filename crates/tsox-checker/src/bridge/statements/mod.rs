@@ -29,6 +29,7 @@ pub fn check_top_level(program: &Program, scoping: &Scoping, ctx: &mut CheckCont
     // try blocks ask which variables they assign, and closures whether a variable is
     // assigned after they are made.
     ctx.writes = super::narrow::WriteMap::collect(program, scoping);
+    ctx.expandos = super::expando::collect(program, scoping);
     for stmt in &program.body {
         check_statement(stmt, scoping, ctx);
     }
