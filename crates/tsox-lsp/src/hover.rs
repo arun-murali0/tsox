@@ -39,7 +39,7 @@ const MAX_HEADER: usize = 400;
 
 /// What a name is declared as.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Kind {
+pub(crate) enum Kind {
     /// `function` with its signature as written, and whether it names a return type.
     Function {
         signature: String,
@@ -60,10 +60,10 @@ enum Kind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Declared {
-    name: String,
-    kind: Kind,
-    docs: Option<String>,
+pub(crate) struct Declared {
+    pub(crate) name: String,
+    pub(crate) kind: Kind,
+    pub(crate) docs: Option<String>,
 }
 
 /// The text of a span, with each run of whitespace made one space.
@@ -151,7 +151,7 @@ pub fn split_signature(type_text: &str) -> Option<(&str, &str)> {
 }
 
 /// The header of a function-typed thing, from a `name` and the checker's `type_text`.
-fn signature_from_type(name: &str, type_text: &str) -> Option<String> {
+pub(crate) fn signature_from_type(name: &str, type_text: &str) -> Option<String> {
     let (parameters, returns) = split_signature(type_text)?;
     Some(format!("{name}{parameters}: {returns}"))
 }
@@ -289,7 +289,11 @@ fn doc_starts(semantic: &Semantic<'_>, node: NodeId) -> Vec<u32> {
 // ------------------------------------------------------------------------------------------
 // Declarations
 
-fn function_signature(function: &Function<'_>, text: &str, name: &str) -> (String, bool) {
+pub(crate) fn function_signature(
+    function: &Function<'_>,
+    text: &str,
+    name: &str,
+) -> (String, bool) {
     let params_end = function.params.span.end;
     let (end, returns) = match &function.return_type {
         Some(annotation) => (annotation.span.end.max(params_end), true),
@@ -312,7 +316,7 @@ fn function_signature(function: &Function<'_>, text: &str, name: &str) -> (Strin
     (format!("{prefix}{name}{rest}"), returns)
 }
 
-fn class_header(class: &Class<'_>, text: &str) -> String {
+pub(crate) fn class_header(class: &Class<'_>, text: &str) -> String {
     let mut header = flat(text, Span::new(class.span.start, class.body.span.start));
     // A class written `export default class` keeps only what the class itself says.
     for prefix in ["export default ", "export ", "declare "] {
@@ -323,21 +327,21 @@ fn class_header(class: &Class<'_>, text: &str) -> String {
     header
 }
 
-fn interface_header(interface: &TSInterfaceDeclaration<'_>, text: &str) -> String {
+pub(crate) fn interface_header(interface: &TSInterfaceDeclaration<'_>, text: &str) -> String {
     flat(
         text,
         Span::new(interface.span.start, interface.body.span.start),
     )
 }
 
-fn alias_header(alias: &TSTypeAliasDeclaration<'_>, text: &str) -> String {
+pub(crate) fn alias_header(alias: &TSTypeAliasDeclaration<'_>, text: &str) -> String {
     flat(text, alias.span)
         .trim_end_matches(';')
         .trim()
         .to_owned()
 }
 
-fn enum_header(declaration: &TSEnumDeclaration<'_>) -> String {
+pub(crate) fn enum_header(declaration: &TSEnumDeclaration<'_>) -> String {
     let prefix = if declaration.r#const { "const " } else { "" };
     format!("{prefix}enum {}", declaration.id.name)
 }
@@ -354,7 +358,7 @@ fn namespace_header(namespace: &TSNamespaceDeclaration<'_>) -> String {
 }
 
 /// What the name declared at `span` in the file `path` is declared as.
-fn declared_at(host: &dyn Host, path: &Path, span: (u32, u32)) -> Option<Declared> {
+pub(crate) fn declared_at(host: &dyn Host, path: &Path, span: (u32, u32)) -> Option<Declared> {
     let text = host.text(path)?;
     if span == (0, 0) {
         // A jump to a whole module (a namespace import, a module specifier).

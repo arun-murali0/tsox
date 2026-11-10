@@ -8,7 +8,8 @@ cargo build -p tsox-lsp --release
 target/release/tsox-lsp --stdio
 ```
 
-Supported: diagnostics, document symbols, go to definition, find references, hover, file
+Supported: diagnostics, completion, signature help, hover, go to definition, find references,
+rename, document highlight, document and workspace symbols, folding and selection ranges, file
 watching. See [`docs/architecture/lsp.md`](../../docs/architecture/lsp.md) for how it is built,
 what each phase added, and what is left to do.
 

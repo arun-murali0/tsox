@@ -1390,3 +1390,197 @@ fn a_rename_the_server_refuses_says_why() {
     );
     assert!(client.shutdown().success());
 }
+
+fn completion_labels(list: &Value) -> Vec<String> {
+    list["items"]
+        .as_array()
+        .expect("a completion list")
+        .iter()
+        .map(|item| item["label"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn the_server_offers_completion_and_signature_help() {
+    let (_dir, root) = project(&[]);
+    let mut client = Client::start();
+    let caps = client.initialize(Some(&root), false)["capabilities"].clone();
+    let triggers: Vec<&str> = caps["completionProvider"]["triggerCharacters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+    assert!(triggers.contains(&".") && triggers.contains(&"/"));
+    assert_eq!(
+        caps["signatureHelpProvider"]["triggerCharacters"],
+        json!(["(", ","])
+    );
+    assert!(client.shutdown().success());
+}
+
+#[test]
+fn completion_offers_what_is_in_scope_at_the_cursor() {
+    let text = "const total = 1;\nfunction f(count: number) {\n  \n}\nfunction later() {}\n";
+    let (_dir, root) = project(&[("a.ts", text)]);
+    let a = root.join("a.ts");
+    let mut client = Client::start();
+    client.initialize(Some(&root), false);
+    client.open(&a, 1, text);
+    let list = client.request("textDocument/completion", Client::at(&a, 2, 2));
+    let labels = completion_labels(&list);
+    for wanted in ["total", "count", "f", "later", "return", "const"] {
+        assert!(
+            labels.contains(&wanted.to_owned()),
+            "{wanted} in {labels:?}"
+        );
+    }
+    let kind_of = |name: &str| {
+        list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["label"] == name)
+            .unwrap()["kind"]
+            .as_i64()
+            .unwrap()
+    };
+    assert_eq!(kind_of("total"), 21, "a const");
+    assert_eq!(kind_of("f"), 3, "a function");
+    assert_eq!(kind_of("return"), 14, "a keyword");
+    // Names in the nearest scope sort first.
+    let sort = |name: &str| {
+        list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["label"] == name)
+            .unwrap()["sortText"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert!(sort("count") < sort("total"));
+    assert!(sort("total") < sort("return"));
+    assert!(client.shutdown().success());
+}
+
+#[test]
+fn completion_works_in_a_half_typed_call_after_an_edit() {
+    let before = "const total = 1;\nfunction f() {\n}\n";
+    let (_dir, root) = project(&[("a.ts", before)]);
+    let a = root.join("a.ts");
+    let mut client = Client::start();
+    client.initialize(Some(&root), false);
+    client.open(&a, 1, before);
+    let after = "const total = 1;\nfunction f() {\n  g(total, \n}\n";
+    client.change_full(&a, 2, after);
+    let list = client.request("textDocument/completion", Client::at(&a, 2, 11));
+    assert!(completion_labels(&list).contains(&"total".to_owned()));
+    assert!(client.shutdown().success());
+}
+
+#[test]
+fn a_namespace_import_completes_with_the_exports_of_the_file_on_disk() {
+    let lib = "export function make() {}\nexport const VERSION = 1;\n";
+    let main = "import * as lib from './lib';\nlib.\n";
+    let (_dir, root) = project(&[("lib.ts", lib), ("main.ts", main)]);
+    let main_path = root.join("main.ts");
+    let mut client = Client::start();
+    client.initialize(Some(&root), false);
+    client.open(&main_path, 1, main);
+    let list = client.request("textDocument/completion", Client::at(&main_path, 1, 4));
+    assert_eq!(completion_labels(&list), vec!["VERSION", "make"]);
+    assert!(client.shutdown().success());
+}
+
+#[test]
+fn a_module_specifier_completes_from_the_files_next_to_it() {
+    let main = "import x from './u";
+    let (_dir, root) = project(&[("util.ts", ""), ("view.tsx", ""), ("main.ts", main)]);
+    let main_path = root.join("main.ts");
+    let mut client = Client::start();
+    client.initialize(Some(&root), false);
+    client.open(&main_path, 1, main);
+    let list = client.request(
+        "textDocument/completion",
+        Client::at(&main_path, 0, main.len() as u32),
+    );
+    assert_eq!(completion_labels(&list), vec!["util"]);
+    assert_eq!(list["items"][0]["kind"], 17, "a file");
+    assert!(client.shutdown().success());
+}
+
+#[test]
+fn nothing_is_completed_in_a_comment_or_where_a_name_is_declared() {
+    let text = "// note\nconst ";
+    let (_dir, root) = project(&[("a.ts", "")]);
+    let a = root.join("a.ts");
+    let mut client = Client::start();
+    client.initialize(Some(&root), false);
+    client.open(&a, 1, text);
+    let in_comment = client.request("textDocument/completion", Client::at(&a, 0, 4));
+    assert!(completion_labels(&in_comment).is_empty());
+    let declaring = client.request("textDocument/completion", Client::at(&a, 1, 6));
+    assert!(completion_labels(&declaring).is_empty());
+    assert!(client.shutdown().success());
+}
+
+#[test]
+fn signature_help_follows_an_open_call_through_an_import() {
+    let lib = "/** Greets. */\nexport function greet(who: string, times: number): void {}\n";
+    let main = "import { greet } from './lib';\ngreet('a', ";
+    let (_dir, root) = project(&[("lib.ts", lib), ("main.ts", main)]);
+    let main_path = root.join("main.ts");
+    let mut client = Client::start();
+    client.initialize(Some(&root), false);
+    client.open(&main_path, 1, main);
+    let help = client.request("textDocument/signatureHelp", Client::at(&main_path, 1, 11));
+    let signature = &help["signatures"][0];
+    assert_eq!(
+        signature["label"],
+        "greet(who: string, times: number): void"
+    );
+    assert_eq!(signature["parameters"][0]["label"], json!([6, 17]));
+    assert_eq!(signature["parameters"][1]["label"], json!([19, 32]));
+    assert_eq!(help["activeParameter"], 1);
+    assert!(
+        signature["documentation"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("Greets.")
+    );
+    assert!(client.shutdown().success());
+}
+
+#[test]
+fn signature_help_takes_an_inferred_return_type_from_the_checker() {
+    let text = "function add(a: number, b: number) { return a + b; }\nadd();\n";
+    let (_dir, root) = project(&[("a.ts", text)]);
+    let a = root.join("a.ts");
+    let mut client = Client::start();
+    client.initialize(Some(&root), false);
+    client.open(&a, 1, text);
+    let help = client.request("textDocument/signatureHelp", Client::at(&a, 1, 4));
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "add(a: number, b: number): number"
+    );
+    assert_eq!(help["activeParameter"], 0);
+    assert!(client.shutdown().success());
+}
+
+#[test]
+fn signature_help_is_null_off_a_call() {
+    let text = "function add(a: number) {}\nconst x = (1 + 2);\n";
+    let (_dir, root) = project(&[("a.ts", text)]);
+    let a = root.join("a.ts");
+    let mut client = Client::start();
+    client.initialize(Some(&root), false);
+    client.open(&a, 1, text);
+    assert_eq!(
+        client.request("textDocument/signatureHelp", Client::at(&a, 1, 12)),
+        Value::Null
+    );
+    assert!(client.shutdown().success());
+}

@@ -12,11 +12,13 @@
 //! files) and publishes what the worker reports. The `tsox-lsp` binary serves it over stdio.
 
 pub mod analysis;
+pub mod completion;
 pub mod convert;
 pub mod hover;
 pub mod navigate;
 pub mod paths;
 pub mod server;
+pub mod signature;
 pub mod structure;
 pub mod symbols;
 pub mod text;

@@ -31,13 +31,20 @@ use tower_lsp_server::ls_types::{
 };
 use tower_lsp_server::{Client, LanguageServer, LspService};
 
+use crate::completion::{self, Kind as CompletionKind};
 use crate::hover as hover_text;
 use crate::navigate::{self, Access, Hit, Host, RenameError, Snapshot};
 use crate::paths::{path_to_uri, uri_to_path};
+use crate::signature;
 use crate::structure::{self, FoldKind};
 use crate::symbols;
 use crate::text::{Document, LineMap};
 use crate::worker::{Command, Event, FileUpdate, Queries, Worker, find_tsconfig};
+use tower_lsp_server::ls_types::{
+    CompletionItem, CompletionItemKind, CompletionList, CompletionOptions, CompletionParams,
+    CompletionResponse, Documentation, ParameterInformation, ParameterLabel, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
+};
 use tower_lsp_server::ls_types::{
     DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, FoldingRange,
     FoldingRangeKind, FoldingRangeParams, FoldingRangeProviderCapability, PrepareRenameResponse,
@@ -371,6 +378,21 @@ impl LanguageServer for Backend {
                 )),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(
+                        [".", "\"", "'", "/"]
+                            .iter()
+                            .map(|c| (*c).to_owned())
+                            .collect(),
+                    ),
+                    resolve_provider: Some(false),
+                    ..Default::default()
+                }),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_owned(), ",".to_owned()]),
+                    retrigger_characters: None,
+                    work_done_progress_options: Default::default(),
+                }),
                 document_highlight_provider: Some(OneOf::Left(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
@@ -683,6 +705,99 @@ impl LanguageServer for Backend {
                 Err(tower_lsp_server::jsonrpc::Error::internal_error())
             }
         }
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let position = params.text_document_position;
+        let Some((path, text, offset, _version)) =
+            self.cursor(&position.text_document.uri, position.position)
+        else {
+            return Ok(None);
+        };
+        let items = self
+            .blocking(move |inner| {
+                let host = ServerHost(inner);
+                let snapshot = Snapshot::new(&host);
+                completion::completion(&snapshot, &path, &text, offset)
+                    .into_iter()
+                    .map(|item| CompletionItem {
+                        label: item.label,
+                        kind: Some(match item.kind {
+                            CompletionKind::Function => CompletionItemKind::FUNCTION,
+                            CompletionKind::Class => CompletionItemKind::CLASS,
+                            CompletionKind::Interface => CompletionItemKind::INTERFACE,
+                            CompletionKind::TypeAlias => CompletionItemKind::TYPE_PARAMETER,
+                            CompletionKind::Enum => CompletionItemKind::ENUM,
+                            CompletionKind::EnumMember => CompletionItemKind::ENUM_MEMBER,
+                            CompletionKind::Variable => CompletionItemKind::VARIABLE,
+                            CompletionKind::Constant => CompletionItemKind::CONSTANT,
+                            CompletionKind::Namespace | CompletionKind::Module => {
+                                CompletionItemKind::MODULE
+                            }
+                            CompletionKind::Property => CompletionItemKind::PROPERTY,
+                            CompletionKind::Keyword => CompletionItemKind::KEYWORD,
+                            CompletionKind::File => CompletionItemKind::FILE,
+                            CompletionKind::Folder => CompletionItemKind::FOLDER,
+                        }),
+                        detail: item.detail,
+                        sort_text: Some(item.sort),
+                        ..Default::default()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await?;
+        Ok(Some(CompletionResponse::List(CompletionList {
+            is_incomplete: false,
+            items,
+        })))
+    }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let position = params.text_document_position_params;
+        let Some((path, text, offset, version)) =
+            self.cursor(&position.text_document.uri, position.position)
+        else {
+            return Ok(None);
+        };
+        let found = self
+            .blocking(move |inner| {
+                let host = ServerHost(Arc::clone(&inner));
+                let snapshot = Snapshot::new(&host);
+                let queries = inner.queries();
+                let type_at = |at: u32| {
+                    queries
+                        .as_ref()
+                        .and_then(|q| q.type_at(&path, at, Some(version)))
+                };
+                signature::signature_help(&snapshot, &path, &text, offset, &type_at)
+            })
+            .await?;
+        Ok(found.map(|signature| {
+            let label = signature.label;
+            let parameters: Vec<ParameterInformation> = signature
+                .parameters
+                .iter()
+                .map(|(start, end)| ParameterInformation {
+                    label: ParameterLabel::LabelOffsets([*start, *end]),
+                    documentation: None,
+                })
+                .collect();
+            SignatureHelp {
+                signatures: vec![SignatureInformation {
+                    label,
+                    documentation: signature.documentation.map(|value| {
+                        Documentation::MarkupContent(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value,
+                        })
+                    }),
+                    parameters: Some(parameters),
+                    active_parameter: Some(signature.active_parameter),
+                }],
+                active_signature: Some(0),
+                active_parameter: Some(signature.active_parameter),
+            }
+        }))
     }
 
     async fn document_highlight(

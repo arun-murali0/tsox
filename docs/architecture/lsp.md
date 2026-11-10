@@ -14,12 +14,15 @@ codes on diagnostics (`TS2322`) are only labels the checker attaches to what it 
 | 4a | Document symbols (outline) | done |
 | 4b | Go to definition, find references | done |
 | 4c | Hover (declaration headers, JSDoc, checker types) | done |
-| 5 | Completion, signature help | next |
-| 6 | Rename, document highlight, workspace symbols, code actions | planned |
-| 7 | Hardening, performance, packaging | planned |
+| 5 | Completion (scope, namespace and enum members, module specifiers), signature help | done, except members of ordinary values |
+| 6 | Rename, document highlight, workspace symbols, folding ranges, selection ranges | done |
+| 6b | Code actions, semantic tokens, inlay hints | not started |
+| 7 | Hardening, performance, packaging | not started |
 
 Working feature list today: `textDocument/publishDiagnostics`, `documentSymbol` (nested and
-flat), `definition`, `references`, `hover`, and `workspace/didChangeWatchedFiles` handling.
+flat), `definition`, `references`, `hover`, `completion`, `signatureHelp`, `rename` and
+`prepareRename`, `documentHighlight`, `foldingRange`, `selectionRange`, `workspace/symbol`, and
+`workspace/didChangeWatchedFiles` handling.
 
 ## How it is put together
 
@@ -43,6 +46,9 @@ editor ── stdio ── Backend (server.rs) ──┬── documents (open t
   checked. A panic while checking drops the project (reloaded on the next command) instead of
   killing the server. Queries (`project_files`, `type_at`) never cancel a check; if the check
   they follow is overtaken they are put back and answered after the next one.
+* **Revision safety.** A type query carries the version of the document its offset is into; the
+  worker answers it only if it holds that version, so hover is never a type from newer text at
+  an older offset. Definition, references and the rest read one snapshot per request.
 * **`server.rs`** — the tower service. Notification handlers (`didOpen`, `didChange`,
   `didClose`) do all their work before their first await, so even though the transport may
   run handlers concurrently they are applied in arrival order. Nothing is sent from a handler:
@@ -93,40 +99,40 @@ open file, else the open files themselves.
 
 ## Remaining work
 
-### Phase 5: completion and signature help
-* **Scope completion** from the binder: names visible at the offset (variables, functions,
-  classes, types, imports), filtered by position (type vs value), with `CompletionItemKind`
-  and, for functions, the signature as detail. Keywords.
-* **Member completion** (`object.`): needs a checker query that lists the members of the type
-  at an offset, the way `type_at` reports its type. Same probe machinery; return names,
-  kinds, and type text. Property access on `any`/error types returns nothing.
-* **Import completion**: module specifiers from the resolver (relative paths, `paths`
-  aliases), named imports from the target file's exports. Auto-import (insert the import) as
-  `additionalTextEdits` after that.
-* **`completionItem/resolve`** for documentation (JSDoc from the declaration) so the first
-  response stays small. Trigger characters `.`, `"`, `'`, `/`, `@`, `<`.
-* **Signature help**: callee type at the call (the probe already reports it), the active
-  parameter from the argument list's syntax, overloads, JSDoc `@param` text. Triggers `(`,
-  `,`.
-* Both must answer while the user types, i.e. against a half-typed file: reuse `analysis.rs`
-  recovery, and decide what the checker probe does when the file has a fatal parse error (it
-  refuses such files today; the probe needs the same cut-and-retry or a last-good snapshot).
+### Completion and signature help: what is left
+Done: names in scope (innermost first, with kinds and signatures), keywords, exports of a
+namespace import (following `export *`), enum members, module specifiers (relative files and
+folders, `node_modules` packages), and signature help for a call that is still being typed
+(the checker's type of the callee when it has one, else the declaration; active parameter by
+commas at the call's own level; rest parameters; JSDoc). It works on half-typed code through a
+small scanner and a closed-off copy of the text up to the cursor.
+* **Members of ordinary values** (`object.|`, `this.|`, a call's result): needs a checker query
+  that lists the members of the type at an offset, the way `type_at` reports its type. Until
+  then these give nothing.
+* **Auto-import** (offer a name that is not imported and add the import as an edit);
+  named-import completion inside `import { | } from './x'` from the target's exports.
+* **`completionItem/resolve`** for documentation, so the first response stays small.
+* `tsconfig` `paths` aliases and `exports` maps in module specifier completion; text edits for
+  specifier items so the replaced range is the whole typed path.
+* Library globals (`console`, `Math`, …) are not offered, because the project's global
+  declarations are not exposed to the server.
+* **Signature help**: overloads (only one signature is shown), constructors (`new Foo(|)`)
+  when the checker gives no type, and `retriggerCharacters`.
 
-### Phase 6: rename, highlights, symbols, actions
-* **Rename** (`prepareRename`, `rename`) on top of `references`: workspace edits across files,
-  refusing names declared in libraries or `node_modules`, checking the new name is a valid
-  identifier and does not collide in scope; renaming an export updates import specifiers and
-  re-exports (`{ a as b }` where the alias becomes redundant). Shorthand properties
-  (`{ x }`) need `x: y` expansion.
-* **Document highlight** (same-file references, read/write kinds).
-* **Workspace symbols**: an index of outlines over the project's files, kept per document
-  version.
-* **Code actions**: quick fixes keyed by diagnostic code (add missing import, add missing
-  return, …), organize imports, remove unused.
-* **Folding ranges, selection ranges**, from the syntax tree.
-* **Semantic tokens** and **inlay hints** (parameter names, inferred types) — the latter
-  needs types in bulk, so a batched probe rather than one re-check per offset.
-* **Type definition / implementation / declaration** requests.
+### Rename and structure: what is left
+Done: rename across files with alias-preserving edits (`import { a }` becomes
+`import { b as a }`, so a module's public names and the other file's uses are left alone),
+refusing members, globals, library declarations, invalid and clashing names; document
+highlight with read/write kinds; folding ranges (bodies, imports, comments, regions);
+selection ranges; workspace symbols over the project's files and open documents.
+* **Rename of members** (properties, methods) and of names in script files (no imports or
+  exports, whose top-level names are global across files): both need symbol identity from the
+  checker, which the server does not have; rename refuses them rather than guess.
+* Rename of a file/module path, and import-path updates when a file moves
+  (`workspace/willRenameFiles`).
+* **Code actions** (quick fixes keyed by diagnostic code, organize imports, remove unused),
+  **semantic tokens**, **inlay hints** (batched probe, not one re-check per offset), type
+  definition / implementation / declaration requests.
 
 ### Diagnostics
 * Related information and tags (unnecessary / deprecated), where the checker has them.

@@ -310,7 +310,7 @@ fn pattern_names(pattern: &BindingPattern<'_>, out: &mut Vec<(String, (u32, u32)
 }
 
 /// The names a declaration introduces, with where each is written.
-fn declared_names(declaration: &Declaration<'_>) -> Vec<(String, (u32, u32))> {
+pub(crate) fn declared_names(declaration: &Declaration<'_>) -> Vec<(String, (u32, u32))> {
     let mut out = Vec::new();
     let mut named = |id: &oxc_ast::ast::BindingIdentifier<'_>| {
         out.push((id.name.to_string(), (id.span.start, id.span.end)));
