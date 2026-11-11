@@ -405,6 +405,15 @@ pub mod messages {
         )
     }
 
+    // tsc's own code (TS7019) and wording for a rest parameter with no type: a
+    // separate diagnostic from the plain-parameter one (TS7006).
+    pub fn rest_parameter_implicitly_any(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyRestParameter,
+            format!("Rest parameter '{name}' implicitly has an 'any[]' type."),
+        )
+    }
+
     pub fn element_implicitly_any(
         arena: &TypeArena,
         key: TypeId,

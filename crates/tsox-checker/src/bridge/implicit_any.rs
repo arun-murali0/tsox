@@ -111,7 +111,7 @@ impl<'c, 'ast, 'src> Walker<'c, 'ast, 'src> {
         {
             self.report(
                 DiagnosticCode::ImplicitAnyParameter,
-                messages::parameter_implicitly_any(&id.name),
+                messages::rest_parameter_implicitly_any(&id.name),
                 id.span,
             );
         }

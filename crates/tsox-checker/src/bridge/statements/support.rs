@@ -122,6 +122,32 @@ pub(super) fn report_implicit_any_params(
             id.span,
         );
     }
+    // A rest parameter with no type is the same code (TS7006) with tsc's rest wording,
+    // which the items loop above does not reach. A destructured rest (`...[a, b]`)
+    // reports its binding elements instead (TS7031), as a destructured parameter does.
+    if let Some(rest) = &params.rest {
+        if rest.type_annotation.is_some() {
+            return;
+        }
+        match &rest.rest.argument {
+            BindingPattern::BindingIdentifier(id) => {
+                ctx.error(
+                    crate::diagnostic_messages::messages::rest_parameter_implicitly_any(&id.name),
+                    id.span,
+                );
+            }
+            pattern => {
+                let mut found = Vec::new();
+                implicit_any_bindings(pattern, &mut found);
+                for (name, span) in found {
+                    ctx.error(
+                        crate::diagnostic_messages::messages::binding_element_implicitly_any(&name),
+                        span,
+                    );
+                }
+            }
+        }
+    }
 }
 
 // The names bound by a destructuring parameter that has neither a type nor a default: each
