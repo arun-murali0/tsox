@@ -29,7 +29,7 @@
 // its name; adding a declaration earlier in the file renumbers them, so a consumer that
 // needs a key that survives that (the query layer) derives it from the name.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use oxc_ast::{
     AstKind,
@@ -261,6 +261,8 @@ struct Builder<'s, 'a> {
     cfg: &'s ControlFlowGraph,
     /// Conditions that hold on an edge, keyed by the edge's two blocks.
     conditions: HashMap<(Block, Block), Vec<Cond>>,
+    // Edges that can never be taken: the exit of a `for` with no test.
+    dead_edges: HashSet<(Block, Block)>,
     switches: Vec<Switch>,
     branchers: Vec<Brancher>,
 }
@@ -283,6 +285,7 @@ impl<'s, 'a> Builder<'s, 'a> {
             sem,
             cfg,
             conditions: HashMap::new(),
+            dead_edges: HashSet::new(),
             switches: Vec::new(),
             branchers,
         }
@@ -450,6 +453,7 @@ impl<'s, 'a> Builder<'s, 'a> {
 
     fn collect_annotations(&mut self) {
         let mut jobs: Vec<(NodeId, NodeId, Assume, Assume)> = Vec::new();
+        let mut dead: Vec<(Block, Block)> = Vec::new();
         for node in self.sem.nodes().iter() {
             match node.kind() {
                 AstKind::IfStatement(s) => jobs.push((
@@ -477,6 +481,29 @@ impl<'s, 'a> Builder<'s, 'a> {
                     Assume::False,
                 )),
                 AstKind::ForStatement(s) => {
+                    if s.test.is_none() {
+                        // `for (;;)` has no way out but a `break`: the edge the CFG draws
+                        // from its head past the loop is never taken.
+                        let body = self.block_of(s.body.node_id());
+                        for (pred, _) in self.preds(body) {
+                            if pred == body {
+                                continue;
+                            }
+                            let succs: Vec<Block> = self
+                                .succs(pred)
+                                .into_iter()
+                                .filter(|(_, k)| *k != EdgeKind::Exception)
+                                .map(|(b, _)| b)
+                                .collect();
+                            if succs.len() >= 2 && succs.contains(&body) {
+                                for next in succs {
+                                    if next != body {
+                                        dead.push((pred, next));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if let Some(test) = &s.test {
                         jobs.push((
                             test.node_id(),
@@ -497,6 +524,7 @@ impl<'s, 'a> Builder<'s, 'a> {
                 _ => {}
             }
         }
+        self.dead_edges.extend(dead);
         for (test, target_node, to_target, to_other) in jobs {
             let target = self.block_of(target_node);
             self.annotate(test, target, to_target, to_other);
@@ -717,6 +745,9 @@ impl<'s, 'a> Builder<'s, 'a> {
             }
 
             for (pred, kind) in preds {
+                if self.dead_edges.contains(&(pred, *block)) {
+                    continue;
+                }
                 // oxc marks the closing edge of a loop `Backedge` for `while` and `for`, but
                 // a `continue` is an ordinary jump; an edge to a block still being explored
                 // is a back edge whatever the builder called it.
@@ -1405,8 +1436,9 @@ mod tests {
                     assert!(a.from < n, "{label}: dangling antecedent f{}", a.from);
                 }
                 if node.antecedents.is_empty() {
+                    // A join nothing reaches: what follows a `for (;;)` with no `break`.
                     assert!(
-                        matches!(node.kind, FlowKind::Start),
+                        matches!(node.kind, FlowKind::Start | FlowKind::Join),
                         "{label}: f{index} {:?} has no antecedent",
                         node.kind
                     );

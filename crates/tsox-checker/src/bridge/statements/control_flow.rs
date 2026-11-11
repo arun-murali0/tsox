@@ -163,7 +163,9 @@ fn run_loop(
             // The same body is walked again for the real pass below, so what these
             // passes report would otherwise be reported twice.
             let reported_so_far = ctx.diagnostics.len();
+            ctx.loop_probe = true;
             let result = pass(ctx);
+            ctx.loop_probe = false;
             ctx.diagnostics.truncate(reported_so_far);
             let next = match result.back {
                 Some(back) => join_states(&outer, &back, &mut ctx.arena),

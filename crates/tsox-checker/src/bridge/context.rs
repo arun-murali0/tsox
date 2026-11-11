@@ -147,6 +147,8 @@ pub struct CheckContext<'ast, 'src> {
     pub var_annotations: std::collections::HashMap<oxc_semantic::SymbolId, TypeId>,
     // True while the declaration behind an `export` is checked.
     pub in_export_declaration: bool,
+    // True while a loop body is walked only to find the state its head settles on.
+    pub loop_probe: bool,
     /// Set while a bracket access with a literal key is looked up like a property read.
     pub bracket_access: bool,
 
@@ -526,6 +528,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             expandos: Default::default(),
             var_annotations: Default::default(),
             in_export_declaration: false,
+            loop_probe: false,
             abstract_members: Default::default(),
             bracket_access: false,
             implicit_this: false,

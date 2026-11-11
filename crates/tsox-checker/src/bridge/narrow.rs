@@ -314,6 +314,12 @@ pub fn assigned_narrowed_type(
         Type::Union(members) => members.clone(),
         _ => return declared,
     };
+    // While a loop is only being probed for its head state, a value that came out of reading
+    // a variable the probe has not finished narrowing (`x = x.slice()` where `x` is still
+    // `never`) is an `any` that says nothing; tsc leaves such a type out as incomplete.
+    if ctx.loop_probe && matches!(ctx.arena.get(assigned), Type::Any | Type::Error) {
+        return ctx.arena.never();
+    }
     let mut kept = Vec::with_capacity(members.len());
     for member in members {
         if ctx.semantic().is_assignable(assigned, member) {
@@ -1125,6 +1131,9 @@ fn resolve_literal(expr: &Expression, arena: &mut TypeArena) -> Option<TypeId> {
         }
         Expression::NumericLiteral(lit) => Some(arena.alloc(Type::NumberLiteral(lit.value))),
         Expression::BooleanLiteral(lit) => Some(arena.alloc(Type::BooleanLiteral(lit.value))),
+        // `case null:` and `case undefined:` narrow like any other case.
+        Expression::NullLiteral(_) => Some(arena.null()),
+        Expression::Identifier(ident) if ident.name == "undefined" => Some(arena.undefined()),
         _ => None,
     }
 }
@@ -1752,6 +1761,18 @@ fn narrow_by_nullish(
             Type::Any | Type::Unknown | Type::Error | Type::GenericParameter(..)
         )
     };
+    // A union that still holds `unknown` (what joining `null` with `unknown` leaves) is no
+    // narrower than `unknown`.
+    let id = match union_members(arena, id) {
+        Some(members)
+            if members
+                .iter()
+                .any(|&m| matches!(arena.get(m), Type::Unknown)) =>
+        {
+            arena.unknown()
+        }
+        _ => id,
+    };
     match union_members(arena, id) {
         Some(members) => {
             let filtered = members
@@ -1761,6 +1782,18 @@ fn narrow_by_nullish(
             arena.alloc_union(filtered)
         }
         None => {
+            // `unknown` is exactly what the test says it is where the test passes.
+            if want_match && matches!(arena.get(id), Type::Unknown) {
+                let null = arena.null();
+                let undefined = arena.undefined();
+                return if is_loose {
+                    arena.alloc_union(vec![null, undefined])
+                } else if target_is_null {
+                    null
+                } else {
+                    undefined
+                };
+            }
             if is_open(arena, id) || is_target(arena, id) == want_match {
                 id
             } else {
