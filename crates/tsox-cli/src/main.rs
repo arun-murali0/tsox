@@ -33,6 +33,9 @@ struct Options {
     // Read only by the query-layer driver, which exists in a build with `incremental`.
     #[cfg_attr(not(feature = "incremental"), allow(dead_code))]
     watch: bool,
+    // Check a cycle from the start on every edit to it, instead of only the files that changed.
+    #[cfg_attr(not(feature = "incremental"), allow(dead_code))]
+    no_cycle_recheck: bool,
 }
 
 // Set once from `--tsc-codes`: print each diagnostic under the tsc code it maps to.
@@ -237,6 +240,7 @@ fn check_incremental(
 ) -> Result<Tally, String> {
     let config = config.ok_or("--incremental needs a tsconfig.json")?;
     let mut project = tsox::IncrementalProject::open(config.config_file())?;
+    project.set_cycle_recheck(!options.no_cycle_recheck);
     let report = project.check()?;
     let bundle = project.graph();
     let tally = report_project(bundle.module_graph(), &report, options);
@@ -252,6 +256,8 @@ fn check_incremental(
                 eprintln!("error: {message}");
                 continue;
             }
+        } else if !project.files_changed() {
+            continue;
         }
         let report = match project.check() {
             Ok(report) => report,
@@ -511,6 +517,7 @@ fn parse_options(args: &[String]) -> Option<Options> {
             .iter()
             .any(|arg| arg == "--incremental" || arg == "--watch"),
         watch: args.iter().any(|arg| arg == "--watch"),
+        no_cycle_recheck: args.iter().any(|arg| arg == "--no-cycle-recheck"),
     })
 }
 
@@ -564,7 +571,7 @@ fn print_help() {
         "tsox: a from-scratch TypeScript type checker (experimental CLI)\n\n\
          USAGE:\n    \
          tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--eager-libs] [--lib-cache <dir> | --no-lib-cache] [--tsc-codes]\n    \
-         [--incremental | --watch]\n\n\
+         [--incremental | --watch] [--no-cycle-recheck]\n\n\
          OPTIONS:\n    \
          --project <path>    Read the tsconfig.json at <path> and check the files its\n                         \
          include/exclude/files select, resolving imports with its\n                         \
@@ -589,6 +596,9 @@ fn print_help() {
          default; it exists for --watch and for tools that keep it.\n    \
          --watch             Check, then check again whenever a file changes, running only\n                         \
          what the change reaches (implies --incremental).\n    \
+         --no-cycle-recheck  With --watch, check a whole import cycle on every edit to it,\n                         \
+         not only the files that changed. Slower; use it if a cycle's\n                         \
+         result ever differs from a cold check.\n    \
          -h, --help          Show this message.\n\n\
          EXIT CODES:\n    \
          0    no errors (warnings may still have been printed)\n    \

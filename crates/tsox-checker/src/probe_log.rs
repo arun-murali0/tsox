@@ -40,6 +40,7 @@ pub enum ProbeCall {
     GlobalTypeOnlyUnmodelled(String),
     GlobalMembers(String),
     GlobalNameIsConst(String),
+    ExportPrefixed(String, String),
 }
 
 /// A question and a fingerprint of the answer it got.
@@ -145,6 +146,9 @@ fn answer_of(call: &ProbeCall, source: &dyn ImportSource, memo: Option<&Fingerpr
         ProbeCall::ExportKeys(specifier, name) => fp_keys(&source.export_keys(specifier, name)),
         ProbeCall::ModuleExports(specifier) => fp_module_exports(source.module_exports(specifier)),
         ProbeCall::ExportAll(specifier) => fp_pairs(&source.export_all(specifier)),
+        ProbeCall::ExportPrefixed(specifier, prefix) => {
+            fp_pairs(&source.export_prefixed(specifier, prefix))
+        }
         ProbeCall::GlobalNamespaces => fp_namespaces(&source.global_namespaces()),
         ProbeCall::GlobalDecls(name) => fp_keys(&source.global_decls(name)),
         ProbeCall::RequiresRegisteredGlobalTypes => {
@@ -318,6 +322,15 @@ impl ImportSource for RecordingImports<'_> {
         let answer = self.inner.export_all(specifier);
         self.note(
             || ProbeCall::ExportAll(specifier.to_string()),
+            || fp_pairs(&answer),
+        );
+        answer
+    }
+
+    fn export_prefixed(&self, specifier: &str, prefix: &str) -> Vec<(String, DeclKey)> {
+        let answer = self.inner.export_prefixed(specifier, prefix);
+        self.note(
+            || ProbeCall::ExportPrefixed(specifier.to_string(), prefix.to_string()),
             || fp_pairs(&answer),
         );
         answer

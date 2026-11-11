@@ -1187,3 +1187,431 @@ fn an_augmentation_reaches_a_transitive_importer() {
         assert_same_as_cold(&mut project, &dir);
     }
 }
+
+// A project with more units than the cache's floor. Before the cache followed the project, the
+// units past 4096 were evicted and every check ran them again, so an edit that reaches one
+// unit still cost hundreds.
+#[test]
+fn a_project_past_the_cache_floor_keeps_every_unit_memoized() {
+    const FILES: usize = 4300;
+    let texts: Vec<(String, String)> = (0..FILES)
+        .map(|n| {
+            (
+                format!("m{n}.ts"),
+                format!("export const v{n}: number = {n};\n"),
+            )
+        })
+        .collect();
+    let files: Vec<(&str, &str)> = texts
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    let dir = Dir::new("past-floor", &files);
+    let mut project = dir.open();
+    assert!(project.unit_cache_capacity() >= FILES);
+    project.check().unwrap();
+    let total = project.stats().units_total;
+    assert!(total >= FILES, "{total}");
+
+    // Nothing changed: no unit may run, whichever of them the LRU would have dropped.
+    project.check().unwrap();
+    assert_eq!(project.stats().units_checked, 0);
+
+    dir.write("m7.ts", "export const v7: number = 7; // edited\n");
+    project.check().unwrap();
+    assert_eq!(project.stats().units_checked, 1);
+    assert_eq!(project.stats().units_reused, total - 1);
+}
+
+#[test]
+fn a_small_project_keeps_the_default_cache_size() {
+    let dir = chain();
+    let project = dir.open();
+    assert_eq!(project.unit_cache_capacity(), 4096);
+}
+
+// A limit the caller chose is theirs: a rebuilt graph does not size the cache over it.
+#[test]
+fn a_chosen_cache_size_survives_a_rebuild() {
+    let dir = chain();
+    let mut project = dir.open();
+    project.set_unit_cache_capacity(64);
+    project.check().unwrap();
+    dir.write("f.ts", "export const f: number = 1;\n");
+    project.rebuild().unwrap();
+    assert_eq!(project.epoch(), 1);
+    assert_eq!(project.unit_cache_capacity(), 64);
+}
+
+// An export that nobody asked for is not a reason to check an importer again. The importer
+// that named `fa` and the one that named `B` stay as they were; the unit that gained the export
+// is the only one to run.
+#[test]
+fn an_added_export_leaves_importers_that_named_other_things_alone() {
+    let dir = chain();
+    let mut project = dir.open();
+    project.check().unwrap();
+    project.take_log();
+    dir.write("a.ts", &format!("{A}export const added: number = 1;\n"));
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(ran(&mut project), ["a.ts"]);
+    assert_eq!(project.stats().units_checked, 1);
+}
+
+// A module read as a whole does depend on every export it has.
+#[test]
+fn an_added_export_reaches_a_file_that_read_the_whole_module() {
+    let dir = Dir::new(
+        "whole-module",
+        &[
+            ("a.ts", "export const x: number = 1;\n"),
+            (
+                "b.ts",
+                "import * as a from './a';\nexport const b: number = a.y;\n",
+            ),
+        ],
+    );
+    let mut project = dir.open();
+    assert_same_as_cold(&mut project, &dir);
+    project.take_log();
+    dir.write(
+        "a.ts",
+        "export const x: number = 1;\nexport const y: number = 2;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(ran(&mut project), ["a.ts", "b.ts"]);
+}
+
+// A name that was missing and is now exported must clear the importer's error.
+#[test]
+fn an_export_that_was_missing_reaches_the_file_that_asked_for_it() {
+    let dir = Dir::new(
+        "missing-name",
+        &[
+            ("a.ts", "export const x: number = 1;\n"),
+            (
+                "b.ts",
+                "import { z } from './a';\nexport const b: number = z;\n",
+            ),
+        ],
+    );
+    let mut project = dir.open();
+    let before = assert_same_as_cold(&mut project, &dir);
+    assert!(before.files.iter().any(|file| diagnostics(file) > 0));
+    project.take_log();
+    dir.write(
+        "a.ts",
+        "export const x: number = 1;\nexport const z: number = 2;\n",
+    );
+    let after = assert_same_as_cold(&mut project, &dir);
+    assert_eq!(ran(&mut project), ["a.ts", "b.ts"]);
+    assert!(after.files.iter().all(|file| diagnostics(file) == 0));
+}
+
+// The second pass used to run again for every file it checks whenever one of them changed. It
+// keeps each unit with what the unit was checked against now, so an edit costs the units whose
+// text or whose dependencies' exports changed.
+#[test]
+fn an_edit_in_the_second_pass_checks_only_the_units_whose_inputs_changed() {
+    let mut texts: Vec<(String, String)> = vec![("g.ts".to_string(), GLOBAL_FN.to_string())];
+    for n in 0..20 {
+        texts.push((
+            format!("use{n}.ts"),
+            format!("export const s{n}: string = gf({n});\n"),
+        ));
+    }
+    texts.push((
+        "dep.ts".to_string(),
+        "import { s0 } from './use0';\nexport const d: string = s0;\n".to_string(),
+    ));
+    let files: Vec<(&str, &str)> = texts
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    let dir = Dir::new("second-units", &files);
+    let mut project = dir.open();
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(project.stats().second_pass, tsox::SecondPass::Ran);
+    assert!(project.stats().second_units_checked >= 21);
+
+    // A body edit that leaves the exports alone.
+    dir.write("use3.ts", "export const s3: string = gf(33);\n");
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(project.stats().second_pass, tsox::SecondPass::Ran);
+    assert_eq!(project.stats().second_units_checked, 1);
+    assert!(project.stats().second_units_reused >= 20);
+
+    // An error only the second pass can see.
+    dir.write("use3.ts", "export const s3: string = gf('x');\n");
+    assert_eq!(
+        assert_same_as_cold(&mut project, &dir).diagnostic_count(),
+        1
+    );
+    assert_eq!(project.stats().second_units_checked, 1);
+
+    // An export that changed reaches the file that imports it.
+    dir.write("use0.ts", "export const s0: number = gf(0).length;\n");
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(project.stats().second_units_checked, 2);
+}
+
+// A watcher asks whether files came or went on every poll, so the answer must not cost a walk
+// of the project each time, and it still has to notice a file that appears or goes.
+#[test]
+fn a_poll_notices_a_file_added_or_removed_and_ignores_an_edit() {
+    let dir = chain();
+    let mut project = dir.open();
+    assert!(!project.entries_changed());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    dir.write("a.ts", &format!("{A}// edited\n"));
+    assert!(!project.entries_changed());
+    dir.write("extra.ts", "export const extra: number = 1;\n");
+    assert!(project.entries_changed());
+    project.rebuild().unwrap();
+    assert!(!project.entries_changed());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    dir.remove("extra.ts");
+    assert!(project.entries_changed());
+}
+
+// A cycle of the second pass that settled keeps its result. An edit that leaves what the file
+// exports as it was checks that file alone; one that changes an export checks the cycle whole.
+#[test]
+fn an_edit_in_a_cycle_of_the_second_pass_checks_only_the_files_that_changed() {
+    let dir = Dir::new(
+        "second-cycle",
+        &[
+            ("g.ts", GLOBAL_FN),
+            (
+                "a.ts",
+                "import { b } from './b';\nexport const a: string = gf(1) + b;\n",
+            ),
+            (
+                "b.ts",
+                "import { c } from './c';\nexport const b: string = gf(2) + c;\n",
+            ),
+            (
+                "c.ts",
+                "import { a } from './a';\nexport const c: string = gf(3);\nexport const back: string = a;\n",
+            ),
+        ],
+    );
+    let mut project = dir.open();
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(project.stats().second_pass, tsox::SecondPass::Ran);
+    assert_eq!(project.stats().second_units_rechecked, 0);
+
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: string = gf(11) + b;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(project.stats().second_units_rechecked, 1);
+
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: string = gf('x') + b;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(project.stats().second_units_rechecked, 1);
+
+    // What a exports changed, and c reads it.
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: number = 1 + b.length;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(project.stats().second_units_rechecked, 0);
+    assert!(project.stats().second_units_checked >= 1);
+
+    // And back: the cycle settled again, so the next body edit is a single file.
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: string = gf(1) + b;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: string = gf(2) + b;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(project.stats().second_units_rechecked, 1);
+}
+
+fn rechecked_members(project: &mut tsox::IncrementalProject) -> usize {
+    project
+        .take_log()
+        .iter()
+        .filter_map(|entry| entry.strip_prefix("cycle_rechecked:"))
+        .filter_map(|count| count.parse::<usize>().ok())
+        .sum()
+}
+
+// A cycle that settled keeps its result. An edit that leaves the exports of the changed file as
+// they were checks that file alone; one that changes an export checks the cycle from the start.
+#[test]
+fn an_edit_in_a_cycle_checks_only_the_files_that_changed() {
+    let dir = Dir::new(
+        "cycle-recheck",
+        &[
+            (
+                "a.ts",
+                "import { b } from './b';\nexport const a: string = 'a' + b;\n",
+            ),
+            (
+                "b.ts",
+                "import { c } from './c';\nexport const b: string = 'b' + c;\n",
+            ),
+            (
+                "c.ts",
+                "import { a } from './a';\nexport const c: string = 'c';\nexport const back: string = a;\n",
+            ),
+        ],
+    );
+    let mut project = dir.open();
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(rechecked_members(&mut project), 0);
+
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: string = 'changed' + b;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(rechecked_members(&mut project), 1);
+
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: string = 1 + b;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(rechecked_members(&mut project), 1);
+
+    // What a exports changed, and c reads it.
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: number = b.length;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(rechecked_members(&mut project), 0);
+
+    // The cycle settled again, so the next edit is a single file once more.
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: number = b.length + 1;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(rechecked_members(&mut project), 1);
+}
+
+// Whatever mix of edits a cycle gets, what is reported is what a cold check reports.
+#[test]
+fn random_edits_in_a_cycle_always_equal_a_cold_check() {
+    const FILES: usize = 6;
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = move |bound: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % bound
+    };
+    let text = |index: usize, kind: u64, value: u64, extra: bool| {
+        let next_index = (index + 1) % FILES;
+        let (annotation, expression) = match kind {
+            0 => ("number", format!("{value}")),
+            1 => ("string", format!("'s{value}'")),
+            _ => ("number", format!("'wrong{value}'")),
+        };
+        let mut text = format!(
+            "import {{ v{next_index} }} from './f{next_index}';\nexport const v{index}: {annotation} = {expression};\nexport const w{index}: string = String(v{next_index});\n"
+        );
+        if extra {
+            text.push_str(&format!("export const x{index}: number = {value};\n"));
+        }
+        text
+    };
+    let mut texts: Vec<String> = (0..FILES).map(|index| text(index, 0, 1, false)).collect();
+    let names: Vec<String> = (0..FILES).map(|index| format!("f{index}.ts")).collect();
+    let files: Vec<(&str, &str)> = names
+        .iter()
+        .zip(&texts)
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    let dir = Dir::new("cycle-random", &files);
+    let mut project = dir.open();
+    assert_same_as_cold(&mut project, &dir);
+    project.take_log();
+    let mut shortcuts = 0;
+    for round in 0..80 {
+        let index = next(FILES as u64) as usize;
+        let kind = next(3);
+        let value = next(1000);
+        let extra = next(2) == 0;
+        texts[index] = text(index, kind, value, extra);
+        dir.write(&names[index], &texts[index]);
+        assert_same_as_cold(&mut project, &dir);
+        shortcuts += rechecked_members(&mut project);
+        let _ = round;
+    }
+    assert!(shortcuts > 0);
+}
+
+// The watch condition does not walk the project until a directory moved. Once the directories
+// are old enough to vouch for themselves, a file that appears still moves one of them.
+#[test]
+fn the_watch_condition_sees_a_file_added_once_the_directories_have_settled() {
+    let dir = chain();
+    let project = dir.open();
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    assert!(!project.entries_changed());
+    assert!(!project.entries_changed());
+    dir.write("a.ts", &format!("{A}// edited\n"));
+    assert!(!project.entries_changed());
+    dir.write("extra.ts", "export const extra: number = 1;\n");
+    assert!(project.entries_changed());
+}
+
+// A cycle is checked whole when the recheck is off, and the first edit after it is on again
+// checks it whole once more because nothing was kept meanwhile.
+#[test]
+fn a_cycle_is_checked_whole_when_the_recheck_is_turned_off() {
+    let dir = Dir::new(
+        "cycle-off",
+        &[
+            (
+                "a.ts",
+                "import { b } from './b';\nexport const a: string = 'a' + b;\n",
+            ),
+            (
+                "b.ts",
+                "import { c } from './c';\nexport const b: string = 'b' + c;\n",
+            ),
+            (
+                "c.ts",
+                "import { a } from './a';\nexport const c: string = 'c';\nexport const back: string = a;\n",
+            ),
+        ],
+    );
+    let mut project = dir.open();
+    project.set_cycle_recheck(false);
+    assert_same_as_cold(&mut project, &dir);
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: string = 'one' + b;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(rechecked_members(&mut project), 0);
+
+    project.set_cycle_recheck(true);
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: string = 'two' + b;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(rechecked_members(&mut project), 0);
+    dir.write(
+        "a.ts",
+        "import { b } from './b';\nexport const a: string = 'three' + b;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(rechecked_members(&mut project), 1);
+}

@@ -49,6 +49,45 @@ pub trait UnitMemo: Sync {
 
     /// Keeps the second pass's result under `fingerprint`, replacing any other.
     fn keep_second_pass(&self, _fingerprint: u128, _result: &UnitResult) {}
+
+    /// Finished units of the second pass kept from earlier checks, so a second pass that has to
+    /// run again checks only the units whose inputs changed.
+    fn unit_cache(&self) -> Option<&dyn UnitCache> {
+        None
+    }
+}
+
+/// The units of the second pass, each kept with a digest of everything it was checked against:
+/// its files' text, what its dependencies exported, and what the pass reads from the rest of the
+/// project. A unit whose digest is the one held is not checked again.
+pub trait UnitCache: Sync {
+    fn get(&self, unit: usize, inputs: u128) -> Option<UnitResult>;
+    fn put(&self, unit: usize, kept: KeptUnit);
+    /// The unit as last kept, whatever it was checked against.
+    fn previous(&self, unit: usize) -> Option<KeptUnit>;
+    /// Counts what became of a unit in this pass.
+    fn work(&self, kind: UnitWork);
+}
+
+/// What the second pass did for a unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnitWork {
+    /// Answered from the kept unit.
+    Reused,
+    /// A cycle of which only the files that changed were checked.
+    Rechecked,
+    /// Checked as a whole.
+    Checked,
+}
+
+/// A finished unit of the second pass with what it was checked against: `context` is everything
+/// but the text of its files, `texts` the digest of each file's text, and `inputs` both.
+#[derive(Clone)]
+pub struct KeptUnit {
+    pub inputs: u128,
+    pub context: u128,
+    pub texts: Vec<u128>,
+    pub result: UnitResult,
 }
 
 // What the second pass reads, besides the first pass's results: the text of every file it
@@ -118,6 +157,21 @@ pub enum FileOutcome {
     CheckFailed(CheckerError),
 }
 
+// What a file's check asked of the export tables of the modules it imports, besides the
+// declarations in `FileReport::reads`. A reader that asked for one name is not affected by an
+// export it did not ask for; one that listed a module is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ImportReads {
+    // Modules whose whole export list was read (`import * as`, `export *`).
+    pub lists: Vec<FileId>,
+    // Modules and the one name looked up in them, found or not.
+    pub names: Vec<(FileId, String)>,
+    // Modules whose export list was asked to be whole.
+    pub complete: Vec<FileId>,
+    // Modules and the prefix of the names read from them (`N.` for the members of `namespace N`).
+    pub prefixed: Vec<(FileId, String)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct FileReport {
     pub file_id: FileId,
@@ -127,6 +181,9 @@ pub struct FileReport {
     /// and the finer one: a change that leaves all of these signatures alone cannot
     /// change this file's diagnostics (LLD 6.2).
     pub reads: Vec<DeclKey>,
+    /// The other questions the check put to its imports. `None` when they are not known (a
+    /// result replayed from a stored one); a reader must then assume it read everything.
+    pub import_reads: Option<ImportReads>,
     /// Why this file's exports are partial, sorted and without duplicates; empty when they
     /// are complete. A file that imports a partial one stays quiet about a missing name.
     pub incomplete_reasons: Vec<IncompleteReason>,
@@ -190,7 +247,7 @@ const CANCELLED: &str = "the check was cancelled";
 struct Project<'a> {
     graph: &'a ModuleGraph,
     tables: RwLock<Tables>,
-    globals: Globals,
+    globals: Arc<Globals>,
     cancel: Option<&'a CancelToken>,
     // Whether a script file builds declarations for its global names, or only lists them.
     // Off in the passes; on for the providers and for the run that rebuilds the scripts
@@ -206,7 +263,7 @@ struct Project<'a> {
     // and on nothing about a file, so it is worked out once per project: a check that reads
     // it per file, or a replay of a cached unit that does, would otherwise work it out again
     // for every one.
-    registry_applies: std::sync::OnceLock<bool>,
+    registry_applies: Arc<std::sync::OnceLock<bool>>,
     // Declarations already hashed for the library cache, so one asked for by many units is
     // hashed once. Per project: its tables hold the declarations, and a memo outliving them
     // would keep them alive (see `FingerprintMemo`).
@@ -245,26 +302,47 @@ impl Project<'_> {
 // walked, so hash order cannot reach a result (LLD 8.2).
 #[derive(Default)]
 struct Tables {
-    names: FxHashMap<FileId, Arc<Vec<(String, DeclKey)>>>,
-    complete: FxHashMap<FileId, bool>,
-    decls: FxHashMap<DeclKey, Arc<PortableDecl>>,
+    own_names: FxHashMap<FileId, Arc<Vec<(String, DeclKey)>>>,
+    own_complete: FxHashMap<FileId, bool>,
+    own_decls: FxHashMap<DeclKey, Arc<PortableDecl>>,
+    // What was published before this project began and is the same for every unit: the
+    // ambient providers. Looked up when the unit's own entries have no answer.
+    base: Option<Arc<Tables>>,
 }
 
 impl Tables {
+    fn names(&self, id: &FileId) -> Option<&Arc<Vec<(String, DeclKey)>>> {
+        self.own_names
+            .get(id)
+            .or_else(|| self.base.as_ref().and_then(|base| base.names(id)))
+    }
+
+    fn complete(&self, id: &FileId) -> Option<&bool> {
+        self.own_complete
+            .get(id)
+            .or_else(|| self.base.as_ref().and_then(|base| base.complete(id)))
+    }
+
+    fn decl(&self, key: &DeclKey) -> Option<&Arc<PortableDecl>> {
+        self.own_decls
+            .get(key)
+            .or_else(|| self.base.as_ref().and_then(|base| base.decl(key)))
+    }
+
     #[cfg(feature = "incremental")]
     fn add_ref(&mut self, id: FileId, unit: &UnitExports) {
-        self.names.insert(id, Arc::clone(&unit.names));
-        self.complete.insert(id, unit.complete);
+        self.own_names.insert(id, Arc::clone(&unit.names));
+        self.own_complete.insert(id, unit.complete);
         for decl in &unit.decls {
-            self.decls.insert(decl.key, Arc::clone(decl));
+            self.own_decls.insert(decl.key, Arc::clone(decl));
         }
     }
 
     fn add(&mut self, id: FileId, unit: UnitExports) {
-        self.names.insert(id, unit.names);
-        self.complete.insert(id, unit.complete);
+        self.own_names.insert(id, unit.names);
+        self.own_complete.insert(id, unit.complete);
         for decl in unit.decls {
-            self.decls.insert(decl.key, decl);
+            self.own_decls.insert(decl.key, decl);
         }
     }
 }
@@ -580,7 +658,7 @@ pub fn run_project(
         let project = Project {
             graph,
             tables: RwLock::new(Tables::default()),
-            globals: Globals::default(),
+            globals: Arc::new(Globals::default()),
             cancel,
             collect_global_decls: true,
             texts: options.texts,
@@ -638,6 +716,8 @@ pub fn run_project(
         cancel,
         texts: options.texts,
         memo,
+        unit_cache: None,
+        inputs_base: 0,
     };
 
     #[cfg(test)]
@@ -827,7 +907,7 @@ pub fn run_project(
             let scripts = Project {
                 graph,
                 tables: RwLock::new(Tables::default()),
-                globals: Globals::default(),
+                globals: Arc::new(Globals::default()),
                 cancel,
                 collect_global_decls: true,
                 texts: options.texts,
@@ -857,6 +937,9 @@ pub fn run_project(
         all.sort_by_key(|(id, _)| *id);
         let mut second_globals = Globals::build(graph, &all);
         second_globals.bare_reportable = bare_specifiers_are_reportable(graph, wildcard_declared);
+        let declared = options
+            .texts
+            .map_or(0, |texts| declared_inputs(&all, texts));
         // Problem: the second pass checked every file again, though a file that uses none of the
         // names the project declares globally, and imports nothing that does, cannot come out
         // different.
@@ -902,6 +985,22 @@ pub fn run_project(
             }
         }
         units2.sort_by_key(|(id, _)| *id);
+        let unit_cache = match (memo, options.texts) {
+            (Some(memo), Some(_)) => memo.unit_cache(),
+            _ => None,
+        };
+        let inputs_base = match (unit_cache, options.texts) {
+            (Some(_), Some(_)) => second_pass_inputs(
+                &units2,
+                declared,
+                (
+                    second_globals.bare_reportable,
+                    wildcard_declared,
+                    wildcard_module,
+                ),
+            ),
+            _ => 0,
+        };
         let setup2 = PassSetup {
             graph,
             providers: &providers2,
@@ -911,6 +1010,8 @@ pub fn run_project(
             cancel,
             texts: options.texts,
             memo: None,
+            unit_cache,
+            inputs_base,
         };
         // The second pass is answered from the memo when everything it reads is what it read
         // last time: the first pass's outputs (by their digests), and the text of each file it
@@ -1117,6 +1218,10 @@ struct PassSetup<'a> {
     texts: Option<&'a TextFn>,
     // Answers units of the first pass only; None for the second.
     memo: Option<&'a dyn UnitMemo>,
+    // Kept units of the second pass, and the digest of what that pass reads besides a unit's own
+    // files and dependencies (see `second_pass_inputs`).
+    unit_cache: Option<&'a dyn UnitCache>,
+    inputs_base: u128,
 }
 
 // One pass over every component of the graph, on the ready queue. The files come back in
@@ -1128,7 +1233,7 @@ fn run_pass(setup: &PassSetup<'_>, globals: Globals) -> UnitResult {
     let project = Project {
         graph: setup.graph,
         tables: RwLock::new(Tables::default()),
-        globals,
+        globals: Arc::new(globals),
         cancel: setup.cancel,
         collect_global_decls: false,
         texts: setup.texts,
@@ -1142,8 +1247,9 @@ fn run_pass(setup: &PassSetup<'_>, globals: Globals) -> UnitResult {
         project.publish(*id, unit.clone());
     }
     let waits = unit_dependencies(setup.graph);
+    let cones = std::sync::Mutex::new(vec![None::<u128>; waits.len()]);
     let outcomes = run_units(worker_pool(), &waits, setup.cancel, |unit, _| {
-        run_unit(&project, setup, unit)
+        run_unit_kept(&project, setup, unit, &waits[unit], &cones)
     })
     .expect("the components of a graph never wait on each other");
     let mut result = UnitResult::default();
@@ -1178,6 +1284,7 @@ fn failed_report(id: FileId, text: &str) -> FileReport {
         file_id: id,
         outcome: FileOutcome::ReadFailed(text.to_string()),
         reads: Vec::new(),
+        import_reads: None,
         incomplete_reasons: Vec::new(),
     }
 }
@@ -1193,6 +1300,283 @@ fn unit_files(setup: &PassSetup<'_>, unit: usize) -> Vec<FileId> {
                 && (setup.graph.is_checkable(*id) || setup.graph.is_dependency_declaration(*id))
         })
         .collect()
+}
+
+// What a unit's dependents can read of it: everything of its exports a reader looks at, but
+// not the diagnostics. Declarations are taken by signature, as the query layer does.
+fn digest_exports(exports: &UnitExports, hasher: &mut xxhash_rust::xxh3::Xxh3) {
+    hasher.update(
+        format!(
+            "{:?}",
+            (
+                &exports.names,
+                exports.complete,
+                &exports.ambient,
+                &exports.augmentations,
+                &exports.umd_namespaces,
+                &exports.unresolved_names,
+                &exports.globals,
+                &exports.return_reads,
+            )
+        )
+        .as_bytes(),
+    );
+    for decl in &exports.decls {
+        hasher.update(format!("{:?}{:?}", decl.key, decl.sig).as_bytes());
+    }
+}
+
+// What the second pass reads besides the files and dependencies of a unit: the exports of the
+// files it does not run (providers and the files kept from the first pass), what every file
+// declares globally, and the text of the files that declare any. A change to one of these gives
+// every unit a new digest, so it is checked again.
+fn second_pass_inputs(
+    kept: &[(FileId, UnitExports)],
+    declared: u128,
+    flags: (bool, bool, bool),
+) -> u128 {
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    hasher.update(&[flags.0 as u8, flags.1 as u8, flags.2 as u8]);
+    hasher.update(&declared.to_le_bytes());
+    for (id, exports) in kept {
+        hasher.update(&id.index().to_le_bytes());
+        digest_exports(exports, &mut hasher);
+    }
+    hasher.digest128()
+}
+
+// The part of those inputs that comes from every file's first-pass exports: what each declares
+// globally, with the text of the files that declare any.
+fn declared_inputs(all: &[(FileId, &UnitExports)], texts: &TextFn) -> u128 {
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    for (id, exports) in all {
+        let declares = !exports.ambient.is_empty()
+            || !exports.augmentations.is_empty()
+            || !exports.umd_namespaces.is_empty()
+            || !exports.globals.is_empty();
+        if !declares {
+            continue;
+        }
+        hasher.update(&id.index().to_le_bytes());
+        digest_exports(exports, &mut hasher);
+        match texts(*id) {
+            Some(text) => hasher.update(text.as_bytes()),
+            None => hasher.update(&[0]),
+        };
+    }
+    hasher.digest128()
+}
+
+fn unit_cone(
+    done: &UnitResult,
+    dependencies: &[usize],
+    cones: &std::sync::Mutex<Vec<Option<u128>>>,
+) -> u128 {
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    let mut files: Vec<&(FileReport, Option<UnitExports>)> = done.files.iter().collect();
+    files.sort_by_key(|(report, _)| report.file_id);
+    for (report, exports) in files {
+        hasher.update(&report.file_id.index().to_le_bytes());
+        match exports {
+            Some(exports) => {
+                hasher.update(&[1]);
+                digest_exports(exports, &mut hasher);
+            }
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+    }
+    let held = cones.lock().unwrap_or_else(|e| e.into_inner());
+    let mut order = dependencies.to_vec();
+    order.sort_unstable();
+    order.dedup();
+    for dependency in order {
+        hasher.update(&(dependency as u64).to_le_bytes());
+        hasher.update(&held[dependency].unwrap_or(0).to_le_bytes());
+    }
+    hasher.digest128()
+}
+
+// What a unit is checked against, as the digest of everything but its files' text, and the digest
+// of each file's text. They are kept apart so a unit whose context is the one it was last checked
+// in, and whose text changed in some files only, can check just those.
+fn unit_inputs(
+    setup: &PassSetup<'_>,
+    unit: usize,
+    members: &[FileId],
+    dependencies: &[usize],
+    cones: &std::sync::Mutex<Vec<Option<u128>>>,
+) -> Option<(u128, Vec<u128>)> {
+    let texts = setup.texts?;
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    hasher.update(&setup.inputs_base.to_le_bytes());
+    hasher.update(&(unit as u64).to_le_bytes());
+    let mut digests = Vec::with_capacity(members.len());
+    for id in members {
+        hasher.update(&id.index().to_le_bytes());
+        digests.push(xxhash_rust::xxh3::xxh3_128(texts(*id)?.as_bytes()));
+    }
+    let held = cones.lock().unwrap_or_else(|e| e.into_inner());
+    let mut order = dependencies.to_vec();
+    order.sort_unstable();
+    order.dedup();
+    for dependency in order {
+        hasher.update(&(dependency as u64).to_le_bytes());
+        hasher.update(&held[dependency].unwrap_or(0).to_le_bytes());
+    }
+    Some((hasher.digest128(), digests))
+}
+
+fn combine_inputs(context: u128, texts: &[u128]) -> u128 {
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    hasher.update(&context.to_le_bytes());
+    for text in texts {
+        hasher.update(&text.to_le_bytes());
+    }
+    hasher.digest128()
+}
+
+/// A digest of what a unit's dependents can read of its exports, not its diagnostics.
+pub fn exports_digest(exports: &UnitExports) -> u128 {
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    digest_exports(exports, &mut hasher);
+    hasher.digest128()
+}
+
+// Problem: the members of a cycle are checked together until their exports stop changing, so an
+// edit to one file of a cycle of hundreds checked all of them again.
+// Picked: a cycle that settled keeps its result. When only some files changed and nothing else a
+// member reads did, those files are checked once against the settled exports of the rest. If
+// their own exports are what they were, no other member's input changed, and the settled result
+// stands with the new reports for those files. If an export changed, the caller runs the cycle
+// from the start, as before.
+// Cost: a cycle whose exports changed pays one extra check of the files that changed.
+fn splice_rechecked(previous: &UnitResult, again: Vec<Checked>) -> Option<UnitResult> {
+    if !previous.unsettled.is_empty() {
+        return None;
+    }
+    let mut files = previous.files.clone();
+    for (report, exports) in again {
+        let slot = files
+            .iter_mut()
+            .find(|(held, _)| held.file_id == report.file_id)?;
+        let (Some(new), Some(old)) = (&exports, &slot.1) else {
+            return None;
+        };
+        if exports_digest(new) != exports_digest(old) {
+            return None;
+        }
+        *slot = (report, exports);
+    }
+    Some(UnitResult {
+        files,
+        unsettled: Vec::new(),
+    })
+}
+
+// The members of a settled cycle that changed, checked against the settled exports of the rest.
+fn recheck_members(
+    project: &Project<'_>,
+    previous: &UnitResult,
+    changed: &[FileId],
+) -> Option<UnitResult> {
+    if project.cancel.is_some_and(CancelToken::is_cancelled) {
+        return None;
+    }
+    for (report, exports) in &previous.files {
+        if let Some(exports) = exports {
+            project.publish(report.file_id, exports.clone());
+        }
+    }
+    let again = check_files(project, changed);
+    splice_rechecked(previous, again)
+}
+
+// `run_unit`, answered from the kept units of the second pass when its inputs are the ones it
+// was last checked against.
+fn run_unit_kept(
+    project: &Project<'_>,
+    setup: &PassSetup<'_>,
+    unit: usize,
+    dependencies: &[usize],
+    cones: &std::sync::Mutex<Vec<Option<u128>>>,
+) -> UnitResult {
+    let Some(cache) = setup.unit_cache else {
+        return run_unit(project, setup, unit);
+    };
+    let members = unit_files(setup, unit);
+    if members.is_empty() {
+        return UnitResult::default();
+    }
+    let keys = unit_inputs(setup, unit, &members, dependencies, cones)
+        .map(|(context, texts)| (combine_inputs(context, &texts), context, texts));
+    if let Some((inputs, _, _)) = &keys
+        && let Some(done) = cache.get(unit, *inputs)
+    {
+        cache.work(UnitWork::Reused);
+        for (report, unit_exports) in &done.files {
+            if let Some(unit_exports) = unit_exports {
+                project.publish(report.file_id, unit_exports.clone());
+            }
+        }
+        let cone = unit_cone(&done, dependencies, cones);
+        cones.lock().unwrap_or_else(|e| e.into_inner())[unit] = Some(cone);
+        return done;
+    }
+    let cyclic = setup.graph.sccs()[unit]
+        .iter()
+        .any(|id| setup.in_cycle.contains(id));
+    let mut spliced = None;
+    if cyclic
+        && let Some((_, context, texts)) = &keys
+        && let Some(held) = cache.previous(unit)
+        && held.context == *context
+        && held.texts.len() == texts.len()
+    {
+        let changed: Vec<FileId> = members
+            .iter()
+            .zip(texts.iter().zip(&held.texts))
+            .filter(|(_, (now, before))| now != before)
+            .map(|(id, _)| *id)
+            .collect();
+        if !changed.is_empty() {
+            spliced = recheck_members(project, &held.result, &changed);
+        }
+    }
+    let done = match spliced {
+        Some(done) => {
+            cache.work(UnitWork::Rechecked);
+            for (report, unit_exports) in &done.files {
+                if let Some(unit_exports) = unit_exports {
+                    project.publish(report.file_id, unit_exports.clone());
+                }
+            }
+            done
+        }
+        None => {
+            cache.work(UnitWork::Checked);
+            run_unit(project, setup, unit)
+        }
+    };
+    let cone = unit_cone(&done, dependencies, cones);
+    cones.lock().unwrap_or_else(|e| e.into_inner())[unit] = Some(cone);
+    let stopped = setup.cancel.is_some_and(CancelToken::is_cancelled);
+    if let Some((inputs, context, texts)) = keys
+        && !stopped
+        && second_pass_is_keepable(&done)
+    {
+        cache.put(
+            unit,
+            KeptUnit {
+                inputs,
+                context,
+                texts,
+                result: done.clone(),
+            },
+        );
+    }
+    done
 }
 
 fn run_unit(project: &Project<'_>, setup: &PassSetup<'_>, unit: usize) -> UnitResult {
@@ -1268,36 +1652,9 @@ pub fn check_unit_isolated(
     texts: &TextFn,
     cancel: Option<&CancelToken>,
     provider_units: &[(FileId, UnitExports)],
+    base: &ProviderBase,
 ) -> UnitResult {
-    // The same globals `run_project` builds for its first pass: what the ambient providers
-    // declared, and whether a missing package is reportable given a wildcard module they declare.
-    let provider_refs: Vec<(FileId, &UnitExports)> =
-        provider_units.iter().map(|(id, u)| (*id, u)).collect();
-    let mut globals = Globals::build(graph, &provider_refs);
-    let wildcard_declared = provider_refs
-        .iter()
-        .flat_map(|(_, unit)| unit.ambient.iter())
-        .any(|module| module.specifier.contains('*'));
-    globals.bare_reportable = bare_specifiers_are_reportable(graph, wildcard_declared);
-    let project = Project {
-        graph,
-        tables: RwLock::new(Tables::default()),
-        globals,
-        cancel,
-        collect_global_decls: false,
-        texts: Some(texts),
-        sequential: true,
-        registry_applies: Default::default(),
-        #[cfg(feature = "snapshot")]
-        fingerprints: Default::default(),
-        probe: None,
-    };
-    for (id, unit) in provider_units {
-        project.publish(*id, unit.clone());
-    }
-    for (id, exports) in dependencies {
-        project.publish_ref(*id, exports);
-    }
+    let project = isolated_project(graph, base, dependencies, texts, cancel);
     let providers: std::collections::HashSet<FileId> =
         provider_units.iter().map(|(id, _)| *id).collect();
     let setup = PassSetup {
@@ -1309,8 +1666,94 @@ pub fn check_unit_isolated(
         cancel,
         texts: Some(texts),
         memo: None,
+        unit_cache: None,
+        inputs_base: 0,
     };
     run_unit(&project, &setup, unit)
+}
+
+/// The members of a settled cycle that changed, checked again against the exports `previous`
+/// settled on. `None` when that cannot stand in for checking the cycle from the start: a
+/// member's exports are not what they were, or the cycle had not settled.
+#[cfg(feature = "incremental")]
+pub fn check_unit_rechecking(
+    graph: &ModuleGraph,
+    base: &ProviderBase,
+    dependencies: &[(FileId, &UnitExports)],
+    texts: &TextFn,
+    cancel: Option<&CancelToken>,
+    previous: &UnitResult,
+    changed: &[FileId],
+) -> Option<UnitResult> {
+    let project = isolated_project(graph, base, dependencies, texts, cancel);
+    recheck_members(&project, previous, changed)
+}
+
+/// What every unit of one check shares: what the ambient providers declared, as the globals
+/// and as published tables, built once rather than once per unit.
+#[cfg(feature = "incremental")]
+pub struct ProviderBase {
+    globals: Arc<Globals>,
+    tables: Arc<Tables>,
+    // Whether the standard-library registry applies: a property of the graph, so worked out by
+    // the first unit that asks and not again by each.
+    registry_applies: Arc<std::sync::OnceLock<bool>>,
+}
+
+#[cfg(feature = "incremental")]
+impl ProviderBase {
+    pub fn build(graph: &ModuleGraph, provider_units: &[(FileId, UnitExports)]) -> Self {
+        // The same globals `run_project` builds for its first pass.
+        let provider_refs: Vec<(FileId, &UnitExports)> =
+            provider_units.iter().map(|(id, u)| (*id, u)).collect();
+        let mut globals = Globals::build(graph, &provider_refs);
+        let wildcard_declared = provider_refs
+            .iter()
+            .flat_map(|(_, unit)| unit.ambient.iter())
+            .any(|module| module.specifier.contains('*'));
+        globals.bare_reportable = bare_specifiers_are_reportable(graph, wildcard_declared);
+        let mut tables = Tables::default();
+        for (id, unit) in provider_units {
+            tables.add_ref(*id, unit);
+        }
+        ProviderBase {
+            globals: Arc::new(globals),
+            tables: Arc::new(tables),
+            registry_applies: Arc::default(),
+        }
+    }
+}
+
+// The project a unit is checked in on its own: the providers' base, shared with every other
+// unit, and what the unit's dependencies exported.
+#[cfg(feature = "incremental")]
+fn isolated_project<'a>(
+    graph: &'a ModuleGraph,
+    base: &ProviderBase,
+    dependencies: &[(FileId, &UnitExports)],
+    texts: &'a TextFn,
+    cancel: Option<&'a CancelToken>,
+) -> Project<'a> {
+    let project = Project {
+        graph,
+        tables: RwLock::new(Tables {
+            base: Some(Arc::clone(&base.tables)),
+            ..Tables::default()
+        }),
+        globals: Arc::clone(&base.globals),
+        cancel,
+        collect_global_decls: false,
+        texts: Some(texts),
+        sequential: true,
+        registry_applies: Arc::clone(&base.registry_applies),
+        #[cfg(feature = "snapshot")]
+        fingerprints: Default::default(),
+        probe: None,
+    };
+    for (id, exports) in dependencies {
+        project.publish_ref(*id, exports);
+    }
+    project
 }
 
 /// Checks the component that holds `file` as `check_unit_isolated` does, and says what type is
@@ -1343,7 +1786,7 @@ pub fn probe_unit_isolated(
     let project = Project {
         graph,
         tables: RwLock::new(Tables::default()),
-        globals,
+        globals: Arc::new(globals),
         cancel,
         collect_global_decls: false,
         texts: Some(texts),
@@ -1370,6 +1813,8 @@ pub fn probe_unit_isolated(
         cancel,
         texts: Some(texts),
         memo: None,
+        unit_cache: None,
+        inputs_base: 0,
     };
     run_unit(&project, &setup, unit);
     request.take()
@@ -1407,7 +1852,7 @@ pub fn check_provider_isolated(
     let project = Project {
         graph,
         tables: RwLock::new(Tables::default()),
-        globals: Globals::default(),
+        globals: Arc::new(Globals::default()),
         cancel,
         collect_global_decls: true,
         texts: Some(texts),
@@ -1753,11 +2198,65 @@ struct ImportsOf<'a> {
     // thread, so the lock is never contended; it is there because the provider is
     // handed out as a shared reference.
     reads: std::sync::Mutex<Vec<DeclKey>>,
+    // The modules whose export list the unit read whole, the names it looked up, and the
+    // modules whose completeness it asked for; see `ImportReads`.
+    listed: std::sync::Mutex<Vec<FileId>>,
+    named: std::sync::Mutex<Vec<(FileId, String)>>,
+    completeness: std::sync::Mutex<Vec<FileId>>,
+    prefixed: std::sync::Mutex<Vec<(FileId, String)>>,
     // Whether the standard-library registry applies. The answer stats every library file,
     // and the checker asks once per global name, so it is worked out once per file.
 }
 
 impl ImportsOf<'_> {
+    // A name lookup also reads whether the list is whole: the augmentations of a module are
+    // added for a name only when the module's own list could not have held it.
+    fn record_list(&self, target: FileId) {
+        self.listed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(target);
+        self.record_complete(target);
+    }
+
+    fn record_name(&self, target: FileId, name: &str) {
+        self.named
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((target, name.to_owned()));
+        self.record_complete(target);
+    }
+
+    fn record_prefix(&self, target: FileId, prefix: &str) {
+        self.prefixed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((target, prefix.to_owned()));
+        self.record_complete(target);
+    }
+
+    fn record_complete(&self, target: FileId) {
+        self.completeness
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(target);
+    }
+
+    fn take_import_reads(&self) -> ImportReads {
+        fn take<T: Ord>(cell: &std::sync::Mutex<Vec<T>>) -> Vec<T> {
+            let mut taken = std::mem::take(&mut *cell.lock().unwrap_or_else(|e| e.into_inner()));
+            taken.sort();
+            taken.dedup();
+            taken
+        }
+        ImportReads {
+            lists: take(&self.listed),
+            names: take(&self.named),
+            complete: take(&self.completeness),
+            prefixed: take(&self.prefixed),
+        }
+    }
+
     fn take_reads(&self) -> Vec<DeclKey> {
         let mut reads = std::mem::take(&mut *self.reads.lock().unwrap_or_else(|e| e.into_inner()));
         reads.sort();
@@ -1823,8 +2322,7 @@ impl ImportsOf<'_> {
         let base_complete = self
             .project
             .read()
-            .complete
-            .get(&target)
+            .complete(&target)
             .copied()
             .unwrap_or(false);
         extra
@@ -1857,7 +2355,7 @@ impl DeclProvider for ImportsOf<'_> {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(key);
-        if let Some(decl) = self.project.read().decls.get(&key) {
+        if let Some(decl) = self.project.read().decl(&key) {
             return Some(decl.clone());
         }
         self.project.globals.decls.get(&key).cloned()
@@ -1905,11 +2403,11 @@ impl ImportSource for ImportsOf<'_> {
         let Some(target) = self.target(specifier) else {
             return Vec::new();
         };
+        self.record_list(target);
         let mut names = self
             .project
             .read()
-            .names
-            .get(&target)
+            .names(&target)
             .into_iter()
             .flat_map(|names| names.iter())
             .filter(|(name, _)| name != "default")
@@ -1919,6 +2417,34 @@ impl ImportSource for ImportsOf<'_> {
         names
             .into_iter()
             .filter(|(name, _)| name != "default")
+            .collect()
+    }
+
+    fn export_prefixed(&self, specifier: &str, prefix: &str) -> Vec<(String, DeclKey)> {
+        if let Some((names, _)) = self.project.globals.ambient_entry(specifier) {
+            return names
+                .iter()
+                .filter(|(name, _)| name != "default" && name.starts_with(prefix))
+                .cloned()
+                .collect();
+        }
+        let Some(target) = self.target(specifier) else {
+            return Vec::new();
+        };
+        self.record_prefix(target, prefix);
+        let mut names = self
+            .project
+            .read()
+            .names(&target)
+            .into_iter()
+            .flat_map(|names| names.iter())
+            .filter(|(name, _)| name != "default" && name.starts_with(prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.append_augmentations(target, &mut names);
+        names
+            .into_iter()
+            .filter(|(name, _)| name != "default" && name.starts_with(prefix))
             .collect()
     }
 
@@ -1946,7 +2472,8 @@ impl ImportSource for ImportsOf<'_> {
         if dynamic_only {
             return ModuleExports::Unknown;
         }
-        match self.project.read().complete.get(&target) {
+        self.record_complete(target);
+        match self.project.read().complete(&target) {
             Some(complete) => ModuleExports::Known {
                 complete: *complete
                     && globals
@@ -1969,11 +2496,11 @@ impl ImportSource for ImportsOf<'_> {
         let Some(target) = self.target(specifier) else {
             return Vec::new();
         };
+        self.record_name(target, name);
         let mut names = self
             .project
             .read()
-            .names
-            .get(&target)
+            .names(&target)
             .into_iter()
             .flat_map(|names| names.iter())
             .filter(|(exported, _)| exported == name)
@@ -2094,6 +2621,7 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
     }
     let mut unit_exports = None;
     let mut reads = Vec::new();
+    let mut import_reads = None;
     let mut incomplete_reasons = Vec::new();
     let outcome = match graph.files().path(id) {
         None => FileOutcome::ReadFailed(format!("no path recorded for file {}", id.index())),
@@ -2108,6 +2636,10 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                     project,
                     from: id,
                     reads: std::sync::Mutex::new(Vec::new()),
+                    listed: std::sync::Mutex::new(Vec::new()),
+                    named: std::sync::Mutex::new(Vec::new()),
+                    completeness: std::sync::Mutex::new(Vec::new()),
+                    prefixed: std::sync::Mutex::new(Vec::new()),
                 };
                 #[cfg(feature = "snapshot")]
                 let cache_key = dependency_cache_key(project, id, &name, &source);
@@ -2125,6 +2657,10 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                             project,
                             from: id,
                             reads: std::sync::Mutex::new(Vec::new()),
+                            listed: std::sync::Mutex::new(Vec::new()),
+                            named: std::sync::Mutex::new(Vec::new()),
+                            completeness: std::sync::Mutex::new(Vec::new()),
+                            prefixed: std::sync::Mutex::new(Vec::new()),
                         },
                         Some(&project.fingerprints),
                     )
@@ -2174,6 +2710,11 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                     Some((output, keys)) => (Ok(output), Some(keys)),
                     None => (worker.check_unit(&ctx), None),
                 };
+                import_reads = if from_cache_reads.is_some() {
+                    None
+                } else {
+                    Some(imports.take_import_reads())
+                };
                 reads = match from_cache_reads {
                     Some(keys) => keys,
                     None => imports.take_reads(),
@@ -2220,6 +2761,7 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
             file_id: id,
             outcome,
             reads,
+            import_reads,
             incomplete_reasons,
         },
         unit_exports,

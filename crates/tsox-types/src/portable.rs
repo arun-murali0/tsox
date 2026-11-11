@@ -663,6 +663,17 @@ pub trait ImportSource: DeclProvider {
         Vec::new()
     }
 
+    /// The names of the module behind `specifier` that start with `prefix`, with the
+    /// declaration under each, in the order `export_all` gives them. A reader that wants the
+    /// members of one namespace asks for them here, so a driver can tell it did not read the
+    /// rest of the list. The default filters `export_all`.
+    fn export_prefixed(&self, specifier: &str, prefix: &str) -> Vec<(String, DeclKey)> {
+        self.export_all(specifier)
+            .into_iter()
+            .filter(|(name, _)| name.starts_with(prefix))
+            .collect()
+    }
+
     /// Global UMD namespace aliases declared by the project's modules, together with
     /// their public members and (for `export =`) the module's whole exported value.
     /// Implementations return an owned snapshot so an importing unit never borrows project

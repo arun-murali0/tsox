@@ -844,7 +844,7 @@ fn bind_import_types<'ast>(
             bind_key_as(ctx, source, key, &name, None, true);
         }
         // Types written inside `namespace head { ... }`, for `import("x").head.Inner`.
-        for (name, key) in source.export_all(specifier) {
+        for (name, key) in source.export_prefixed(specifier, &prefix) {
             if let Some(rest) = name.strip_prefix(&prefix) {
                 let qualified = format!("import({specifier:?}).{head}.{rest}");
                 bind_key_as(ctx, source, key, &qualified, None, true);
@@ -869,7 +869,7 @@ fn bind_name<'ast>(
     }
     // `import { N }` also brings the types written inside `namespace N`, so `N.I` resolves.
     let prefix = format!("{imported}.");
-    for (name, key) in source.export_all(specifier) {
+    for (name, key) in source.export_prefixed(specifier, &prefix) {
         if let Some(rest) = name.strip_prefix(&prefix) {
             let qualified = format!("{}.{rest}", local.name);
             bind_key_as(ctx, source, key, &qualified, None, type_only);

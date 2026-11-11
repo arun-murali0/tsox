@@ -41,8 +41,9 @@ use salsa::Setter;
 use super::{Database, IncrementalDb, SourceFile, SourceKind};
 use crate::keys::DeclKey;
 use crate::module_resolution::check::{
-    Checked, RunOptions, UnitExports, UnitMemo, UnitResult, check_provider_isolated,
-    check_unit_isolated, probe_unit_isolated, provider_ids, run_project, unit_environment,
+    Checked, ImportReads, KeptUnit, ProviderBase, RunOptions, UnitCache, UnitExports, UnitMemo,
+    UnitResult, UnitWork, check_provider_isolated, check_unit_isolated, check_unit_rechecking,
+    exports_digest, probe_unit_isolated, provider_ids, run_project, unit_environment,
 };
 use crate::module_resolution::{
     FileState, ModuleGraph, ModuleRequestKind, ModuleResolver, ProjectConfig, ProjectReport,
@@ -440,6 +441,9 @@ pub fn module_header(db: &dyn IncrementalDb, file: SourceFile) -> Arc<ModuleHead
     })
 }
 
+// The literal is the capacity of a database nobody sized yet. `IncrementalProject` sets the real
+// one from the number of units (`unit_cache_capacity_for`), so a project past this many units
+// does not evict results it needs again on the next check.
 #[salsa::tracked(returns(clone), lru = 4096)]
 pub fn check_scc<'db>(
     db: &'db dyn IncrementalDb,
@@ -513,15 +517,69 @@ pub fn check_scc<'db>(
         providers.env, env,
         "a unit is keyed by the providers it reads"
     );
-    let result = check_unit_isolated(
-        &bundle.graph,
-        unit,
-        &bundle.in_cycle,
-        &refs,
-        &lookup,
-        cancel.as_ref(),
-        &providers.units,
-    );
+    // Problem: an edit to one file of a cycle checked every file of it again, and a cycle of
+    // hundreds took seconds.
+    // Picked: a cycle that settled keeps its result. When only the text of some members changed
+    // and what the unit reads from outside did not, those members are checked once against the
+    // settled exports of the rest; if their exports are what they were, the settled result
+    // stands with their new reports. Otherwise the cycle is checked from the start, as before.
+    // Cost: the settled result of each cycle is kept, and a cycle whose exports change pays one
+    // check of the changed files on top.
+    let cyclic = !db.cycle_recheck_off() && members.iter().any(|id| bundle.in_cycle.contains(id));
+    let unit_key = bundle.sccs[unit].key;
+    let texts_now: Vec<u128> = if cyclic {
+        members
+            .iter()
+            .map(|id| lookup(*id).map_or(0, |text| xxhash_rust::xxh3::xxh3_128(text.as_bytes())))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let dependencies_now = if cyclic { dependency_digest(&refs) } else { 0 };
+    let mut rechecked = None;
+    if cyclic
+        && let Some(held) = db
+            .settled_cycle(unit_key)
+            .and_then(|held| held.downcast::<SettledCycle>().ok())
+        && held.env == env
+        && held.members[..] == members[..]
+        && held.dependencies == dependencies_now
+        && held.texts.len() == texts_now.len()
+    {
+        let changed: Vec<FileId> = members
+            .iter()
+            .zip(texts_now.iter().zip(&held.texts))
+            .filter(|(_, (now, before))| now != before)
+            .map(|(id, _)| *id)
+            .collect();
+        if !changed.is_empty() {
+            rechecked = check_unit_rechecking(
+                &bundle.graph,
+                providers.base(&bundle.graph),
+                &refs,
+                &lookup,
+                cancel.as_ref(),
+                &held.output.result,
+                &changed,
+            );
+            if rechecked.is_some() {
+                db.note(&format!("cycle_rechecked:{}", changed.len()));
+            }
+        }
+    }
+    let result = match rechecked {
+        Some(result) => result,
+        None => check_unit_isolated(
+            &bundle.graph,
+            unit,
+            &bundle.in_cycle,
+            &refs,
+            &lookup,
+            cancel.as_ref(),
+            &providers.units,
+            providers.base(&bundle.graph),
+        ),
+    };
     // A unit stopped by the caller has a partial answer. Unwind with Salsa's own cancellation
     // payload so the query stores nothing; the next check runs the unit again.
     if cancel
@@ -531,6 +589,18 @@ pub fn check_scc<'db>(
         std::panic::resume_unwind(Box::new(salsa::Cancelled::Local));
     }
     let output = Arc::new(SccOutput::new(result));
+    if cyclic {
+        let settled = output.result.unsettled.is_empty().then(|| {
+            Arc::new(SettledCycle {
+                env,
+                members: members.to_vec(),
+                texts: texts_now,
+                dependencies: dependencies_now,
+                output: Arc::clone(&output),
+            }) as Arc<dyn std::any::Any + Send + Sync>
+        });
+        db.keep_settled_cycle(unit_key, settled);
+    }
 
     // The owners of the declarations this unit exports are filled in by the driver (`Memo`),
     // for a unit answered from its memo as much as for one that ran.
@@ -555,22 +625,105 @@ pub fn check_scc<'db>(
             let _ = decl_shape(db, project, DeclRef::new(db, key, env));
         }
     }
-    for &direct in &bundle.sccs[unit].direct {
-        for id in &bundle.graph.sccs()[direct] {
-            let _ = export_names(
-                db,
-                project,
-                FileRef::new(db, bundle.file_key[id.index() as usize], env),
-            );
+    register_import_reads(db, project, &bundle, unit, env, &output);
+    output
+}
+
+// A cycle that settled, with what it was checked against: the unit's provider key, its members
+// and the digest of each one's text, and the digest of what its dependencies exported.
+struct SettledCycle {
+    env: u64,
+    members: Vec<FileId>,
+    texts: Vec<u128>,
+    dependencies: u128,
+    output: Arc<SccOutput>,
+}
+
+fn dependency_digest(refs: &[(FileId, &UnitExports)]) -> u128 {
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    for (id, exports) in refs {
+        hasher.update(&id.index().to_le_bytes());
+        hasher.update(&exports_digest(exports).to_le_bytes());
+    }
+    hasher.digest128()
+}
+
+// Problem: a unit that depended on the export list of every module it imports was run again
+// whenever one of them gained an export, though it had asked for one name.
+// Picked: depend on what the check asked of each import: a name looked up, whether the list is
+// whole, or the whole list. A result whose questions are not known (replayed from a stored one)
+// depends on the list of every direct import, as before.
+// Cost: a lookup is one more small query per module and name; the units that read the same
+// name share it.
+fn register_import_reads(
+    db: &dyn IncrementalDb,
+    project: ProjectInput,
+    bundle: &Bundle,
+    unit: usize,
+    env: u64,
+    output: &SccOutput,
+) {
+    let file_ref = |id: FileId| FileRef::new(db, bundle.file_key[id.index() as usize], env);
+    let known = output
+        .result
+        .files
+        .iter()
+        .all(|(report, _)| report.import_reads.is_some());
+    if !known {
+        for &direct in &bundle.sccs[unit].direct {
+            for id in &bundle.graph.sccs()[direct] {
+                let _ = export_names(db, project, file_ref(*id));
+            }
+        }
+        return;
+    }
+    let mut merged = ImportReads::default();
+    for (report, _) in &output.result.files {
+        if let Some(reads) = &report.import_reads {
+            merged.lists.extend(reads.lists.iter().copied());
+            merged.names.extend(reads.names.iter().cloned());
+            merged.complete.extend(reads.complete.iter().copied());
+            merged.prefixed.extend(reads.prefixed.iter().cloned());
         }
     }
-    output
+    merged.lists.sort();
+    merged.lists.dedup();
+    merged.names.sort();
+    merged.names.dedup();
+    merged.complete.sort();
+    merged.complete.dedup();
+    merged.prefixed.sort();
+    merged.prefixed.dedup();
+    // A module of this unit is not a dependency of it, and asking its query would make the
+    // unit wait for itself.
+    let outside = |id: &FileId| {
+        bundle
+            .file_scc
+            .get(id.index() as usize)
+            .is_some_and(|owner| *owner != unit)
+    };
+    for id in merged.lists.iter().filter(|id| outside(id)) {
+        let _ = export_names(db, project, file_ref(*id));
+    }
+    for (id, name) in merged.names.iter().filter(|(id, _)| outside(id)) {
+        let key = bundle.file_key[id.index() as usize];
+        let _ = export_lookup(db, project, NameRef::new(db, key, name.clone(), env));
+    }
+    for (id, prefix) in merged.prefixed.iter().filter(|(id, _)| outside(id)) {
+        let key = bundle.file_key[id.index() as usize];
+        let _ = export_prefix(db, project, NameRef::new(db, key, prefix.clone(), env));
+    }
+    for id in merged.complete.iter().filter(|id| outside(id)) {
+        let _ = export_complete(db, project, file_ref(*id));
+    }
 }
 
 /// What the ambient providers declared in one check, with a digest of it.
 pub struct ProviderSet {
     env: u64,
     units: Vec<(FileId, UnitExports)>,
+    // The globals and tables of the providers, built by the first unit that asks.
+    base: std::sync::OnceLock<ProviderBase>,
 }
 
 impl ProviderSet {
@@ -578,7 +731,13 @@ impl ProviderSet {
         Self {
             env: 0,
             units: Vec::new(),
+            base: std::sync::OnceLock::new(),
         }
+    }
+
+    fn base(&self, graph: &ModuleGraph) -> &ProviderBase {
+        self.base
+            .get_or_init(|| ProviderBase::build(graph, &self.units))
     }
 
     fn new(graph: &ModuleGraph, units: Vec<(FileId, UnitExports)>) -> Self {
@@ -597,7 +756,11 @@ impl ProviderSet {
             // Never 0, which is the key of "no providers".
             xxhash_rust::xxh3::xxh3_64(text.as_bytes()) | 1
         };
-        Self { env, units }
+        Self {
+            env,
+            units,
+            base: std::sync::OnceLock::new(),
+        }
     }
 }
 
@@ -736,6 +899,74 @@ pub fn export_names<'db>(
     empty()
 }
 
+/// One name in one module, by the file's key.
+#[salsa::interned(debug)]
+pub struct NameRef<'db> {
+    #[returns(copy)]
+    pub key: u64,
+    #[returns(ref)]
+    pub name: String,
+    #[returns(copy)]
+    pub env: u64,
+}
+
+/// The declarations a module exports under one name. Backdated when a module gains or loses
+/// other exports, so a reader of this name is left alone.
+#[salsa::tracked(returns(clone))]
+pub fn export_lookup<'db>(
+    db: &'db dyn IncrementalDb,
+    project: ProjectInput,
+    name: NameRef<'db>,
+) -> Arc<Vec<DeclKey>> {
+    db.note("export_lookup");
+    let entry = export_names(db, project, FileRef::new(db, name.key(db), name.env(db)));
+    let wanted = name.name(db);
+    Arc::new(
+        entry
+            .names
+            .iter()
+            .filter(|(exported, _)| exported == wanted)
+            .map(|(_, key)| *key)
+            .collect(),
+    )
+}
+
+/// The names of a module that start with a prefix, with their declarations. Backdated when the
+/// module gains or loses exports outside the prefix.
+#[salsa::tracked(returns(clone))]
+pub fn export_prefix<'db>(
+    db: &'db dyn IncrementalDb,
+    project: ProjectInput,
+    prefix: NameRef<'db>,
+) -> Arc<Vec<(String, DeclKey)>> {
+    db.note("export_prefix");
+    let entry = export_names(
+        db,
+        project,
+        FileRef::new(db, prefix.key(db), prefix.env(db)),
+    );
+    let wanted = prefix.name(db);
+    Arc::new(
+        entry
+            .names
+            .iter()
+            .filter(|(exported, _)| exported.starts_with(wanted.as_str()))
+            .cloned()
+            .collect(),
+    )
+}
+
+/// Whether a module's export list is whole, apart from the list itself.
+#[salsa::tracked]
+pub fn export_complete<'db>(
+    db: &'db dyn IncrementalDb,
+    project: ProjectInput,
+    file: FileRef<'db>,
+) -> bool {
+    db.note("export_complete");
+    export_names(db, project, file).complete
+}
+
 #[salsa::tracked(returns(clone))]
 pub fn file_report<'db>(
     db: &'db dyn IncrementalDb,
@@ -784,6 +1015,8 @@ struct Memo<'a> {
     fell_through: std::sync::atomic::AtomicBool,
     // The second pass's last result, kept across checks.
     second: &'a Mutex<Option<(u128, UnitResult)>>,
+    // The second pass's units, kept across checks.
+    second_units: &'a SecondUnits,
     // 0: no second pass asked, 1: answered from the kept result, 2: it ran.
     second_state: std::sync::atomic::AtomicU8,
 }
@@ -844,6 +1077,10 @@ impl UnitMemo for Memo<'_> {
             hasher.update(&digest.to_le_bytes());
         }
         Some(hasher.digest128())
+    }
+
+    fn unit_cache(&self) -> Option<&dyn UnitCache> {
+        Some(self.second_units)
     }
 
     fn second_pass(&self, fingerprint: u128) -> Option<UnitResult> {
@@ -937,6 +1174,64 @@ pub struct CheckStats {
     /// What the second pass (the one that supplies globals, augmentations and ambient
     /// modules) did. It is work the unit counts do not show.
     pub second_pass: SecondPass,
+    /// Units of the second pass answered from the units kept by an earlier one, and units it
+    /// checked. Both are 0 when the second pass was not needed or was answered whole.
+    pub second_units_reused: usize,
+    pub second_units_checked: usize,
+    /// Of `second_units_checked`, the cycles of which only the files that changed were checked.
+    pub second_units_rechecked: usize,
+}
+
+/// The units of the second pass kept across checks, with the digest each was checked against.
+#[derive(Default)]
+struct SecondUnits {
+    kept: Mutex<HashMap<usize, KeptUnit>>,
+    // Set when a cycle must always be checked from the start.
+    recheck_off: std::sync::atomic::AtomicBool,
+    reused: std::sync::atomic::AtomicUsize,
+    checked: std::sync::atomic::AtomicUsize,
+    rechecked: std::sync::atomic::AtomicUsize,
+}
+
+impl UnitCache for SecondUnits {
+    fn get(&self, unit: usize, inputs: u128) -> Option<UnitResult> {
+        let kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+        let held = kept.get(&unit)?;
+        (held.inputs == inputs).then(|| held.result.clone())
+    }
+
+    fn put(&self, unit: usize, kept: KeptUnit) {
+        self.kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(unit, kept);
+    }
+
+    fn previous(&self, unit: usize) -> Option<KeptUnit> {
+        if self.recheck_off.load(Ordering::SeqCst) {
+            return None;
+        }
+        self.kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&unit)
+            .cloned()
+    }
+
+    fn work(&self, kind: UnitWork) {
+        match kind {
+            UnitWork::Reused => {
+                self.reused.fetch_add(1, Ordering::SeqCst);
+            }
+            UnitWork::Rechecked => {
+                self.rechecked.fetch_add(1, Ordering::SeqCst);
+                self.checked.fetch_add(1, Ordering::SeqCst);
+            }
+            UnitWork::Checked => {
+                self.checked.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
 }
 
 /// What the second pass did in one check.
@@ -983,6 +1278,99 @@ pub struct IncrementalProject {
     last_digest: Option<u128>,
     // The second pass's result and the fingerprint of what it read; see `UnitMemo`.
     second_cache: Mutex<Option<(u128, UnitResult)>>,
+    second_units: SecondUnits,
+    // The unit cache limit in force, and whether the caller chose it. A chosen limit is kept
+    // across a rebuild; otherwise each graph sets its own.
+    cache_capacity: usize,
+    cache_pinned: bool,
+    // The directories the file set was walked from, for `entries_changed`.
+    walk: Mutex<WalkWatch>,
+}
+
+// Problem: telling a watcher whether a file was added or removed walked the whole project, and
+// on a project of ten thousand files that took seconds, on every tick, with the processor busy
+// between edits.
+// Picked: the directories the walk went through are kept with their modification times. A file
+// is added to or removed from a directory only by changing that directory's time, so the walk
+// is repeated when one of them moved, and in any case every `BACKSTOP`.
+// Cost: a directory that changes without moving its time, or a file selected from outside the
+// project's directory, is seen after the backstop instead of at once.
+struct WalkWatch {
+    root: Option<PathBuf>,
+    dirs: Vec<(PathBuf, Option<std::time::SystemTime>)>,
+    walked: std::time::Instant,
+    // A directory changed so shortly before the scan that a change made right after it could
+    // leave the same time. The walk is then due until a scan finds the directories older.
+    racy: bool,
+    // What the last walk of the file set took; the backstop is a multiple of it, so a project
+    // that is slow to walk is walked rarely.
+    cost: std::time::Duration,
+}
+
+impl WalkWatch {
+    const BACKSTOP: std::time::Duration = std::time::Duration::from_secs(30);
+    const RACY: std::time::Duration = std::time::Duration::from_secs(2);
+
+    fn new(config: Option<&ProjectConfig>) -> Self {
+        let root = config.and_then(|config| config.config_file().parent().map(Path::to_path_buf));
+        Self::at(root, std::time::Duration::ZERO)
+    }
+
+    fn at(root: Option<PathBuf>, cost: std::time::Duration) -> Self {
+        let dirs = root.as_deref().map(scan_directories).unwrap_or_default();
+        let now = std::time::SystemTime::now();
+        let racy = dirs.iter().any(|(_, stamp)| {
+            stamp.is_none_or(|stamp| now.duration_since(stamp).is_ok_and(|age| age < Self::RACY))
+        });
+        WalkWatch {
+            root,
+            dirs,
+            walked: std::time::Instant::now(),
+            racy,
+            cost,
+        }
+    }
+
+    fn due(&self) -> bool {
+        self.walked.elapsed() >= Self::BACKSTOP.max(self.cost * 20)
+            || self.racy
+            || self.dirs.iter().any(|(dir, stamp)| {
+                std::fs::metadata(dir).and_then(|m| m.modified()).ok() != *stamp
+            })
+    }
+}
+
+fn scan_directories(root: &Path) -> Vec<(PathBuf, Option<std::time::SystemTime>)> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let stamp = std::fs::metadata(&dir).and_then(|m| m.modified()).ok();
+        found.push((dir.clone(), stamp));
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() && !matches!(entry.file_name().to_str(), Some("node_modules" | ".git"))
+            {
+                pending.push(entry.path());
+            }
+        }
+    }
+    found
+}
+
+// The least a unit cache holds. It is the capacity `check_scc` is declared with, and a small
+// project never needs more.
+const UNIT_CACHE_FLOOR: usize = 4096;
+
+// How many unit results to keep for a project of `units` units. Every unit must stay memoized,
+// or each check re-runs the evicted ones and a watcher pays for the whole project twice a second.
+// A quarter more covers a unit that runs under two provider keys.
+fn unit_cache_capacity_for(units: usize) -> usize {
+    units.saturating_add(units / 4).max(UNIT_CACHE_FLOOR)
 }
 
 impl IncrementalProject {
@@ -1002,9 +1390,12 @@ impl IncrementalProject {
     fn build(config: Option<ProjectConfig>, entries: Vec<PathBuf>) -> Result<Self, String> {
         let mut db = Database::new();
         let no_buffers = BTreeMap::new();
+        let walk = WalkWatch::new(config.as_ref());
         let (graph, entries) = Self::graph_for(config.as_ref(), &entries, &no_buffers)?;
         let (bundle, states, headers, unreadable, missing) =
             Self::bundle_for(&mut db, graph, &no_buffers)?;
+        let cache_capacity = unit_cache_capacity_for(bundle.sccs.len());
+        check_scc::set_lru_capacity(&mut db, cache_capacity);
         let bundle = Arc::new(bundle);
         db.set_current_project(Arc::clone(&bundle) as Arc<dyn std::any::Any + Send + Sync>);
         let project = ProjectInput::new(&db, bundle, 0);
@@ -1028,6 +1419,10 @@ impl IncrementalProject {
             checked_epoch: 0,
             last_digest: None,
             second_cache: Mutex::new(None),
+            second_units: SecondUnits::default(),
+            cache_capacity,
+            cache_pinned: false,
+            walk: Mutex::new(walk),
         })
     }
 
@@ -1214,6 +1609,10 @@ impl IncrementalProject {
         let Some(config) = &self.config else {
             return false;
         };
+        if !self.walk.lock().unwrap_or_else(|e| e.into_inner()).due() {
+            return false;
+        }
+        let started = std::time::Instant::now();
         let resolver = ModuleResolver::with_tsconfig(config.config_file())
             .with_node_next(config.uses_node_next())
             .with_no_lib(config.effective_compiler_options().no_lib);
@@ -1225,7 +1624,37 @@ impl IncrementalProject {
         now.sort();
         let mut before = self.entries.clone();
         before.sort();
-        now != before
+        let changed = now != before;
+        if !changed {
+            let mut walk = self.walk.lock().unwrap_or_else(|e| e.into_inner());
+            *walk = WalkWatch::at(walk.root.clone(), started.elapsed());
+        }
+        changed
+    }
+
+    /// Whether a file of the graph was edited, or a buffer was set or closed, since the last
+    /// refresh. A stat of each file, so a watcher can ask on every tick and check only when it
+    /// is told to.
+    pub fn files_changed(&self) -> bool {
+        let bundle = Arc::clone(self.project.bundle(&self.db));
+        if bundle.graph.config_changed() || !self.dirty.is_empty() {
+            return true;
+        }
+        (0..bundle.graph.len()).any(|index| {
+            let Some(path) = bundle.graph.files().path(FileId::new(index as u32)) else {
+                return false;
+            };
+            if self.buffers.contains_key(path) {
+                return false;
+            }
+            if self.missing.contains(path) {
+                return path.exists();
+            }
+            !self
+                .states
+                .get(path)
+                .is_some_and(|state| state.is_unchanged(path))
+        })
     }
 
     /// Builds the graph again from disk and moves the epoch. For a watcher that saw a file
@@ -1237,6 +1666,7 @@ impl IncrementalProject {
         }
         let (graph, entries) = Self::graph_for(self.config.as_ref(), &self.entries, &self.buffers)?;
         self.entries = entries;
+        self.walk = Mutex::new(WalkWatch::new(self.config.as_ref()));
         let (bundle, states, headers, unreadable, missing) =
             Self::bundle_for(&mut self.db, graph, &self.buffers)?;
         self.dirty.clear();
@@ -1245,6 +1675,17 @@ impl IncrementalProject {
         self.unreadable = unreadable;
         self.missing = missing;
         self.epoch += 1;
+        // Unit numbers belong to one graph.
+        self.db.forget_settled_cycles();
+        self.second_units
+            .kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        if !self.cache_pinned {
+            self.cache_capacity = unit_cache_capacity_for(bundle.sccs.len());
+            check_scc::set_lru_capacity(&mut self.db, self.cache_capacity);
+        }
         let bundle = Arc::new(bundle);
         self.db
             .set_current_project(Arc::clone(&bundle) as Arc<dyn std::any::Any + Send + Sync>);
@@ -1283,6 +1724,9 @@ impl IncrementalProject {
             .map(|index| bundle.text(&self.db, FileId::new(index as u32)))
             .collect();
         let texts = move |id: FileId| snapshot.get(id.index() as usize).cloned().flatten();
+        self.second_units.reused.store(0, Ordering::SeqCst);
+        self.second_units.checked.store(0, Ordering::SeqCst);
+        self.second_units.rechecked.store(0, Ordering::SeqCst);
         let memo = Memo {
             base: Mutex::new(self.db.clone()),
             pool: Mutex::new(Vec::new()),
@@ -1294,6 +1738,7 @@ impl IncrementalProject {
             epoch: self.epoch,
             fell_through: std::sync::atomic::AtomicBool::new(false),
             second: &self.second_cache,
+            second_units: &self.second_units,
             second_state: std::sync::atomic::AtomicU8::new(0),
         };
         self.db.set_cancel_token(Some(token.clone()));
@@ -1362,6 +1807,9 @@ impl IncrementalProject {
             ambient_providers: providers,
             providers_checked,
             second_pass,
+            second_units_reused: self.second_units.reused.swap(0, Ordering::SeqCst),
+            second_units_checked: self.second_units.checked.swap(0, Ordering::SeqCst),
+            second_units_rechecked: self.second_units.rechecked.swap(0, Ordering::SeqCst),
         };
         self.checked_epoch = self.epoch;
         self.last_digest = Some(digest);
@@ -1475,9 +1923,32 @@ impl IncrementalProject {
         )
     }
 
+    /// Turns off checking a settled cycle by its changed files alone: with `enabled` false every
+    /// edit to a cycle checks the whole cycle from the start, as a cold check does. The result
+    /// of a changed file's check is only the same as a cold one when the cycle has a single
+    /// settled state, which circular unannotated inference may not.
+    pub fn set_cycle_recheck(&mut self, enabled: bool) {
+        self.db.set_cycle_recheck_off(!enabled);
+        self.second_units
+            .recheck_off
+            .store(!enabled, Ordering::SeqCst);
+        if !enabled {
+            self.db.forget_settled_cycles();
+        }
+    }
+
     /// Bounds how many unit outputs Salsa keeps memoized; the rest are recomputed when asked.
+    /// Without a call to this the limit follows the size of the project, and a limit set here
+    /// is kept when the graph is rebuilt.
     pub fn set_unit_cache_capacity(&mut self, capacity: usize) {
+        self.cache_capacity = capacity;
+        self.cache_pinned = true;
         check_scc::set_lru_capacity(&mut self.db, capacity);
+    }
+
+    /// How many unit outputs are kept memoized now.
+    pub fn unit_cache_capacity(&self) -> usize {
+        self.cache_capacity
     }
 
     /// Lets Salsa drop the memos it chose to evict under the LRU limit.
