@@ -301,7 +301,64 @@ pub(super) fn infer_binary_expression_type(
             }
         }
 
+        // Shifts and bitwise operators hold their operands to the same rule the
+        // arithmetic group above does: tsc runs them through the same check (the same
+        // TS2362 and TS2363), and they produce a number.
+        BinaryOperator::ShiftLeft
+        | BinaryOperator::ShiftRight
+        | BinaryOperator::ShiftRightZeroFill
+        | BinaryOperator::BitwiseAnd
+        | BinaryOperator::BitwiseOR
+        | BinaryOperator::BitwiseXOR => {
+            // An operand that is already an error makes the result one too, so one
+            // mistake reports once, as the Addition arm does.
+            let error_ty = ctx.arena.error();
+            if left == error_ty || right == error_ty {
+                return error_ty;
+            }
+            // tsc has its own code for an `unknown` operand (TS18046), which this
+            // checker does not model; such an operand stays silent rather than being
+            // reported under the arithmetic code.
+            if may_be_unknown(ctx, left) || may_be_unknown(ctx, right) {
+                return ctx.arena.number();
+            }
+            let number_ty = ctx.arena.number();
+            let left_ok = ctx.semantic().is_assignable(left, number_ty);
+            let right_ok = ctx.semantic().is_assignable(right, number_ty);
+            if left_ok && right_ok {
+                ctx.arena.number()
+            } else {
+                // One diagnostic per bad side, as tsc reports it (TS2362 and
+                // TS2363). Both land on the whole expression's span, since
+                // only that is available here.
+                if !left_ok {
+                    ctx.error(
+                        crate::diagnostic_messages::messages::arithmetic_left_operand_invalid(),
+                        span,
+                    );
+                }
+                if !right_ok {
+                    ctx.error(
+                        crate::diagnostic_messages::messages::arithmetic_right_operand_invalid(),
+                        span,
+                    );
+                }
+                ctx.arena.error()
+            }
+        }
+
         _ => ctx.arena.error(),
+    }
+}
+
+// Whether `unknown` is the type or one of a union's members.
+fn may_be_unknown(ctx: &CheckContext<'_, '_>, id: TypeId) -> bool {
+    match ctx.arena.get(id) {
+        Type::Unknown => true,
+        Type::Union(members) => members
+            .iter()
+            .any(|&member| matches!(ctx.arena.get(member), Type::Unknown)),
+        _ => false,
     }
 }
 
