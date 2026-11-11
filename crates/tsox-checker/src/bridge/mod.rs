@@ -252,7 +252,15 @@ fn bodies_phase<'ast>(
 ) {
     let scoping = semantic.scoping();
     unreachable_code::analyze_flow(program, scoping, ctx);
-    ctx.shadow = flow_shadow::FlowShadow::new(program, semantic).map(Box::new);
+    // Declaration files hold nothing a read could be narrowed in.
+    ctx.shadow = if ctx.file_name.ends_with(".d.ts")
+        || ctx.file_name.ends_with(".d.mts")
+        || ctx.file_name.ends_with(".d.cts")
+    {
+        None
+    } else {
+        flow_shadow::FlowShadow::new(program, semantic).map(Box::new)
+    };
     statements::check_top_level(program, scoping, ctx);
     if let Some(shadow) = ctx.shadow.take() {
         shadow.report(ctx, scoping);

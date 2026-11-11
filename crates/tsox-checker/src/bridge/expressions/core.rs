@@ -108,14 +108,22 @@ pub fn resolve_identifier_type(
     };
     let result = result.map(|r| super::super::expando::apply(symbol_id, r, ctx));
     if let Some(result) = result {
-        if let Some(shadow) = ctx.shadow.as_mut() {
-            shadow.note_read(
+        // The backward flow walk, when it is on, answers the read if it can; otherwise this is
+        // the forward overlay's answer, noted for the comparison in shadow mode.
+        if let Some(mut flow) = ctx.shadow.take() {
+            let walked = flow.on_read(
+                ctx,
+                scoping,
                 ident.node_id.get().index() as u32,
                 symbol_id,
                 &ident.name,
                 ident.span(),
                 result,
             );
+            ctx.shadow = Some(flow);
+            if let Some(walked) = walked {
+                return walked;
+            }
         }
         return result;
     }
