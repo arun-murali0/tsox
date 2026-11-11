@@ -714,6 +714,92 @@ pub mod messages {
         )
     }
 
+    // tsc points a few well-known global names at the package that declares them.
+    pub fn unresolved_identifier_hint(name: &str) -> Option<DiagnosticMessage> {
+        const NODE: &[&str] = &[
+            "require",
+            "module",
+            "exports",
+            "process",
+            "Buffer",
+            "__filename",
+            "__dirname",
+            "fs",
+            "path",
+            "url",
+            "events",
+            "http",
+            "https",
+            "os",
+            "util",
+            "crypto",
+            "stream",
+            "child_process",
+            "assert",
+            "zlib",
+            "net",
+            "readline",
+            "cluster",
+            "dns",
+            "vm",
+            "querystring",
+            "buffer",
+            "tty",
+            "worker_threads",
+        ];
+        let node_scheme = name.starts_with("node:");
+        if NODE.contains(&name) || node_scheme {
+            return Some(DiagnosticMessage::new(
+                DiagnosticCode::MissingNodeTypes,
+                format!(
+                    "Cannot find name '{name}'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig."
+                ),
+            ));
+        }
+        match name {
+            "describe" | "suite" | "it" | "test" => Some(DiagnosticMessage::new(
+                DiagnosticCode::MissingTestRunnerTypes,
+                format!(
+                    "Cannot find name '{name}'. Do you need to install type definitions for a test runner? Try `npm i --save-dev @types/jest` or `npm i --save-dev @types/mocha` and then add 'jest' or 'mocha' to the types field in your tsconfig."
+                ),
+            )),
+            "$" | "jQuery" => Some(DiagnosticMessage::new(
+                DiagnosticCode::MissingJqueryTypes,
+                format!(
+                    "Cannot find name '{name}'. Do you need to install type definitions for jQuery? Try `npm i --save-dev @types/jquery` and then add 'jquery' to the types field in your tsconfig."
+                ),
+            )),
+            _ => None,
+        }
+    }
+
+    pub fn variable_implicitly_any(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyVariable,
+            format!("Variable '{name}' implicitly has an 'any' type."),
+        )
+    }
+
+    pub fn binding_element_implicitly_any(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyBinding,
+            format!("Binding element '{name}' implicitly has an 'any' type."),
+        )
+    }
+
+    pub fn subsequent_variable_type(
+        name: &str,
+        previous: &str,
+        current: &str,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::SubsequentVariableType,
+            format!(
+                "Subsequent variable declarations must have the same type.  Variable '{name}' must be of type '{previous}', but here has type '{current}'."
+            ),
+        )
+    }
+
     pub fn unresolved_identifier(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnresolvedIdentifier,

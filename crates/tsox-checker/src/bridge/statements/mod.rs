@@ -13,6 +13,7 @@ mod support;
 mod variables;
 
 pub(super) use patterns::{bind_params, bind_pattern};
+pub(in crate::bridge) use support::implicit_any_bindings;
 pub(super) use support::statement_leaves_flow;
 
 use classes::check_class_declaration;
@@ -324,7 +325,11 @@ fn check_namespace(
 // pass, the same as when they are not exported.
 fn check_declaration(declaration: &Declaration, scoping: &Scoping, ctx: &mut CheckContext<'_, '_>) {
     match declaration {
-        Declaration::VariableDeclaration(decl) => check_variable_declaration(decl, scoping, ctx),
+        Declaration::VariableDeclaration(decl) => {
+            ctx.in_export_declaration = true;
+            check_variable_declaration(decl, scoping, ctx);
+            ctx.in_export_declaration = false;
+        }
         Declaration::FunctionDeclaration(func) => check_function_declaration(func, scoping, ctx),
         Declaration::ClassDeclaration(class) => check_class_declaration(class, scoping, ctx),
         Declaration::TSTypeAliasDeclaration(_)

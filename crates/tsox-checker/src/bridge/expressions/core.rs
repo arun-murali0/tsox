@@ -72,7 +72,10 @@ pub fn resolve_identifier_type(
         {
             crate::diagnostic_messages::messages::type_used_as_value(&ident.name)
         } else {
-            crate::diagnostic_messages::messages::unresolved_identifier(&ident.name)
+            crate::diagnostic_messages::messages::unresolved_identifier_hint(&ident.name)
+                .unwrap_or_else(|| {
+                    crate::diagnostic_messages::messages::unresolved_identifier(&ident.name)
+                })
         };
         ctx.error(message, ident.span());
         return ctx.arena.error();

@@ -139,6 +139,13 @@ pub enum DiagnosticCode {
     TupleOptionalAfterRest,
     TupleNegativeIndex,
     ExcessiveComplexity,
+    MissingNodeTypes,
+    MissingJqueryTypes,
+    MissingTestRunnerTypes,
+    ImplicitAnyVariable,
+    ImplicitAnyBinding,
+    SubsequentVariableType,
+    RedeclareExportedVariable,
 
     // 1900s: expression grammar and conditions (each maps to the tsc code the
     // syntactic check matches; update/assignment-target grammar codes are not
@@ -287,6 +294,13 @@ impl DiagnosticCode {
             TupleOptionalAfterRest => "TSR1804",
             TupleNegativeIndex => "TSR1805",
             ExcessiveComplexity => "TSR1806",
+            MissingNodeTypes => "TSR1807",
+            MissingJqueryTypes => "TSR1808",
+            MissingTestRunnerTypes => "TSR1809",
+            ImplicitAnyVariable => "TSR1810",
+            ImplicitAnyBinding => "TSR1811",
+            SubsequentVariableType => "TSR1812",
+            RedeclareExportedVariable => "TSR1813",
 
             CommaLeftNoSideEffect => "TSR1901",
             VoidTruthiness => "TSR1902",
@@ -427,6 +441,13 @@ impl DiagnosticCode {
             TupleOptionalAfterRest => 1266,
             TupleNegativeIndex => 2514,
             ExcessiveComplexity => 2859,
+            MissingNodeTypes => 2591,
+            MissingJqueryTypes => 2592,
+            MissingTestRunnerTypes => 2593,
+            ImplicitAnyVariable => 7005,
+            ImplicitAnyBinding => 7031,
+            SubsequentVariableType => 2403,
+            RedeclareExportedVariable => 2323,
 
             CommaLeftNoSideEffect => 2695,
             VoidTruthiness => 1345,

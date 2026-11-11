@@ -143,6 +143,10 @@ pub struct CheckContext<'ast, 'src> {
     /// whose unused left side tsc does not report (its `isIndirectCall`).
     pub indirect_call_sequences: std::collections::HashSet<u32>,
     pub expandos: super::expando::ExpandoMap,
+    // The annotated type of the first `var` declaration of each symbol, for TS2403.
+    pub var_annotations: std::collections::HashMap<oxc_semantic::SymbolId, TypeId>,
+    // True while the declaration behind an `export` is checked.
+    pub in_export_declaration: bool,
     /// Set while a bracket access with a literal key is looked up like a property read.
     pub bracket_access: bool,
 
@@ -520,6 +524,8 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             compared_names: Default::default(),
             indirect_call_sequences: Default::default(),
             expandos: Default::default(),
+            var_annotations: Default::default(),
+            in_export_declaration: false,
             abstract_members: Default::default(),
             bracket_access: false,
             implicit_this: false,
