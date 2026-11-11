@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use oxc_ast::ast::{
-    AssignmentOperator, AssignmentTarget, ClassElement, Expression, MethodDefinitionKind,
-    PropertyDefinitionType, PropertyKey, Statement,
+    AssignmentOperator, AssignmentTarget, AssignmentTargetProperty, ClassElement, Expression,
+    MethodDefinitionKind, PropertyDefinitionType, PropertyKey, Statement, UnaryOperator,
 };
 use oxc_semantic::Scoping;
 use oxc_span::GetSpan;
@@ -405,9 +405,9 @@ fn definitely_assigned_names(stmts: &[Statement]) -> HashSet<String> {
 fn names_assigned_by(stmt: &Statement) -> HashSet<String> {
     match stmt {
         Statement::ExpressionStatement(expr_stmt) => {
-            this_property_assigned_by(&expr_stmt.expression)
-                .into_iter()
-                .collect()
+            let mut assigned = Vec::new();
+            this_properties_assigned_by(&expr_stmt.expression, &mut assigned);
+            assigned.into_iter().collect()
         }
         Statement::BlockStatement(block) => definitely_assigned_names(&block.body),
         Statement::IfStatement(if_stmt) => {
@@ -439,22 +439,72 @@ fn names_assigned_by(stmt: &Statement) -> HashSet<String> {
     }
 }
 
-// `this.name = value` (plain assignment only, not `+=` and friends) at the top
-// level of one expression. Never looks inside a nested function or arrow
-// expression, since an assignment there may run after the constructor has
-// already finished, matching tsc.
-fn this_property_assigned_by(expr: &Expression) -> Option<String> {
-    let Expression::AssignmentExpression(assign) = expr else {
-        return None;
-    };
-    if assign.operator != AssignmentOperator::Assign {
-        return None;
+// Every property name one expression definitely assigns through `this`. Covers the
+// shapes that run unconditionally as part of the statement: a plain assignment, a
+// sequence of them, a parenthesized or `void`-prefixed one, and a destructuring
+// write to the property. Compound forms (`+=` and friends) do not count, and never
+// does anything inside a nested function or arrow, since it may run after the
+// constructor has already finished, matching tsc.
+fn this_properties_assigned_by(expr: &Expression, out: &mut Vec<String>) {
+    match expr {
+        Expression::AssignmentExpression(assign) => {
+            if assign.operator != AssignmentOperator::Assign {
+                return;
+            }
+            match &assign.left {
+                AssignmentTarget::StaticMemberExpression(member) => {
+                    if matches!(member.object, Expression::ThisExpression(_)) {
+                        out.push(member.property.name.to_string());
+                    }
+                }
+                // `({ name: this.name } = src)`: a destructuring write to the property
+                // assigns it, as tsc counts it. An identifier property shorthand has no
+                // member target, and a computed key writes through a path this analysis
+                // does not track.
+                AssignmentTarget::ObjectAssignmentTarget(object) => {
+                    for property in &object.properties {
+                        if let AssignmentTargetProperty::AssignmentTargetPropertyProperty(prop) =
+                            property
+                            && let Some(inner) = prop.binding.as_assignment_target()
+                        {
+                            member_this_target(inner, out);
+                        }
+                    }
+                }
+                AssignmentTarget::ArrayAssignmentTarget(array) => {
+                    for element in array.elements.iter().flatten() {
+                        if let Some(inner) = element.as_assignment_target() {
+                            member_this_target(inner, out);
+                        }
+                    }
+                    if let Some(rest) = &array.rest {
+                        member_this_target(&rest.target, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Expression::SequenceExpression(sequence) => {
+            for expression in &sequence.expressions {
+                this_properties_assigned_by(expression, out);
+            }
+        }
+        Expression::ParenthesizedExpression(inner) => {
+            this_properties_assigned_by(&inner.expression, out);
+        }
+        // `void this.name = 1` runs the assignment; tsc counts it.
+        Expression::UnaryExpression(unary) if unary.operator == UnaryOperator::Void => {
+            this_properties_assigned_by(&unary.argument, out);
+        }
+        _ => {}
     }
-    let AssignmentTarget::StaticMemberExpression(member) = &assign.left else {
-        return None;
-    };
-    if !matches!(member.object, Expression::ThisExpression(_)) {
-        return None;
+}
+
+// The property one destructuring element writes, when it writes through `this`.
+fn member_this_target(target: &AssignmentTarget, out: &mut Vec<String>) {
+    if let AssignmentTarget::StaticMemberExpression(member) = target
+        && matches!(member.object, Expression::ThisExpression(_))
+    {
+        out.push(member.property.name.to_string());
     }
-    Some(member.property.name.to_string())
 }
