@@ -303,6 +303,15 @@ pub(super) fn infer_update_expression_type(
             &member.property.name,
             member.property.span,
         );
+        // The property holds a new value afterwards, so what a guard narrowed it to
+        // ends, the rule narrow_member_on_assignment applies to a plain write. Nothing
+        // is inserted in its place: the result is a number, and whether that fits the
+        // property's declared type is the update's own check, which tsc reports under
+        // its own code (TS2356) and this checker does not report at all.
+        if let Some(reference) = path_of_member(member, scoping) {
+            ctx.narrow
+                .remove_path_prefix(reference.symbol_id, &reference.path);
+        }
     }
     ctx.arena.number()
 }

@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use oxc_ast::ast::{
     AssignmentExpression, AssignmentTarget, BinaryExpression, BinaryOperator, Expression,
-    IdentifierReference, LogicalOperator, Program, StaticMemberExpression, UnaryOperator,
+    IdentifierReference, LogicalOperator, Program, SimpleAssignmentTarget, StaticMemberExpression,
+    UnaryOperator, UpdateExpression,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::{Scoping, SymbolId};
@@ -267,6 +268,24 @@ impl<'a> Visit<'a> for WriteCollector<'_> {
                 .push(it.span.start);
         }
         walk::walk_assignment_expression(self, it);
+    }
+
+    fn visit_update_expression(&mut self, it: &UpdateExpression<'a>) {
+        // `o.count++` writes the property the way `o.count = o.count + 1` does, so the
+        // loop and try walks must count it as a write too. A computed or a destructured
+        // write is left out on purpose: the forward walk resets no narrowing for those
+        // shapes, so head passes triggered for them would walk again only to conclude
+        // the same thing.
+        if let SimpleAssignmentTarget::StaticMemberExpression(member) = &it.argument
+            && let Some(target) = path_of_member(member, self.scoping)
+        {
+            self.map
+                .member
+                .entry(target.symbol_id)
+                .or_default()
+                .push(it.span.start);
+        }
+        walk::walk_update_expression(self, it);
     }
 }
 
