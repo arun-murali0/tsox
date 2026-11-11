@@ -190,10 +190,12 @@ pub(super) fn infer_assignment_expression_type(
                     if let Some((_, declared_type)) =
                         declared_identifier_target(&assign.left, scoping, ctx)
                     {
+                        // tsc keeps the narrowing after a rejected write, so the
+                        // walk is told the target still holds what it read as.
                         ctx.shadow_note_assignment(
                             assign.node_id.get().index() as u32,
                             declared_type,
-                            result,
+                            current,
                         );
                     }
                 }
