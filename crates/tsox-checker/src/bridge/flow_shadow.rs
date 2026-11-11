@@ -579,6 +579,8 @@ impl<'ast> FlowShadow<'ast> {
                 };
                 // The clause names the symbol it narrows only through its discriminant.
                 let names_symbol = match &discriminant {
+                    // The walk holds one variable at a time; `switch (true)` narrows through any.
+                    SwitchDiscriminant::True => return,
                     SwitchDiscriminant::Identifier(s)
                     | SwitchDiscriminant::Property(s, _)
                     | SwitchDiscriminant::Typeof(s) => *s == symbol_id,
@@ -598,9 +600,9 @@ impl<'ast> FlowShadow<'ast> {
                 let saved =
                     std::mem::replace(&mut ctx.narrow, NarrowState::single(symbol_id, base));
                 let state = if includes_default {
-                    narrow_switch_default(&discriminant, &tests_of(&all_spans), ctx)
+                    narrow_switch_default(&discriminant, &tests_of(&all_spans), scoping, ctx)
                 } else {
-                    narrow_switch_case(&discriminant, &tests_of(&matched_spans), ctx)
+                    narrow_switch_case(&discriminant, &tests_of(&matched_spans), scoping, ctx)
                 };
                 ctx.narrow = saved;
                 result = Found::Ty(state.get(symbol_id).unwrap_or(base));

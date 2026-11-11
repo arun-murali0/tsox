@@ -211,6 +211,8 @@ pub fn analyze(program: &Program<'_>, scoping: &Scoping) -> Reachability {
     // be of a tracked variable. Its other results are thrown away.
     let mut discover = Analyzer::new(scoping, HashMap::new(), HashMap::new(), HashSet::new());
     discover.is_script = program.source_type.is_script();
+    let predicates = predicate_functions(program);
+    discover.predicates = predicates.clone();
     discover.visit_program(program);
     let mut analyzer = Analyzer::new(
         scoping,
@@ -219,9 +221,58 @@ pub fn analyze(program: &Program<'_>, scoping: &Scoping) -> Reachability {
         discover.definite,
     );
     analyzer.is_script = program.source_type.is_script();
+    analyzer.predicates = predicates;
     analyzer.discovering = false;
     analyzer.visit_program(program);
     analyzer.out
+}
+
+// The functions of this file whose return type is a type predicate: `function f(x): x is T`
+// and `const f = (x): x is T => ...`.
+fn predicate_functions(program: &Program<'_>) -> HashSet<SymbolId> {
+    struct Scan(HashSet<SymbolId>);
+    fn is_predicate(
+        annotation: &Option<oxc_allocator::Box<'_, oxc_ast::ast::TSTypeAnnotation<'_>>>,
+    ) -> bool {
+        annotation.as_ref().is_some_and(|annotation| {
+            matches!(
+                annotation.type_annotation,
+                oxc_ast::ast::TSType::TSTypePredicate(_)
+            )
+        })
+    }
+    impl<'a> Visit<'a> for Scan {
+        fn visit_function(
+            &mut self,
+            function: &oxc_ast::ast::Function<'a>,
+            flags: oxc_semantic::ScopeFlags,
+        ) {
+            if is_predicate(&function.return_type)
+                && let Some(id) = function.id.as_ref().and_then(|id| id.symbol_id.get())
+            {
+                self.0.insert(id);
+            }
+            walk::walk_function(self, function, flags);
+        }
+        fn visit_variable_declarator(&mut self, declarator: &oxc_ast::ast::VariableDeclarator<'a>) {
+            if let (oxc_ast::ast::BindingPattern::BindingIdentifier(id), Some(init)) =
+                (&declarator.id, &declarator.init)
+            {
+                let predicate = match init {
+                    Expression::ArrowFunctionExpression(arrow) => is_predicate(&arrow.return_type),
+                    Expression::FunctionExpression(function) => is_predicate(&function.return_type),
+                    _ => false,
+                };
+                if predicate && let Some(symbol) = id.symbol_id.get() {
+                    self.0.insert(symbol);
+                }
+            }
+            walk::walk_variable_declarator(self, declarator);
+        }
+    }
+    let mut scan = Scan(HashSet::new());
+    scan.visit_program(program);
+    scan.0
 }
 
 // The variables that are definitely assigned: a set of small indexes, one per tracked variable.
@@ -422,6 +473,9 @@ struct Analyzer<'s> {
     // another function). Learned in the first walk. tsc's `lastAssignmentPos`.
     last_assignment: HashMap<SymbolId, u32>,
     is_script: bool,
+    // Functions declared with a type predicate (`x is T`) as their return type, which narrow
+    // their argument where a call to one is a condition.
+    predicates: HashSet<SymbolId>,
     out: Reachability,
 }
 
@@ -434,6 +488,7 @@ impl<'s> Analyzer<'s> {
     ) -> Self {
         Self {
             scoping,
+            predicates: HashSet::new(),
             st: St::live(),
             within: false,
             jumps: Jumps::default(),
@@ -686,8 +741,35 @@ impl<'s> Analyzer<'s> {
             }
             // `x` is truthy, so not `undefined`.
             Expression::Identifier(id) if when_true => out.extend(self.tracked_index(id)),
+            // `isC(x)`: a call to a predicate function narrows its arguments on the true edge.
+            Expression::CallExpression(call) if when_true => {
+                if let Expression::Identifier(callee) = skip_parens(&call.callee)
+                    && let Some(symbol) = self.symbol_of(callee)
+                    && self.predicates.contains(&symbol)
+                {
+                    for argument in &call.arguments {
+                        if let Some(Expression::Identifier(id)) =
+                            argument.as_expression().map(skip_parens)
+                        {
+                            out.extend(self.tracked_index(id));
+                        }
+                    }
+                }
+            }
             Expression::BinaryExpression(binary) => {
                 use oxc_ast::ast::BinaryOperator as Op;
+                // `x instanceof C` and `"k" in x` narrow `x` to the members they admit on the
+                // true edge, and `undefined` is none of them.
+                if when_true {
+                    let operand = match binary.operator {
+                        Op::Instanceof => Some(skip_parens(&binary.left)),
+                        Op::In => Some(skip_parens(&binary.right)),
+                        _ => None,
+                    };
+                    if let Some(Expression::Identifier(id)) = operand {
+                        out.extend(self.tracked_index(id));
+                    }
+                }
                 let (equal, strict) = match binary.operator {
                     Op::StrictEquality => (true, true),
                     Op::StrictInequality => (false, true),
@@ -718,6 +800,16 @@ impl<'s> Analyzer<'s> {
                                 }
                             }
                         }
+                    }
+                    // `x.constructor === C` and `x.kind === "a"`: a constructor or discriminant
+                    // test keeps the members it matches, so on the true edge `undefined` is gone.
+                    if is_it
+                        && let Expression::StaticMemberExpression(member) = this
+                        && let Expression::Identifier(id) = skip_parens(&member.object)
+                        && (strict || member.property.name == "constructor")
+                        && (member.property.name == "constructor" || is_literal(other))
+                    {
+                        out.extend(self.tracked_index(id));
                     }
                     // `typeof x === "string"` and `typeof x !== "undefined"`.
                     if let Expression::UnaryExpression(unary) = this {
@@ -1594,6 +1686,21 @@ fn annotation_allows_unassigned(annotation: &oxc_ast::ast::TSType<'_>) -> Option
         | TSType::TSArrayType(_)
         | TSType::TSTupleType(_)
         | TSType::TSFunctionType(_) => Some(false),
+        // A library object type nothing makes nullable (a name a program does not shadow).
+        TSType::TSTypeReference(reference)
+            if matches!(
+                &reference.type_name,
+                oxc_ast::ast::TSTypeName::IdentifierReference(id)
+                    if matches!(
+                        id.name.as_str(),
+                        "String" | "Number" | "Boolean" | "Symbol" | "BigInt" | "Object"
+                            | "Function" | "Date" | "RegExp" | "Error" | "Array" | "Map" | "Set"
+                            | "WeakMap" | "WeakSet" | "Promise" | "ReadonlyArray"
+                    )
+            ) =>
+        {
+            Some(false)
+        }
         TSType::TSUnionType(union) => {
             let mut all_known = true;
             for member in &union.types {

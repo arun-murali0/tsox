@@ -608,6 +608,10 @@ fn universal_member(
             _ => {}
         }
     }
+    // `Object.constructor` is a `Function`; `any` accepts what is done with one.
+    if property_name == "constructor" {
+        return Some(any);
+    }
     let result = match property_name {
         "toString" | "toLocaleString" => arena.string(),
         "valueOf" => any,

@@ -315,7 +315,45 @@ function checkProject(target, options = {}) {
   const roots = new Map(files.map((f) => [path.resolve(f), f]));
   const startedAt = process.hrtime.bigint();
   const program = ts.createProgram(files, projectOptions(options.strictOnly));
-  const diagnostics = ts.getPreEmitDiagnostics(program);
+  // File by file, each guarded. TS2563 (a body too large for control flow analysis) turns
+  // flow analysis off in the checker for good, so every file checked after it in the same
+  // Program would lose its narrowing diagnostics (compiler/largeControlFlowGraph does it to
+  // every file after it). After such a file, the rest are checked in a fresh Program.
+  const compilerOptions = projectOptions(options.strictOnly);
+  let current = program;
+  const collected = [
+    ...current.getConfigFileParsingDiagnostics(),
+    ...current.getOptionsDiagnostics(),
+    ...current.getGlobalDiagnostics(),
+  ];
+  const rootNames = new Set(roots.keys());
+  const order = current
+    .getSourceFiles()
+    .map((sf) => sf.fileName)
+    .filter((name) => rootNames.has(path.resolve(name)));
+  const others = current
+    .getSourceFiles()
+    .map((sf) => sf.fileName)
+    .filter((name) => !rootNames.has(path.resolve(name)));
+  for (const name of [...others, ...order]) {
+    const sf = current.getSourceFile(name);
+    if (!sf) continue;
+    let poisoned = false;
+    for (const get of [
+      () => current.getSyntacticDiagnostics(sf),
+      () => current.getSemanticDiagnostics(sf),
+    ]) {
+      try {
+        const found = get();
+        if (found.some((d) => d.code === 2563)) poisoned = true;
+        collected.push(...found);
+      } catch {
+        // The file's checker run failed; whatever it had reported is lost, nothing else is.
+      }
+    }
+    if (poisoned) current = ts.createProgram(files, compilerOptions);
+  }
+  const diagnostics = ts.sortAndDeduplicateDiagnostics(collected);
   const programMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
 
   const results = [];

@@ -606,8 +606,8 @@ pub(super) fn check_switch_statement(
             // A default grouped with other labels can be reached with any value,
             // so only a lone default or a set of plain case labels narrows.
             let overlay = match (pending_default, pending_tests.is_empty()) {
-                (false, false) => narrow_switch_case(discriminant, &pending_tests, ctx),
-                (true, true) => narrow_switch_default(discriminant, &all_tests, ctx),
+                (false, false) => narrow_switch_case(discriminant, &pending_tests, scoping, ctx),
+                (true, true) => narrow_switch_default(discriminant, &all_tests, scoping, ctx),
                 _ => NarrowState::new(),
             };
             ctx.narrow.extend(overlay);
