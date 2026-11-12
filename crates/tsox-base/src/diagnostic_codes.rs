@@ -61,6 +61,7 @@ pub enum DiagnosticCode {
 
     // 1200s: name / member resolution
     UnresolvedIdentifier,
+    UnresolvedNamespace,
     PropertyDoesNotExist,
     PropertyDoesNotExistSuggestion,
     PropertyFromIndexSignature,
@@ -90,6 +91,7 @@ pub enum DiagnosticCode {
     ImplicitAnyFunctionReturn,
     ImplicitAnyConstructSignature,
     ImplicitAnyCallSignature,
+    ImplicitAnyRestParameter,
 
     // 1500s: generics
     TypeArgumentCountMismatch,
@@ -119,6 +121,9 @@ pub enum DiagnosticCode {
     ReadonlyPropertyAssignment,
     AssignmentToConstant,
     AssignmentToImport,
+    AssignmentToClass,
+    AssignmentToFunction,
+    AssignmentToEnum,
 
     // 1600s: reachability
     UnreachableCode,
@@ -138,6 +143,25 @@ pub enum DiagnosticCode {
     TupleRestAfterRest,
     TupleOptionalAfterRest,
     TupleNegativeIndex,
+    ExcessiveComplexity,
+    MissingNodeTypes,
+    MissingJqueryTypes,
+    MissingTestRunnerTypes,
+    ImplicitAnyVariable,
+    ImplicitAnyBinding,
+    SubsequentVariableType,
+    RedeclareExportedVariable,
+    ValueCannotBeUsedHere,
+
+    // 1900s: expression grammar and conditions (each maps to the tsc code the
+    // syntactic check matches; update/assignment-target grammar codes are not
+    // here because oxc's parser rejects those shapes before the checker runs)
+    CommaLeftNoSideEffect,
+    VoidTruthiness,
+    AlwaysTruthyExpression,
+    AlwaysFalsyExpression,
+    DeleteOperandNotProperty,
+    DeleteOperandRequired,
 
     // 9000s: not yet implemented (all currently emitted as warnings)
     UnimplementedCallExpressionKind,
@@ -204,6 +228,7 @@ impl DiagnosticCode {
             NoOverloadMatches => "TSR1106",
 
             UnresolvedIdentifier => "TSR1201",
+            UnresolvedNamespace => "TSR1209",
             PropertyDoesNotExist => "TSR1202",
             PropertyDoesNotExistSuggestion => "TSR1210",
             PropertyFromIndexSignature => "TSR1211",
@@ -231,6 +256,7 @@ impl DiagnosticCode {
             ImplicitAnyFunctionReturn => "TSR1407",
             ImplicitAnyConstructSignature => "TSR1408",
             ImplicitAnyCallSignature => "TSR1409",
+            ImplicitAnyRestParameter => "TSR1410",
 
             TypeArgumentCountMismatch => "TSR1501",
             TypeIsNotGeneric => "TSR1502",
@@ -259,6 +285,9 @@ impl DiagnosticCode {
             ReadonlyPropertyAssignment => "TSR1913",
             AssignmentToConstant => "TSR1907",
             AssignmentToImport => "TSR1908",
+            AssignmentToClass => "TSR1909",
+            AssignmentToFunction => "TSR1910",
+            AssignmentToEnum => "TSR1911",
 
             UnreachableCode => "TSR1601",
             FallthroughCaseInSwitch => "TSR1602",
@@ -275,6 +304,22 @@ impl DiagnosticCode {
             TupleRestAfterRest => "TSR1803",
             TupleOptionalAfterRest => "TSR1804",
             TupleNegativeIndex => "TSR1805",
+            ExcessiveComplexity => "TSR1806",
+            MissingNodeTypes => "TSR1807",
+            MissingJqueryTypes => "TSR1808",
+            MissingTestRunnerTypes => "TSR1809",
+            ImplicitAnyVariable => "TSR1810",
+            ImplicitAnyBinding => "TSR1811",
+            SubsequentVariableType => "TSR1812",
+            RedeclareExportedVariable => "TSR1813",
+            ValueCannotBeUsedHere => "TSR1814",
+
+            CommaLeftNoSideEffect => "TSR1901",
+            VoidTruthiness => "TSR1902",
+            AlwaysTruthyExpression => "TSR1903",
+            AlwaysFalsyExpression => "TSR1904",
+            DeleteOperandNotProperty => "TSR1905",
+            DeleteOperandRequired => "TSR1906",
 
             UnimplementedCallExpressionKind => "TSR9001",
             UnimplementedNewExpressionTarget => "TSR9002",
@@ -346,6 +391,7 @@ impl DiagnosticCode {
             NoOverloadMatches => 2769,
 
             UnresolvedIdentifier => 2304,
+            UnresolvedNamespace => 2503,
             PropertyDoesNotExist => 2339,
             PropertyDoesNotExistSuggestion => 2551,
             PropertyFromIndexSignature => 4111,
@@ -391,8 +437,13 @@ impl DiagnosticCode {
             ReadonlyPropertyAssignment => 2540,
             AssignmentToConstant => 2588,
             AssignmentToImport => 2632,
+            AssignmentToClass => 2629,
+            AssignmentToFunction => 2630,
+            AssignmentToEnum => 2628,
+            ValueCannotBeUsedHere => 18050,
 
             ImplicitAnyParameter => 7006,
+            ImplicitAnyRestParameter => 7019,
             ImplicitAnyElement => 7053,
             ImplicitAnyThis => 2683,
             ImplicitAnyReturn => 7023,
@@ -407,6 +458,21 @@ impl DiagnosticCode {
             TupleRestAfterRest => 1265,
             TupleOptionalAfterRest => 1266,
             TupleNegativeIndex => 2514,
+            ExcessiveComplexity => 2859,
+            MissingNodeTypes => 2591,
+            MissingJqueryTypes => 2592,
+            MissingTestRunnerTypes => 2593,
+            ImplicitAnyVariable => 7005,
+            ImplicitAnyBinding => 7031,
+            SubsequentVariableType => 2403,
+            RedeclareExportedVariable => 2323,
+
+            CommaLeftNoSideEffect => 2695,
+            VoidTruthiness => 1345,
+            AlwaysTruthyExpression => 2872,
+            AlwaysFalsyExpression => 2873,
+            DeleteOperandNotProperty => 2703,
+            DeleteOperandRequired => 2790,
 
             UnreachableCode => 7027,
             FallthroughCaseInSwitch => 7029,

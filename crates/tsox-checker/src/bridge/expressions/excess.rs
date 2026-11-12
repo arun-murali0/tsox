@@ -23,18 +23,47 @@ pub fn check_excess_properties(expr: &Expression, target: TypeId, ctx: &mut Chec
     let Expression::ObjectExpression(object) = expr else {
         return;
     };
-    // Problem: Record<K, V> and Promise<T> have an empty body here (see
-    // type_annotation::resolve_builtin_generic), so every key of a literal assigned
-    // to one looked like an excess property.
-    // Picked: a Record accepts any key, so only each value is checked against V; a
-    // Promise has no members this checker models, so the literal is left alone.
-    // Cost: a user generic that happens to be named Promise is skipped too, which is
-    // less precise and never wrong.
-    if let Some(value_type) = ctx.arena.record_value_type(target) {
+    // Record<K, V> and Promise<T> have an empty implementation body (see
+    // type_annotation::resolve_builtin_generic). A Record literal must satisfy both
+    // parts of its contract: every statically named key must belong to K, and its value
+    // must fit V. Do not treat the second argument as an unrestricted index signature.
+    if let (Some(key_domain), Some(value_type)) = (
+        ctx.arena.record_key_type(target),
+        ctx.arena.record_value_type(target),
+    ) {
         for property in &object.properties {
-            if let ObjectPropertyKind::ObjectProperty(property) = property {
-                check_excess_properties(&property.value, value_type, ctx);
+            let ObjectPropertyKind::ObjectProperty(property) = property else {
+                continue;
+            };
+            let (name, key_type, key_span) = match &property.key {
+                PropertyKey::StaticIdentifier(key) => (
+                    key.name.to_string(),
+                    ctx.arena.alloc(Type::StringLiteral(key.name.to_string())),
+                    key.span,
+                ),
+                PropertyKey::StringLiteral(key) => (
+                    key.value.to_string(),
+                    ctx.arena.alloc(Type::StringLiteral(key.value.to_string())),
+                    key.span,
+                ),
+                PropertyKey::NumericLiteral(key) => (
+                    key.value.to_string(),
+                    ctx.arena.alloc(Type::NumberLiteral(key.value)),
+                    key.span,
+                ),
+                // Computed and spread keys do not have a statically known member name.
+                _ => continue,
+            };
+            if !crate::subtyping::is_subtype(&ctx.arena, key_type, key_domain) {
+                ctx.error(
+                    crate::diagnostic_messages::messages::excess_property(
+                        &ctx.arena, &name, target,
+                    ),
+                    key_span,
+                );
+                continue;
             }
+            check_excess_properties(&property.value, value_type, ctx);
         }
         return;
     }

@@ -77,6 +77,10 @@ class G:
             kinds += ["switchk", "switcht", "ifelse", "ifelse"]
         k = r.choice(kinds)
         if k == "read":
+            if self.mode == "narrow-diag":
+                # The read is passed where one type is wanted, so what tsc narrowed it to shows up
+                # as an error or its absence, and can be compared line by line.
+                return [f"{r.choice(['needString', 'needNumber', 'needNull', 'needUndef', 'needStrNum'])}({r.choice(['u', 'w'])});"]
             return [f"{r.choice(['u', 'w', 'k'])};"]
         if k == "assign":
             var, values = r.choice([
@@ -183,7 +187,7 @@ class G:
         compound = ["if", "ifelse", "while", "dowhile", "forever", "forcond", "forof", "forin",
                     "switch", "try", "labeled", "block", "arrow", "iife", "iife", "static",
                     "labelchain"]
-        if self.mode == "narrow":
+        if self.mode in ("narrow", "narrow-diag"):
             compound = [c for c in compound if c != "try"]
         pool = simple if depth >= 3 else simple + compound * 2
         k = r.choice(pool)
@@ -311,6 +315,11 @@ class G:
         return self.label_n
 
 PRELUDE = """declare function m(n: number): void;
+declare function needString(x: string): void;
+declare function needNumber(x: number): void;
+declare function needNull(x: null): void;
+declare function needUndef(x: undefined): void;
+declare function needStrNum(x: string | number): void;
 declare function ms(s: string): void;
 declare function mz(n: number | undefined): void;
 declare const c: boolean;

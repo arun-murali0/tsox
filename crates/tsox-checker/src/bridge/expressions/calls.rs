@@ -200,10 +200,11 @@ fn infer_call_expression_type_inner(
             {
                 ctx.return_reads.note_imported_call(&keys);
             }
-            (
-                resolve_identifier_type(ident, scoping, ctx),
-                ident.name.to_string(),
-            )
+            let callee_type = resolve_identifier_type(ident, scoping, ctx);
+            // The callee is not typed as an expression of its own; a request for the type at
+            // its position is answered here.
+            super::super::probe::offer(ctx, ident.span, callee_type);
+            (callee_type, ident.name.to_string())
         }
         Expression::StaticMemberExpression(member) => {
             if let Some(result) = promise_static_call(call, member, scoping, ctx) {
@@ -250,6 +251,7 @@ fn member_callee(
         super::members::strip_nullish_object(&member.object, object_type, member.optional, ctx);
     let property_type =
         infer_member_access_type(object_type, &member.property.name, member.span(), ctx);
+    super::super::probe::offer(ctx, member.span(), property_type);
     (property_type, member.property.name.to_string())
 }
 
@@ -475,10 +477,11 @@ pub(super) fn infer_new_expression_type(
 ) -> TypeId {
     let return_context = ctx.call_return_context.take();
     let (callee_type, callee_name) = match &new_expr.callee {
-        Expression::Identifier(callee_ident) => (
-            resolve_identifier_type(callee_ident, scoping, ctx),
-            callee_ident.name.to_string(),
-        ),
+        Expression::Identifier(callee_ident) => {
+            let callee_type = resolve_identifier_type(callee_ident, scoping, ctx);
+            super::super::probe::offer(ctx, callee_ident.span, callee_type);
+            (callee_type, callee_ident.name.to_string())
+        }
         Expression::StaticMemberExpression(member) => member_callee(member, scoping, ctx),
         _ => {
             ctx.warning(

@@ -4,6 +4,7 @@ mod class_implements;
 mod context;
 mod declare;
 mod duplicates;
+mod expando;
 mod exports;
 mod expressions;
 pub mod flow_shadow;
@@ -11,6 +12,7 @@ mod implicit_any;
 mod imports;
 mod narrow;
 mod parse;
+mod probe;
 mod statements;
 mod tuple_grammar;
 mod unreachable_code;
@@ -32,6 +34,7 @@ use crate::unit::CancelToken;
 use context::CheckContext;
 pub use exports::ExportTable;
 pub use exports::IncompleteReason;
+pub use probe::{ProbeRequest, ProbeState, TypeAtOffset};
 
 pub(crate) use parse::analyze;
 pub use parse::parse;
@@ -83,6 +86,8 @@ pub struct FileEnv<'a> {
     pub options: crate::check_options::CheckOptions,
     // Skip `bodies_phase`: the diagnostics-only pass (see `UnitContext::skip_bodies`).
     pub skip_bodies: bool,
+    // A question about the type at an offset, answered as the unit is checked (probe.rs).
+    pub probe: Option<&'a ProbeRequest>,
 }
 
 pub type Checked = (Vec<Diagnostic>, CheckMetrics, ExportTable);
@@ -104,6 +109,7 @@ pub fn check_file(
         imports,
         options,
         skip_bodies,
+        probe,
     } = env;
     arena.clear();
     // A cut recorded by an earlier unit on this thread is not this unit's.
@@ -124,6 +130,7 @@ pub fn check_file(
     ctx.cancel = cancel.cloned();
     ctx.imports = imports;
     ctx.options = options;
+    ctx.probe = probe.map(|request| ProbeState::new(request.offset()));
 
     declare_phase(&program, semantic.scoping(), &mut ctx);
     // The pass is left out only when asked for and only when nothing in the file can need it.
@@ -138,6 +145,15 @@ pub fn check_file(
     if ctx.cancelled {
         *arena = ctx.arena;
         return Ok(None);
+    }
+    // The question about an offset is answered here, with the arena still holding the types.
+    if let (Some(request), Some(mut state)) = (probe, ctx.probe.take()) {
+        if let Some((span, text)) =
+            probe::declared_name(&semantic, &ctx.symbols, &ctx.arena, request.offset())
+        {
+            state.offer(span, text);
+        }
+        request.answer(state.into_answer());
     }
     // Read the exports out before publish and before the arena goes back: they are
     // copied out of it, and it is cleared as soon as the unit ends. A check with no
@@ -236,7 +252,15 @@ fn bodies_phase<'ast>(
 ) {
     let scoping = semantic.scoping();
     unreachable_code::analyze_flow(program, scoping, ctx);
-    ctx.shadow = flow_shadow::FlowShadow::new(program, semantic).map(Box::new);
+    // Declaration files hold nothing a read could be narrowed in.
+    ctx.shadow = if ctx.file_name.ends_with(".d.ts")
+        || ctx.file_name.ends_with(".d.mts")
+        || ctx.file_name.ends_with(".d.cts")
+    {
+        None
+    } else {
+        flow_shadow::FlowShadow::new(program, semantic).map(Box::new)
+    };
     statements::check_top_level(program, scoping, ctx);
     if let Some(shadow) = ctx.shadow.take() {
         shadow.report(ctx, scoping);

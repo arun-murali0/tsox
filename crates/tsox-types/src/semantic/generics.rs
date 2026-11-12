@@ -1114,7 +1114,11 @@ fn collect_inference_candidates_inner(
                 return;
             }
             let preserves_literals = bound.is_some_and(|b| bound_keeps_literals(arena, b));
-            let candidate = if preserves_literals {
+            // tsc widens only top-level candidates (`T` itself as the parameter type). A
+            // candidate found inside another type (`{ kind: T }`) keeps a literal the
+            // argument's declared type carries, so a contravariant use of the same
+            // parameter elsewhere (`(arg: { kind: T }) => void`) can still agree with it.
+            let candidate = if preserves_literals || !top_level {
                 arg_type
             } else {
                 crate::types::widen(arena, arg_type)
@@ -1546,14 +1550,17 @@ fn evaluate_conditional_branch(
             (Some(actual), Some(expected)) => crate::subtyping::is_subtype(arena, actual, expected),
             _ => false,
         }
-    } else if let (Some(actual), Some(expected)) = (
+    } else if let (Some(actual_key), Some(actual_value), Some(expected_key), Some(expected_value)) = (
+        arena.record_key_type(check_type),
         arena.record_value_type(check_type),
+        arena.record_key_type(extends_type),
         arena.record_value_type(extends_type),
     ) {
-        // Record is currently represented by an opaque object whose value type lives
-        // on the application rather than in the object's members. Preserve that piece
-        // of its shape for conditional compatibility; key restrictions remain unmodeled.
-        crate::subtyping::is_subtype(arena, actual, expected)
+        // Record<K, V> is a required mapped shape. A source record with key domain K1
+        // supplies every key in a target domain K2 only when K2 is a subset of K1;
+        // values flow covariantly. Do not erase K and compare V alone.
+        crate::subtyping::is_subtype(arena, expected_key, actual_key)
+            && crate::subtyping::is_subtype(arena, actual_value, expected_value)
     } else {
         crate::subtyping::is_subtype(arena, check_type, extends_type)
     };
@@ -2381,6 +2388,12 @@ pub fn reduce_mapped(arena: &mut TypeArena, mapped: crate::types::MappedType) ->
 /// `keyof operand`: the union of the property names when they are all known, otherwise
 /// the symbolic node (the operand is still generic, or has index signatures).
 pub fn reduce_keyof(arena: &mut TypeArena, operand: TypeId) -> TypeId {
+    // Record<K, V> is an opaque application while K is generic, but its key set is
+    // exactly K. TypeArena::get exposes its empty implementation body, so asking
+    // concrete_keys first would incorrectly turn keyof Record<K, V> into never.
+    if let Some(keys) = arena.record_key_type(operand) {
+        return keys;
+    }
     if let Some(keys) = crate::type_annotation::concrete_keys(arena, operand) {
         let members: Vec<TypeId> = keys
             .iter()
@@ -2419,6 +2432,19 @@ pub fn reduce_keyof(arena: &mut TypeArena, operand: TypeId) -> TypeId {
 /// `object[index]`: the property's type when both sides are concrete, otherwise the
 /// symbolic node.
 pub fn reduce_indexed_access(arena: &mut TypeArena, object: TypeId, index: TypeId) -> TypeId {
+    if matches!(arena.get(index), Type::Never) {
+        return arena.never();
+    }
+    // For a generic Record the application remains opaque until substitution, but the
+    // relation `Record<K, V>[K]` is already known: every key in K is present and has V.
+    // A wider index type must remain unresolved rather than borrowing V for an invalid key.
+    if let (Some(key_domain), Some(value)) = (
+        arena.record_key_type(object),
+        arena.record_value_type(object),
+    ) && crate::subtyping::is_subtype(arena, index, key_domain)
+    {
+        return value;
+    }
     if !contains_type_param(arena, object)
         && !contains_type_param(arena, index)
         && let Some(reduced) = crate::type_annotation::indexed_access(arena, object, index)
@@ -2565,6 +2591,9 @@ fn same_free_set(arena: &TypeArena, a: &[FreeParam], b: &[FreeParam]) -> bool {
 // parameter" answer is published for every node reached, so the next contains_type_param on
 // any of them is one lookup.
 fn free_generic_params(arena: &TypeArena, type_id: TypeId) -> Rc<[FreeParam]> {
+    if let Some(known) = arena.cached_free_params(type_id) {
+        return known;
+    }
     // Every type reachable from the start, each once, in the order it was found. `position`
     // doubles as the visited set.
     let mut nodes: Vec<TypeId> = Vec::new();
@@ -2572,10 +2601,18 @@ fn free_generic_params(arena: &TypeArena, type_id: TypeId) -> Rc<[FreeParam]> {
     let mut position: FxHashMap<TypeId, usize> = FxHashMap::default();
     reach(arena, type_id, &mut nodes, &mut parts, &mut position);
 
+    // A node whose set an earlier call settled is a fixed leaf: its set already covers
+    // everything reachable from it, so it is not walked or recomputed.
+    let fixed: Vec<Option<Rc<[FreeParam]>>> = nodes
+        .iter()
+        .map(|&node| arena.cached_free_params(node))
+        .collect();
     let mut sets: Vec<Vec<FreeParam>> = nodes
         .iter()
-        .map(|&node| match arena.get(node) {
-            Type::GenericParameter(id, _, _) => vec![(*id, node)],
+        .enumerate()
+        .map(|(index, &node)| match (&fixed[index], arena.get(node)) {
+            (Some(known), _) => known.to_vec(),
+            (None, Type::GenericParameter(id, _, _)) => vec![(*id, node)],
             _ => Vec::new(),
         })
         .collect();
@@ -2586,6 +2623,9 @@ fn free_generic_params(arena: &TypeArena, type_id: TypeId) -> Rc<[FreeParam]> {
     loop {
         let mut changed = false;
         for index in (0..nodes.len()).rev() {
+            if fixed[index].is_some() {
+                continue;
+            }
             let mut free: Vec<FreeParam> = match arena.get(nodes[index]) {
                 Type::GenericParameter(id, _, _) => vec![(*id, nodes[index])],
                 _ => Vec::new(),
@@ -2636,8 +2676,11 @@ fn free_generic_params(arena: &TypeArena, type_id: TypeId) -> Rc<[FreeParam]> {
         }
     }
 
-    for (node, set) in nodes.iter().zip(&sets) {
+    for (index, (node, set)) in nodes.iter().zip(&sets).enumerate() {
         arena.remember_mentions_type_param(*node, !set.is_empty());
+        if !set.is_empty() && fixed[index].is_none() {
+            arena.remember_free_params(*node, Rc::from(set.clone()));
+        }
     }
     Rc::from(sets[position[&type_id]].clone())
 }
@@ -2659,7 +2702,9 @@ fn reach(
     position.insert(type_id, slot);
     nodes.push(type_id);
     parts.push(SmallVec::new());
-    if arena.cached_mentions_type_param(type_id) != Some(false) {
+    if arena.cached_mentions_type_param(type_id) != Some(false)
+        && arena.cached_free_params(type_id).is_none()
+    {
         let children: SmallVec<[usize; 8]> = parts_of(arena, type_id)
             .into_iter()
             .map(|child| reach(arena, child, nodes, parts, position))

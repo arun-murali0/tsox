@@ -23,11 +23,90 @@ pub fn is_subtype(arena: &TypeArena, sub: TypeId, sup: TypeId) -> bool {
 struct PairMemo {
     depth: u32,
     assumptions_used: u64,
-    results: std::collections::HashMap<(TypeId, TypeId), bool>,
+    // Comparisons that may still be completed under the current outermost one (tsc's
+    // `relationCount`). When it is spent the comparison fails and `overflowed` says why, so
+    // the checker can report tsc's TS2859 instead of a mismatch.
+    budget: i64,
+    overflowed: bool,
+    top: Option<(TypeId, TypeId)>,
+    results: crate::fxhash::FxHashMap<(TypeId, TypeId), bool>,
+}
+
+// A file with very large unions can decide millions of pairs before the outermost
+// comparison ends, and every one of them lives in the memo until then (GAP-CHECKLIST
+// section 6 measured part-09 at 663 MB on exactly this). Past the cap new results are
+// simply not remembered: the comparison itself is unchanged, so this bounds memory
+// without touching any answer.
+const PAIR_MEMO_CAP: usize = 1 << 20;
+
+// tsc allows (16e6 - cache size) >> 3, about two million completed structured comparisons, for
+// one top-level relation check before it gives up with TS2859.
+const RELATION_BUDGET: i64 = 2_000_000;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_BUDGET: std::cell::Cell<i64> = const { std::cell::Cell::new(RELATION_BUDGET) };
+}
+
+fn relation_budget() -> i64 {
+    #[cfg(test)]
+    {
+        TEST_BUDGET.with(|budget| budget.get())
+    }
+    #[cfg(not(test))]
+    {
+        RELATION_BUDGET
+    }
+}
+
+thread_local! {
+    // The pair whose comparison last ran out of budget, until the checker reports it.
+    static RELATION_OVERFLOW: std::cell::Cell<Option<(TypeId, TypeId)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The two types of the outermost comparison that last ran out of its budget (tsc's
+/// "excessive complexity"), if it has not been taken yet.
+pub fn take_relation_overflow() -> Option<(TypeId, TypeId)> {
+    RELATION_OVERFLOW.with(|cell| cell.take())
+}
+
+/// Forgets an overflow nothing reported (a probe whose answer was not shown).
+pub fn clear_relation_overflow() {
+    RELATION_OVERFLOW.with(|cell| cell.set(None));
 }
 
 thread_local! {
     static PAIR_MEMO: std::cell::RefCell<PairMemo> = std::cell::RefCell::new(PairMemo::default());
+}
+
+// Owns one level of the memo's depth counter. Dropping it — including through a panic
+// unwinding out of `is_subtype_uncached`, which the checker catches in `Worker::contained`
+// — undoes that level, and the outermost drop clears the memo. Without it a panic left
+// `depth` stuck above zero, the clear never ran again on that thread, and the next unit's
+// arena (whose TypeIds start over at the same small numbers) could read stale results.
+struct PairMemoGuard {
+    memoizable: bool,
+}
+
+impl Drop for PairMemoGuard {
+    fn drop(&mut self) {
+        PAIR_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            memo.depth -= 1;
+            if memo.depth == 0 {
+                if memo.overflowed
+                    && let Some(top) = memo.top
+                {
+                    RELATION_OVERFLOW.with(|cell| cell.set(Some(top)));
+                }
+                memo.overflowed = false;
+                memo.top = None;
+                memo.results.clear();
+                memo.assumptions_used = 0;
+            }
+        });
+    }
 }
 
 // A recursive type (Node { next: Node }, whose declaration's Ref namespace::resolve
@@ -37,6 +116,47 @@ thread_local! {
 // as true (coinductively: two types that only differ by "going in circles"
 // are equivalent) rather than as a fresh comparison to keep making; this is
 // the standard rule for equirecursive subtyping and is what breaks the loop.
+//
+// What stands for "an instance of the same generic declaration" in the rule above. An
+// application names its declaration (found through transparent Named wrappers; `get`
+// would unwrap it to its body and erase exactly that identity). An instantiated body keeps
+// no origin, so a body with four or more members is told by its member list: names,
+// optionality, method-ness, and the coarse kind of each member's type (never the member
+// types themselves, which are what grows). Two shapes that share four names but differ in
+// what those members are (a `string` where the other has a `number`) get different keys, so
+// the rule cannot end the descent before the member types are compared. Only a shape that
+// matches in every one of those respects, three levels deep in one comparison, is taken as
+// the same growing declaration, and the rule can only make a comparison succeed.
+fn growth_key(arena: &TypeArena, id: TypeId) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut current = id;
+    while let Type::Named(_, inner) = arena.raw(current) {
+        current = *inner;
+    }
+    let mut hasher = crate::fxhash::FxHasher::default();
+    // The same type can be met as an application and as its instantiated body, so a body
+    // with a member list is keyed by that list whichever way it arrives; only an
+    // application with no such body is keyed by its declaration.
+    if let Type::Object(object) = arena.get(current)
+        && object.properties.len() >= 4
+    {
+        1u8.hash(&mut hasher);
+        for property in object.properties.iter() {
+            property.name.hash(&mut hasher);
+            property.optional.hash(&mut hasher);
+            property.is_method.hash(&mut hasher);
+            std::mem::discriminant(arena.get(property.type_id)).hash(&mut hasher);
+        }
+        return Some(hasher.finish());
+    }
+    if let Type::App(slot, ..) = arena.raw(current) {
+        0u8.hash(&mut hasher);
+        slot.hash(&mut hasher);
+        return Some(hasher.finish());
+    }
+    None
+}
+
 fn is_subtype_inner(
     arena: &TypeArena,
     sub: TypeId,
@@ -56,6 +176,14 @@ fn is_subtype_inner(
         return true;
     }
     if is_trivial_subtype(arena, sub, sup) {
+        return true;
+    }
+    // The same type parameter reached through an application that reads as it (`Id<K>` for
+    // `type Id<T> = T`) is that parameter, though the application is a node of its own.
+    if let (Type::GenericParameter(sub_id, _, _), Type::GenericParameter(sup_id, _, _)) =
+        (arena.get(sub), arena.get(sup))
+        && sub_id == sup_id
+    {
         return true;
     }
 
@@ -90,11 +218,38 @@ fn is_subtype_inner(
         PAIR_MEMO.with(|memo| memo.borrow_mut().assumptions_used += 1);
         return true;
     }
+    // tsc's rule for types that keep growing: when three comparisons of instances of the
+    // same two generic declarations are already open, a fourth is taken as holding. A
+    // generic method's own type parameters are made afresh at each level, so the pair is
+    // never the same twice and the identical-pair rule above cannot end the descent (an
+    // interface of eleven such methods, compared with a subinterface that redeclares them,
+    // is eleven to the power of the depth).
+    if let (Some(sub_key), Some(sup_key)) = (growth_key(arena, sub), growth_key(arena, sup)) {
+        let open = seen
+            .iter()
+            .filter(|(open_sub, open_sup)| {
+                growth_key(arena, *open_sub) == Some(sub_key)
+                    && growth_key(arena, *open_sup) == Some(sup_key)
+            })
+            .count();
+        if open >= 3 {
+            PAIR_MEMO.with(|memo| memo.borrow_mut().assumptions_used += 1);
+            return true;
+        }
+    }
     let memoizable = binders.is_empty();
     let before = PAIR_MEMO.with(|memo| {
         let mut memo = memo.borrow_mut();
         if memoizable && let Some(known) = memo.results.get(&pair) {
             return Err(*known);
+        }
+        if memo.depth == 0 {
+            memo.budget = relation_budget();
+            memo.overflowed = false;
+            memo.top = Some(pair);
+        } else if memo.budget <= 0 {
+            memo.overflowed = true;
+            return Err(false);
         }
         memo.depth += 1;
         Ok(memo.assumptions_used)
@@ -103,20 +258,25 @@ fn is_subtype_inner(
         Ok(before) => before,
         Err(known) => return known,
     };
+    // The guard is what makes the depth counter unwind-safe: if the comparison below
+    // panics, its Drop still runs and the outermost level clears the memo (see the
+    // struct comment).
+    let guard = PairMemoGuard { memoizable };
     seen.push(pair);
     let result = is_subtype_uncached(arena, sub, sup, seen, binders);
     seen.pop();
+    let memoizable = guard.memoizable;
     PAIR_MEMO.with(|memo| {
         let mut memo = memo.borrow_mut();
-        memo.depth -= 1;
-        if memoizable && (!result || memo.assumptions_used == before) {
+        memo.budget -= 1;
+        if memoizable
+            && (!result || memo.assumptions_used == before)
+            && memo.results.len() < PAIR_MEMO_CAP
+        {
             memo.results.insert(pair, result);
         }
-        if memo.depth == 0 {
-            memo.results.clear();
-            memo.assumptions_used = 0;
-        }
     });
+    drop(guard);
     result
 }
 
@@ -234,17 +394,28 @@ fn is_subtype_uncached(
         // union may accept the whole intersection (`A & B` into `A | C`) or one member
         // of it may fit inside the union (`A & B` into `(A | C)` because `A` does).
         (Type::Intersection(sub_members), Type::Union(sup_members)) => {
-            sup_members
-                .iter()
-                .any(|&member| is_subtype_inner(arena, sub, member, seen, binders))
+            // A constituent that is itself a member of the union settles it at once, as in
+            // tsc, which looks a source up among the target's members before comparing it with
+            // each. Without this `"0000" & { a: string }` was compared with each of the four
+            // thousand members of a union of string literals that contains `"0000"`.
+            sup_members.contains(&sub)
+                || sub_members
+                    .iter()
+                    .any(|member| sup_members.contains(member))
+                || sup_members
+                    .iter()
+                    .any(|&member| is_subtype_inner(arena, sub, member, seen, binders))
                 || sub_members
                     .iter()
                     .any(|&member| is_subtype_inner(arena, member, sup, seen, binders))
         }
 
-        (_, Type::Union(sup_members)) => sup_members
-            .iter()
-            .any(|&member| is_subtype_inner(arena, sub, member, seen, binders)),
+        (_, Type::Union(sup_members)) => {
+            sup_members.contains(&sub)
+                || sup_members
+                    .iter()
+                    .any(|&member| is_subtype_inner(arena, sub, member, seen, binders))
+        }
 
         // Neither member of `{ a: number } & { b: string }` is assignable to `{ a:
         // number; b: string }`, but together they are. So an object target is also
@@ -788,6 +959,61 @@ mod tests {
 
     fn literal(arena: &mut TypeArena, value: &str) -> TypeId {
         arena.alloc(Type::StringLiteral(value.to_string()))
+    }
+
+    #[test]
+    fn object_shapes_with_different_member_kinds_get_different_growth_keys() {
+        use crate::types::{ObjectType, PropertyEntry};
+
+        let mut arena = TypeArena::new();
+        let number = arena.number();
+        let string = arena.string();
+        let properties = |first: TypeId| -> Vec<PropertyEntry> {
+            ["a", "b", "c", "d"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| PropertyEntry {
+                    name: name.into(),
+                    type_id: if index == 0 { first } else { string },
+                    optional: false,
+                    is_method: false,
+                    modifiers: Default::default(),
+                })
+                .collect()
+        };
+        let source = arena.alloc(Type::Object(ObjectType::new(properties(string))));
+        let target = arena.alloc(Type::Object(ObjectType::new(properties(number))));
+        let twin = arena.alloc(Type::Object(ObjectType::new(properties(string))));
+
+        // Same four names, but `a` is a string in one and a number in the other.
+        assert!(growth_key(&arena, source).is_some());
+        assert_ne!(growth_key(&arena, source), growth_key(&arena, target));
+        assert_eq!(growth_key(&arena, source), growth_key(&arena, twin));
+    }
+
+    #[test]
+    fn generic_application_growth_identity_uses_its_declaration_slot() {
+        let mut arena = TypeArena::new();
+        let declaration = arena.alloc_name("Box");
+        let other_declaration = arena.alloc_name("OtherBox");
+        let body = arena.alloc(Type::Object(crate::types::ObjectType::new(Vec::new())));
+        let number = arena.number();
+        let string = arena.string();
+        let number_app = arena.alloc_app(declaration, vec![number], body);
+        let string_app = arena.alloc_app(declaration, vec![string], body);
+        let other_app = arena.alloc_app(other_declaration, vec![number], body);
+        let alias_slot = arena.alloc_name("Alias");
+        let alias = arena.alloc_named(alias_slot, number_app);
+
+        assert_eq!(
+            growth_key(&arena, number_app),
+            growth_key(&arena, string_app)
+        );
+        assert_ne!(
+            growth_key(&arena, number_app),
+            growth_key(&arena, other_app)
+        );
+        assert_eq!(growth_key(&arena, alias), growth_key(&arena, number_app));
     }
 
     #[test]
@@ -1626,5 +1852,99 @@ mod intersection_relation_tests {
         assert!(is_subtype(&arena, t_and_a, t));
         assert!(is_subtype(&arena, t_and_a, a));
         assert!(!is_subtype(&arena, t, t_and_a));
+    }
+
+    // The memo's depth counter and result table must be empty after a comparison
+    // ends; if cleanup ever runs only on the normal-return path again, a panic
+    // caught by the worker would leave the table poisoning later units on the
+    // same thread (whose fresh arena reuses the same low TypeIds).
+    #[test]
+    fn pair_memo_is_empty_after_a_nested_comparison() {
+        let mut arena = TypeArena::new();
+        let number = arena.number();
+        let a = object(&mut arena, &[("a", number, false)]);
+        let b = object(&mut arena, &[("b", number, false)]);
+        assert!(is_subtype(&arena, a, a));
+        assert!(!is_subtype(&arena, a, b));
+        PAIR_MEMO.with(|memo| {
+            let memo = memo.borrow();
+            assert_eq!(memo.depth, 0, "depth leaked");
+            assert!(
+                memo.results.is_empty(),
+                "results were kept past the outermost comparison"
+            );
+            assert_eq!(memo.assumptions_used, 0);
+        });
+    }
+
+    // The guard's cleanup on unwind is the same Drop that runs on the normal path;
+    // exercise it through a scope that ends without reaching the insert step, the
+    // way a panic out of is_subtype_uncached would. The depth counter goes in first,
+    // exactly as is_subtype_inner does before it constructs the guard.
+    #[test]
+    fn pair_memo_cleans_up_when_a_comparison_is_abandoned() {
+        let mut arena = TypeArena::new();
+        let number = arena.number();
+        let a = object(&mut arena, &[("a", number, false)]);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let seen = &mut PairStack::new();
+            let pair = (a, a);
+            PAIR_MEMO.with(|memo| memo.borrow_mut().depth += 1);
+            let _guard = PairMemoGuard { memoizable: true };
+            seen.push(pair);
+            panic!("simulated checker bug mid-comparison");
+        }));
+        assert!(outcome.is_err());
+        PAIR_MEMO.with(|memo| {
+            let memo = memo.borrow();
+            assert_eq!(memo.depth, 0, "a caught panic left the memo depth stuck");
+            assert!(
+                memo.results.is_empty(),
+                "a caught panic left stale results behind"
+            );
+            assert_eq!(memo.assumptions_used, 0);
+        });
+    }
+
+    // A comparison that runs out of its budget fails and says why, so the checker can report
+    // tsc's TS2859; one that finishes within it does not.
+    #[test]
+    fn a_comparison_past_its_budget_fails_and_records_the_overflow() {
+        let mut arena = TypeArena::new();
+        let number = arena.number();
+        let names: Vec<String> = (0..40).map(|i| format!("k{i}")).collect();
+        let left: Vec<TypeId> = names
+            .iter()
+            .map(|name| {
+                object(
+                    &mut arena,
+                    &[(name.as_str(), number, false), ("l", number, false)],
+                )
+            })
+            .collect();
+        let right: Vec<TypeId> = names
+            .iter()
+            .map(|name| {
+                object(
+                    &mut arena,
+                    &[(name.as_str(), number, false), ("r", number, false)],
+                )
+            })
+            .collect();
+        let sub = arena.alloc(Type::Union(left));
+        let sup = arena.alloc(Type::Union(right));
+        TEST_BUDGET.with(|budget| budget.set(10));
+        clear_relation_overflow();
+        assert!(!is_subtype(&arena, sub, sup));
+        assert_eq!(take_relation_overflow(), Some((sub, sup)));
+        assert_eq!(take_relation_overflow(), None, "taken once");
+
+        TEST_BUDGET.with(|budget| budget.set(RELATION_BUDGET));
+        assert!(!is_subtype(&arena, sub, sup));
+        assert_eq!(
+            take_relation_overflow(),
+            None,
+            "within budget: a plain mismatch"
+        );
     }
 }

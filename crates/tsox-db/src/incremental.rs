@@ -67,6 +67,20 @@ pub trait IncrementalDb: SalsaDatabase {
     /// What the ambient providers declared in the check in progress; the key of every unit
     /// query carries a digest of it, so a unit never reads a set it was not keyed by.
     fn current_providers(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
+
+    /// The settled result of the cycle with this key, kept so that a check of it after an edit
+    /// can start from there. Not a tracked input: a query that reads it must produce what it
+    /// would without it.
+    fn settled_cycle(&self, key: u64) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
+
+    /// Keeps the settled result of a cycle, or forgets it when `None`.
+    fn keep_settled_cycle(&self, key: u64, settled: Option<Arc<dyn std::any::Any + Send + Sync>>);
+
+    /// Forgets every settled cycle: the graph they belong to is gone.
+    fn forget_settled_cycles(&self);
+
+    /// Whether a cycle is always checked from the start, whatever was kept of it.
+    fn cycle_recheck_off(&self) -> bool;
 }
 
 mod project;
@@ -91,6 +105,11 @@ pub struct Database {
     // The project data of the epoch in force, for queries that read it untracked.
     current: Arc<std::sync::RwLock<Option<Arc<dyn std::any::Any + Send + Sync>>>>,
     providers: Arc<std::sync::RwLock<Option<Arc<dyn std::any::Any + Send + Sync>>>>,
+    // Set when a cycle must always be checked from the start; shared by every handle.
+    cycle_recheck_off: Arc<std::sync::atomic::AtomicBool>,
+    // The cycles that settled, by the key of their unit; shared by every handle.
+    settled:
+        Arc<std::sync::Mutex<std::collections::HashMap<u64, Arc<dyn std::any::Any + Send + Sync>>>>,
 }
 
 #[salsa::db]
@@ -119,6 +138,38 @@ impl IncrementalDb for Database {
             .clone()
     }
 
+    fn settled_cycle(&self, key: u64) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        self.settled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .cloned()
+    }
+
+    fn keep_settled_cycle(&self, key: u64, settled: Option<Arc<dyn std::any::Any + Send + Sync>>) {
+        let mut held = self.settled.lock().unwrap_or_else(|e| e.into_inner());
+        match settled {
+            Some(settled) => {
+                held.insert(key, settled);
+            }
+            None => {
+                held.remove(&key);
+            }
+        }
+    }
+
+    fn cycle_recheck_off(&self) -> bool {
+        self.cycle_recheck_off
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn forget_settled_cycles(&self) {
+        self.settled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
     fn current_providers(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         self.providers
             .read()
@@ -128,6 +179,11 @@ impl IncrementalDb for Database {
 }
 
 impl Database {
+    pub(crate) fn set_cycle_recheck_off(&self, off: bool) {
+        self.cycle_recheck_off
+            .store(off, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -239,6 +295,8 @@ mod tests {
             cancel: Arc::default(),
             current: Arc::default(),
             providers: Arc::default(),
+            settled: Arc::default(),
+            cycle_recheck_off: Arc::default(),
         };
         (database, executions)
     }

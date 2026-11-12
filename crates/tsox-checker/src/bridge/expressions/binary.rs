@@ -8,6 +8,79 @@ use super::super::narrow::narrow_to_non_nullish;
 
 use super::super::context::CheckContext;
 
+// A literal `null` or `undefined` as an operand of an arithmetic, shift, bitwise or relational
+// operator (or of `+` when the other side is not a string) is reported on the operand itself
+// (TS18050), as tsc does. The literal side then reads as `any`, so only the other operand
+// can fail the operator's own check.
+pub(super) fn report_nullish_literal_operands(
+    operator: BinaryOperator,
+    operands: [(Option<&Expression>, TypeId); 2],
+    ctx: &mut CheckContext<'_, '_>,
+) -> (TypeId, TypeId) {
+    let applies = matches!(
+        operator,
+        BinaryOperator::Subtraction
+            | BinaryOperator::Multiplication
+            | BinaryOperator::Division
+            | BinaryOperator::Remainder
+            | BinaryOperator::Exponential
+            | BinaryOperator::ShiftLeft
+            | BinaryOperator::ShiftRight
+            | BinaryOperator::ShiftRightZeroFill
+            | BinaryOperator::BitwiseAnd
+            | BinaryOperator::BitwiseOR
+            | BinaryOperator::BitwiseXOR
+            | BinaryOperator::LessThan
+            | BinaryOperator::LessEqualThan
+            | BinaryOperator::GreaterThan
+            | BinaryOperator::GreaterEqualThan
+            | BinaryOperator::Addition
+            | BinaryOperator::In
+    );
+    let mut types = [operands[0].1, operands[1].1];
+    if !applies {
+        return (types[0], types[1]);
+    }
+    let string_ty = ctx.arena.string();
+    let any = ctx.arena.any();
+    let is_string = |ctx: &mut CheckContext<'_, '_>, ty: TypeId| {
+        ty != any && ctx.semantic().is_assignable(ty, string_ty)
+    };
+    // `+` with a string on either side concatenates, and with an `any` on either side is `any`;
+    // neither looks at the other operand's value.
+    if operator == BinaryOperator::Addition
+        && (is_string(ctx, types[0])
+            || is_string(ctx, types[1])
+            || types[0] == any
+            || types[1] == any)
+    {
+        return (types[0], types[1]);
+    }
+    let literal = |expr: Option<&Expression>| match expr {
+        Some(Expression::NullLiteral(_)) => Some("null"),
+        Some(Expression::Identifier(id)) if id.name == "undefined" => Some("undefined"),
+        _ => None,
+    };
+    let kinds = [literal(operands[0].0), literal(operands[1].0)];
+    for (index, (expr, _)) in operands.into_iter().enumerate() {
+        let (Some(value), Some(expr)) = (kinds[index], expr) else {
+            continue;
+        };
+        ctx.error(
+            crate::diagnostic_messages::messages::value_cannot_be_used_here(value),
+            expr.span(),
+        );
+    }
+    // The literal is "treated as having the type of the other operand", so only the other
+    // operand can fail the operator's own check: the literal side reads as `any`.
+    for index in 0..2 {
+        if kinds[index].is_some() {
+            types[index] = any;
+        }
+    }
+    (types[0], types[1])
+}
+
 // tsc reports an operand that may be null or undefined where the operator needs a
 // number once, on the operand, and then goes on with the operand's type without them,
 // so `a + 1` with `a: number | undefined` is that one error and not an operator
@@ -288,13 +361,59 @@ pub(super) fn infer_binary_expression_type(
                 if !left_ok {
                     ctx.error(
                         crate::diagnostic_messages::messages::arithmetic_left_operand_invalid(),
-                        span,
+                        ctx.operand_spans.map_or(span, |spans| spans.0),
                     );
                 }
                 if !right_ok {
                     ctx.error(
                         crate::diagnostic_messages::messages::arithmetic_right_operand_invalid(),
-                        span,
+                        ctx.operand_spans.map_or(span, |spans| spans.1),
+                    );
+                }
+                ctx.arena.error()
+            }
+        }
+
+        // Shifts and bitwise operators hold their operands to the same rule the
+        // arithmetic group above does: tsc runs them through the same check (the same
+        // TS2362 and TS2363), and they produce a number.
+        BinaryOperator::ShiftLeft
+        | BinaryOperator::ShiftRight
+        | BinaryOperator::ShiftRightZeroFill
+        | BinaryOperator::BitwiseAnd
+        | BinaryOperator::BitwiseOR
+        | BinaryOperator::BitwiseXOR => {
+            // An operand that is already an error makes the result one too, so one
+            // mistake reports once, as the Addition arm does.
+            let error_ty = ctx.arena.error();
+            if left == error_ty || right == error_ty {
+                return error_ty;
+            }
+            // tsc has its own code for an `unknown` operand (TS18046), which this
+            // checker does not model; such an operand stays silent rather than being
+            // reported under the arithmetic code.
+            if may_be_unknown(ctx, left) || may_be_unknown(ctx, right) {
+                return ctx.arena.number();
+            }
+            let number_ty = ctx.arena.number();
+            let left_ok = ctx.semantic().is_assignable(left, number_ty);
+            let right_ok = ctx.semantic().is_assignable(right, number_ty);
+            if left_ok && right_ok {
+                ctx.arena.number()
+            } else {
+                // One diagnostic per bad side, as tsc reports it (TS2362 and
+                // TS2363). Both land on the whole expression's span, since
+                // only that is available here.
+                if !left_ok {
+                    ctx.error(
+                        crate::diagnostic_messages::messages::arithmetic_left_operand_invalid(),
+                        ctx.operand_spans.map_or(span, |spans| spans.0),
+                    );
+                }
+                if !right_ok {
+                    ctx.error(
+                        crate::diagnostic_messages::messages::arithmetic_right_operand_invalid(),
+                        ctx.operand_spans.map_or(span, |spans| spans.1),
                     );
                 }
                 ctx.arena.error()
@@ -302,6 +421,17 @@ pub(super) fn infer_binary_expression_type(
         }
 
         _ => ctx.arena.error(),
+    }
+}
+
+// Whether `unknown` is the type or one of a union's members.
+fn may_be_unknown(ctx: &CheckContext<'_, '_>, id: TypeId) -> bool {
+    match ctx.arena.get(id) {
+        Type::Unknown => true,
+        Type::Union(members) => members
+            .iter()
+            .any(|&member| matches!(ctx.arena.get(member), Type::Unknown)),
+        _ => false,
     }
 }
 

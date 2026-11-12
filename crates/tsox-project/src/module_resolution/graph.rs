@@ -196,7 +196,11 @@ impl ModuleGraph {
                         {
                             continue;
                         }
+                        // A package whose `exports` or `main` names a file that is not there
+                        // resolves to a path nobody can read; that is an unresolved import,
+                        // not a reason to stop the walk.
                         let target = resolve_request(resolver, path, &request)
+                            .filter(|resolved| resolved.is_file() || overlay(resolved).is_some())
                             .map(|resolved| files.intern(resolved));
                         file_edges.push(ModuleEdge {
                             specifier: request.specifier,

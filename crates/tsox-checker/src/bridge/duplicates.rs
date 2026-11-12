@@ -436,13 +436,19 @@ fn report_namespace_merge_order(
     for (index, (item, _)) in items.iter().copied().enumerate() {
         if let TopLevelItem::Namespace(namespace) = item {
             let name = namespace.id.name.as_str();
-            let is_after_class_or_function =
-                items.iter().skip(index + 1).any(|(later, _)| match later {
+            // tsc counts only a class or a function with a body that is not ambient, and a
+            // namespace that is itself not ambient (`declare class D` after `namespace D {}`
+            // is fine).
+            let is_after_class_or_function = !namespace.declare
+                && namespace_instantiated(namespace)
+                && items.iter().skip(index + 1).any(|(later, _)| match later {
                     TopLevelItem::Class(class) => {
-                        class.id.as_ref().is_some_and(|id| id.name == name)
+                        !class.declare && class.id.as_ref().is_some_and(|id| id.name == name)
                     }
                     TopLevelItem::Function(function) => {
-                        function.id.as_ref().is_some_and(|id| id.name == name)
+                        !function.declare
+                            && function.body.is_some()
+                            && function.id.as_ref().is_some_and(|id| id.name == name)
                     }
                     _ => false,
                 });

@@ -60,6 +60,8 @@ pub struct UnitContext<'a> {
     // need the pass (an initializer, for one: `declare const n = 42` gets its type from
     // there) is checked in full whatever this says, so asking is always safe.
     pub skip_bodies: bool,
+    // A question about the type at an offset, answered while the unit is checked.
+    pub probe: Option<&'a bridge::ProbeRequest>,
 }
 
 impl<'a> UnitContext<'a> {
@@ -73,6 +75,7 @@ impl<'a> UnitContext<'a> {
             imports: None,
             options: crate::check_options::CheckOptions::default(),
             skip_bodies: false,
+            probe: None,
         }
     }
 
@@ -100,6 +103,11 @@ impl<'a> UnitContext<'a> {
 
     pub fn with_cancel(mut self, cancel: CancelToken) -> Self {
         self.cancel = Some(cancel);
+        self
+    }
+
+    pub fn with_probe(mut self, probe: &'a bridge::ProbeRequest) -> Self {
+        self.probe = Some(probe);
         self
     }
 }
@@ -245,6 +253,7 @@ impl Worker {
                     imports: ctx.imports,
                     options: ctx.options,
                     skip_bodies: ctx.skip_bodies,
+                    probe: ctx.probe,
                 },
             )
         })

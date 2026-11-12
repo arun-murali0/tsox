@@ -26,7 +26,7 @@ pub use tsox_base::standard_lib::{
 };
 
 pub use check::{
-    FileOutcome, FileReport, ProjectReport, check_project, check_project_bounded,
+    FileOutcome, FileReport, ImportReads, ProjectReport, check_project, check_project_bounded,
     check_project_cancellable,
 };
 pub use config::{ConfigError, Json, ProjectConfig, parse_jsonc};

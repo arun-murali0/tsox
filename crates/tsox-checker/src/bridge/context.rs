@@ -139,6 +139,19 @@ pub struct CheckContext<'ast, 'src> {
     /// Names already compared with `==` or `===`: such a comparison narrows the name for the
     /// code after it, so a later literal comparison is not judged on the declared literal type.
     pub compared_names: std::collections::HashSet<String>,
+    /// Start offsets of comma expressions that are the callee of an indirect call, `(0, o.f)()`,
+    /// whose unused left side tsc does not report (its `isIndirectCall`).
+    pub indirect_call_sequences: std::collections::HashSet<u32>,
+    pub expandos: super::expando::ExpandoMap,
+    // The annotated type of the first `var` declaration of each symbol, for TS2403.
+    pub var_annotations: std::collections::HashMap<oxc_semantic::SymbolId, TypeId>,
+    // True while the declaration behind an `export` is checked.
+    pub in_export_declaration: bool,
+    // True while a loop body is walked only to find the state its head settles on.
+    pub loop_probe: bool,
+    /// The spans of the operands of the binary operation being checked, for the diagnostics that
+    /// belong to one operand (TS2362 on the left, TS2363 on the right).
+    pub operand_spans: Option<(oxc_span::Span, oxc_span::Span)>,
     /// Set while a bracket access with a literal key is looked up like a property read.
     pub bracket_access: bool,
 
@@ -197,6 +210,9 @@ pub struct CheckContext<'ast, 'src> {
     // threaded through every checker function.
     pub cancel: Option<CancelToken>,
     pub cancelled: bool,
+    // Set when a caller asked what type is at an offset (see probe.rs). Expressions that
+    // hold the offset offer their type to it as they are typed.
+    pub probe: Option<super::probe::ProbeState>,
     // Set once the stack guard has stopped a descent, so one file gives one diagnostic
     // for it however many branches of the nesting hit the limit.
     nesting_reported: bool,
@@ -501,6 +517,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             function_returns: std::collections::HashMap::new(),
             shadow: None,
             relation_cache: RelationCache::default(),
+            probe: None,
             current_return_type: None,
             current_return_async: false,
             inferred_returns: None,
@@ -510,6 +527,12 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             current_class_ids: Vec::new(),
             in_constructor: false,
             compared_names: Default::default(),
+            indirect_call_sequences: Default::default(),
+            expandos: Default::default(),
+            var_annotations: Default::default(),
+            in_export_declaration: false,
+            loop_probe: false,
+            operand_spans: None,
             abstract_members: Default::default(),
             bracket_access: false,
             implicit_this: false,
@@ -620,7 +643,17 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
         self.arena.error()
     }
 
-    pub fn error(&mut self, message: DiagnosticMessage, span: Span) {
+    pub fn error(&mut self, mut message: DiagnosticMessage, span: Span) {
+        // A comparison that ran out of its budget fails, and tsc reports that as TS2859 in
+        // place of the mismatch it would otherwise give.
+        if matches!(message.code.tsc_code(), Some(2322 | 2345))
+            && let Some((source, target)) = crate::subtyping::take_relation_overflow()
+        {
+            message = crate::diagnostic_messages::messages::excessive_complexity(
+                &crate::type_display::display_type(&self.arena, source),
+                &crate::type_display::display_type(&self.arena, target),
+            );
+        }
         let text = self.message_text(message.text);
         self.diagnostics.push(Diagnostic {
             severity: Severity::Error,

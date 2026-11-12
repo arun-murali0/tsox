@@ -405,6 +405,15 @@ pub mod messages {
         )
     }
 
+    // tsc's own code (TS7019) and wording for a rest parameter with no type: a
+    // separate diagnostic from the plain-parameter one (TS7006).
+    pub fn rest_parameter_implicitly_any(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyRestParameter,
+            format!("Rest parameter '{name}' implicitly has an 'any[]' type."),
+        )
+    }
+
     pub fn element_implicitly_any(
         arena: &TypeArena,
         key: TypeId,
@@ -711,6 +720,99 @@ pub mod messages {
             format!(
                 "'{name}' cannot be used as a value because it was imported using 'import type'."
             ),
+        )
+    }
+
+    // tsc points a few well-known global names at the package that declares them.
+    pub fn unresolved_identifier_hint(name: &str) -> Option<DiagnosticMessage> {
+        const NODE: &[&str] = &[
+            "require",
+            "module",
+            "exports",
+            "process",
+            "Buffer",
+            "__filename",
+            "__dirname",
+            "fs",
+            "path",
+            "url",
+            "events",
+            "http",
+            "https",
+            "os",
+            "util",
+            "crypto",
+            "stream",
+            "child_process",
+            "assert",
+            "zlib",
+            "net",
+            "readline",
+            "cluster",
+            "dns",
+            "vm",
+            "querystring",
+            "buffer",
+            "tty",
+            "worker_threads",
+        ];
+        let node_scheme = name.starts_with("node:");
+        if NODE.contains(&name) || node_scheme {
+            return Some(DiagnosticMessage::new(
+                DiagnosticCode::MissingNodeTypes,
+                format!(
+                    "Cannot find name '{name}'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig."
+                ),
+            ));
+        }
+        match name {
+            "describe" | "suite" | "it" | "test" => Some(DiagnosticMessage::new(
+                DiagnosticCode::MissingTestRunnerTypes,
+                format!(
+                    "Cannot find name '{name}'. Do you need to install type definitions for a test runner? Try `npm i --save-dev @types/jest` or `npm i --save-dev @types/mocha` and then add 'jest' or 'mocha' to the types field in your tsconfig."
+                ),
+            )),
+            "$" | "jQuery" => Some(DiagnosticMessage::new(
+                DiagnosticCode::MissingJqueryTypes,
+                format!(
+                    "Cannot find name '{name}'. Do you need to install type definitions for jQuery? Try `npm i --save-dev @types/jquery` and then add 'jquery' to the types field in your tsconfig."
+                ),
+            )),
+            _ => None,
+        }
+    }
+
+    pub fn variable_implicitly_any(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyVariable,
+            format!("Variable '{name}' implicitly has an 'any' type."),
+        )
+    }
+
+    pub fn binding_element_implicitly_any(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyBinding,
+            format!("Binding element '{name}' implicitly has an 'any' type."),
+        )
+    }
+
+    pub fn subsequent_variable_type(
+        name: &str,
+        previous: &str,
+        current: &str,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::SubsequentVariableType,
+            format!(
+                "Subsequent variable declarations must have the same type.  Variable '{name}' must be of type '{previous}', but here has type '{current}'."
+            ),
+        )
+    }
+
+    pub fn unresolved_namespace(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::UnresolvedNamespace,
+            format!("Cannot find namespace '{name}'."),
         )
     }
 
@@ -1028,6 +1130,35 @@ pub mod messages {
         )
     }
 
+    pub fn assignment_to_class(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AssignmentToClass,
+            format!("Cannot assign to '{name}' because it is a class."),
+        )
+    }
+
+    pub fn assignment_to_function(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AssignmentToFunction,
+            format!("Cannot assign to '{name}' because it is a function."),
+        )
+    }
+
+    pub fn assignment_to_enum(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AssignmentToEnum,
+            format!("Cannot assign to '{name}' because it is an enum."),
+        )
+    }
+
+    // tsc's TS18050, for a literal `null` or `undefined` used as an operand.
+    pub fn value_cannot_be_used_here(value: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ValueCannotBeUsedHere,
+            format!("The value '{value}' cannot be used here."),
+        )
+    }
+
     pub fn assignment_to_import(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::AssignmentToImport,
@@ -1242,6 +1373,58 @@ pub mod messages {
         DiagnosticMessage::new(
             DiagnosticCode::UnresolvableDestructuringTypeAnnotation,
             "Type annotation for this destructuring pattern could not be resolved.",
+        )
+    }
+
+    // The expression-grammar diagnostics below carry tsc's exact wording (tsc 6.0.3),
+    // because the checker's own code here is a direct port of the syntactic rules the
+    // compiler applies, and the ts-diag-tool compare reads the text back.
+    pub fn comma_left_no_side_effect() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::CommaLeftNoSideEffect,
+            "Left side of comma operator is unused and has no side effects.",
+        )
+    }
+
+    pub fn void_truthiness() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::VoidTruthiness,
+            "An expression of type 'void' cannot be tested for truthiness.",
+        )
+    }
+
+    pub fn always_truthy_expression() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AlwaysTruthyExpression,
+            "This kind of expression is always truthy.",
+        )
+    }
+
+    pub fn always_falsy_expression() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AlwaysFalsyExpression,
+            "This kind of expression is always falsy.",
+        )
+    }
+
+    pub fn delete_operand_not_property() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::DeleteOperandNotProperty,
+            "The operand of a 'delete' operator must be a property reference.",
+        )
+    }
+
+    pub fn delete_operand_required() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::DeleteOperandRequired,
+            "The operand of a 'delete' operator must be optional.",
+        )
+    }
+
+    pub fn excessive_complexity(source: &str, target: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ExcessiveComplexity,
+            format!("Excessive complexity comparing types '{source}' and '{target}'."),
         )
     }
 }

@@ -88,6 +88,15 @@ impl<'c, 'ast, 'src> Walker<'c, 'ast, 'src> {
                 continue;
             }
             let BindingPattern::BindingIdentifier(id) = &param.pattern else {
+                let mut found = Vec::new();
+                super::statements::implicit_any_bindings(&param.pattern, &mut found);
+                for (name, span) in found {
+                    self.report(
+                        DiagnosticCode::ImplicitAnyBinding,
+                        messages::binding_element_implicitly_any(&name),
+                        span,
+                    );
+                }
                 continue;
             };
             self.report(
@@ -102,7 +111,7 @@ impl<'c, 'ast, 'src> Walker<'c, 'ast, 'src> {
         {
             self.report(
                 DiagnosticCode::ImplicitAnyParameter,
-                messages::parameter_implicitly_any(&id.name),
+                messages::rest_parameter_implicitly_any(&id.name),
                 id.span,
             );
         }

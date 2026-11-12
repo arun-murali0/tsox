@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use oxc_ast::ast::{
-    AssignmentOperator, AssignmentTarget, ClassElement, Expression, MethodDefinitionKind,
-    PropertyDefinitionType, PropertyKey, Statement,
+    AssignmentOperator, AssignmentTarget, AssignmentTargetProperty, ClassElement, Expression,
+    MethodDefinitionKind, PropertyDefinitionType, PropertyKey, Statement, UnaryOperator,
 };
 use oxc_semantic::Scoping;
 use oxc_span::GetSpan;
@@ -38,9 +38,11 @@ fn is_private_member(method: &oxc_ast::ast::MethodDefinition<'_>) -> bool {
     ) || matches!(method.key, PropertyKey::PrivateIdentifier(_))
 }
 
-pub(super) fn check_class_declaration(
+// What is reported about a class whether or not the rest of it could be resolved: its untyped
+// parameters and its fields that are never initialized. A class expression gets this much too,
+// though its body is otherwise not checked yet.
+pub(in crate::bridge) fn report_class_surface(
     class: &oxc_ast::ast::Class<'_>,
-    scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) {
     // Reported up front, before anything below can bail out, so a class this
@@ -85,6 +87,14 @@ pub(super) fn check_class_declaration(
     // Same reasoning: a field with no initializer is a problem whether or not the
     // rest of the class could be resolved.
     report_uninitialized_properties(class, ctx);
+}
+
+pub(super) fn check_class_declaration(
+    class: &oxc_ast::ast::Class<'_>,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) {
+    report_class_surface(class, ctx);
 
     let Some(name) = class.id.as_ref() else {
         return;
@@ -358,13 +368,17 @@ fn report_uninitialized_properties(
         {
             continue;
         }
-        let PropertyKey::StaticIdentifier(key) = &prop.key else {
-            continue;
+        // `#name` is reported like a plain name, with the `#` in it, and assigned the same
+        // way (`this.#name = ...`).
+        let (key_name, key_span) = match &prop.key {
+            PropertyKey::StaticIdentifier(key) => (key.name.to_string(), key.span),
+            PropertyKey::PrivateIdentifier(key) => (format!("#{}", key.name), key.span),
+            _ => continue,
         };
         let Some(annotation) = &prop.type_annotation else {
             continue;
         };
-        if assigned_names.contains(key.name.as_str()) {
+        if assigned_names.contains(key_name.as_str()) {
             continue;
         }
         let Some(declared) =
@@ -378,8 +392,8 @@ fn report_uninitialized_properties(
             continue;
         }
         ctx.error(
-            crate::diagnostic_messages::messages::property_not_initialized(&key.name),
-            key.span,
+            crate::diagnostic_messages::messages::property_not_initialized(&key_name),
+            key_span,
         );
     }
 }
@@ -405,9 +419,9 @@ fn definitely_assigned_names(stmts: &[Statement]) -> HashSet<String> {
 fn names_assigned_by(stmt: &Statement) -> HashSet<String> {
     match stmt {
         Statement::ExpressionStatement(expr_stmt) => {
-            this_property_assigned_by(&expr_stmt.expression)
-                .into_iter()
-                .collect()
+            let mut assigned = Vec::new();
+            this_properties_assigned_by(&expr_stmt.expression, &mut assigned);
+            assigned.into_iter().collect()
         }
         Statement::BlockStatement(block) => definitely_assigned_names(&block.body),
         Statement::IfStatement(if_stmt) => {
@@ -439,22 +453,82 @@ fn names_assigned_by(stmt: &Statement) -> HashSet<String> {
     }
 }
 
-// `this.name = value` (plain assignment only, not `+=` and friends) at the top
-// level of one expression. Never looks inside a nested function or arrow
-// expression, since an assignment there may run after the constructor has
-// already finished, matching tsc.
-fn this_property_assigned_by(expr: &Expression) -> Option<String> {
-    let Expression::AssignmentExpression(assign) = expr else {
-        return None;
-    };
-    if assign.operator != AssignmentOperator::Assign {
-        return None;
+// Every property name one expression definitely assigns through `this`. Covers the
+// shapes that run unconditionally as part of the statement: a plain assignment, a
+// sequence of them, a parenthesized or `void`-prefixed one, and a destructuring
+// write to the property. Compound forms (`+=` and friends) do not count, and never
+// does anything inside a nested function or arrow, since it may run after the
+// constructor has already finished, matching tsc.
+fn this_properties_assigned_by(expr: &Expression, out: &mut Vec<String>) {
+    match expr {
+        Expression::AssignmentExpression(assign) => {
+            if assign.operator != AssignmentOperator::Assign {
+                return;
+            }
+            match &assign.left {
+                AssignmentTarget::StaticMemberExpression(member) => {
+                    if matches!(member.object, Expression::ThisExpression(_)) {
+                        out.push(member.property.name.to_string());
+                    }
+                }
+                AssignmentTarget::PrivateFieldExpression(member) => {
+                    if matches!(member.object, Expression::ThisExpression(_)) {
+                        out.push(format!("#{}", member.field.name));
+                    }
+                }
+                // `({ name: this.name } = src)`: a destructuring write to the property
+                // assigns it, as tsc counts it. An identifier property shorthand has no
+                // member target, and a computed key writes through a path this analysis
+                // does not track.
+                AssignmentTarget::ObjectAssignmentTarget(object) => {
+                    for property in &object.properties {
+                        if let AssignmentTargetProperty::AssignmentTargetPropertyProperty(prop) =
+                            property
+                            && let Some(inner) = prop.binding.as_assignment_target()
+                        {
+                            member_this_target(inner, out);
+                        }
+                    }
+                }
+                AssignmentTarget::ArrayAssignmentTarget(array) => {
+                    for element in array.elements.iter().flatten() {
+                        if let Some(inner) = element.as_assignment_target() {
+                            member_this_target(inner, out);
+                        }
+                    }
+                    if let Some(rest) = &array.rest {
+                        member_this_target(&rest.target, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Expression::SequenceExpression(sequence) => {
+            for expression in &sequence.expressions {
+                this_properties_assigned_by(expression, out);
+            }
+        }
+        Expression::ParenthesizedExpression(inner) => {
+            this_properties_assigned_by(&inner.expression, out);
+        }
+        // `void this.name = 1` runs the assignment; tsc counts it.
+        Expression::UnaryExpression(unary) if unary.operator == UnaryOperator::Void => {
+            this_properties_assigned_by(&unary.argument, out);
+        }
+        _ => {}
     }
-    let AssignmentTarget::StaticMemberExpression(member) = &assign.left else {
-        return None;
-    };
-    if !matches!(member.object, Expression::ThisExpression(_)) {
-        return None;
+}
+
+// The property one destructuring element writes, when it writes through `this`.
+fn member_this_target(target: &AssignmentTarget, out: &mut Vec<String>) {
+    if let AssignmentTarget::StaticMemberExpression(member) = target
+        && matches!(member.object, Expression::ThisExpression(_))
+    {
+        out.push(member.property.name.to_string());
     }
-    Some(member.property.name.to_string())
+    if let AssignmentTarget::PrivateFieldExpression(member) = target
+        && matches!(member.object, Expression::ThisExpression(_))
+    {
+        out.push(format!("#{}", member.field.name));
+    }
 }

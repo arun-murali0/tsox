@@ -36,7 +36,7 @@ pub(super) fn check_variable_declaration(
     for declarator in &decl.declarations {
         match &declarator.id {
             BindingPattern::BindingIdentifier(id) => {
-                check_identifier_declarator(decl.kind, declarator, id, scoping, ctx);
+                check_identifier_declarator(decl, declarator, id, scoping, ctx);
             }
             BindingPattern::ObjectPattern(_) | BindingPattern::ArrayPattern(_) => {
                 check_destructured_declarator(decl.kind, declarator, scoping, ctx);
@@ -48,12 +48,13 @@ pub(super) fn check_variable_declaration(
 }
 
 fn check_identifier_declarator(
-    decl_kind: VariableDeclarationKind,
+    decl: &oxc_ast::ast::VariableDeclaration,
     declarator: &VariableDeclarator,
     id: &oxc_ast::ast::BindingIdentifier,
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) {
+    let decl_kind = decl.kind;
     let annotation_outcome = match &declarator.type_annotation {
         None => AnnotationOutcome::Absent,
         Some(annotation) => {
@@ -116,6 +117,7 @@ fn check_identifier_declarator(
         }
 
         (AnnotationOutcome::Resolved(declared), Some(actual)) => {
+            note_var_redeclaration(decl_kind, id, declared, ctx);
             if !ctx.is_assignable_instantiating(actual, declared) {
                 let instantiated = ctx.instantiate_for_message(actual, declared);
                 let whole = crate::diagnostic_messages::messages::declared_type_mismatch_via(
@@ -179,12 +181,59 @@ fn check_identifier_declarator(
         }
 
         (AnnotationOutcome::Resolved(declared), None) => {
+            note_var_redeclaration(decl_kind, id, declared, ctx);
             if let Some(symbol_id) = id.symbol_id.get() {
                 declare_variable(symbol_id, &id.name, declared, scoping, ctx);
             }
         }
-        (AnnotationOutcome::Absent, None) => {}
+        (AnnotationOutcome::Absent, None) => {
+            // A variable with no type and no value, in a declaration or exported, has no
+            // flow to infer a type from: TS7005.
+            if decl_kind != VariableDeclarationKind::Const
+                && (decl.declare || ctx.in_export_declaration)
+            {
+                ctx.error(
+                    crate::diagnostic_messages::messages::variable_implicitly_any(&id.name),
+                    id.span,
+                );
+            }
+        }
     }
+}
+
+// `var i: number; var i: string;` — later declarations of a `var` must repeat the first
+// one's type (TS2403). Only annotated declarations are compared, and by mutual assignability,
+// so a difference tsc would call identical is never reported.
+fn note_var_redeclaration(
+    decl_kind: VariableDeclarationKind,
+    id: &oxc_ast::ast::BindingIdentifier,
+    declared: TypeId,
+    ctx: &mut CheckContext<'_, '_>,
+) {
+    if decl_kind != VariableDeclarationKind::Var {
+        return;
+    }
+    let Some(symbol_id) = id.symbol_id.get() else {
+        return;
+    };
+    let Some(&first) = ctx.var_annotations.get(&symbol_id) else {
+        ctx.var_annotations.insert(symbol_id, declared);
+        return;
+    };
+    if first == declared
+        || (ctx.is_assignable_instantiating(declared, first)
+            && ctx.is_assignable_instantiating(first, declared))
+    {
+        return;
+    }
+    let previous = crate::type_display::display_type(&ctx.arena, first);
+    let current = crate::type_display::display_type(&ctx.arena, declared);
+    ctx.error(
+        crate::diagnostic_messages::messages::subsequent_variable_type(
+            &id.name, &previous, &current,
+        ),
+        id.span,
+    );
 }
 
 // Handles const {x} = y and let [a, b] = y separately from the plain identifier

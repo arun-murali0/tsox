@@ -1173,7 +1173,23 @@ fn declare_enum(decl: &oxc_ast::ast::TSEnumDeclaration, ctx: &mut CheckContext<'
     let Some(symbol_id) = decl.id.symbol_id.get() else {
         return;
     };
-    let Some(members) = resolve_enum_members(decl, &mut ctx.arena) else {
+    // Members of an earlier block of this enum can be named by a later one
+    // (`W = Enum1.A0`), so their values seed the evaluation.
+    let prior: Vec<(String, f64)> = match ctx.symbols.get(symbol_id) {
+        Some(previous) => match ctx.arena.get(previous) {
+            Type::Object(object) => object
+                .properties
+                .iter()
+                .filter_map(|property| match ctx.arena.get(property.type_id) {
+                    Type::NumberLiteral(value) => Some((property.name.to_string(), *value)),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+    let Some(members) = resolve_enum_members(decl, &prior, &mut ctx.arena) else {
         return;
     };
 
@@ -1240,6 +1256,7 @@ fn merge_enum_value_shapes(
 
 fn resolve_enum_members(
     decl: &oxc_ast::ast::TSEnumDeclaration,
+    prior: &[(String, f64)],
     arena: &mut crate::arena::TypeArena,
 ) -> Option<Vec<(String, crate::arena::TypeId)>> {
     use oxc_ast::ast::TSEnumMemberName;
@@ -1247,7 +1264,8 @@ fn resolve_enum_members(
     let mut members = Vec::with_capacity(decl.body.members.len());
     // Every numeric member's value so far, by name, so a later initializer can
     // refer to an earlier member (`ReadWrite = Read | Write`).
-    let mut numeric_values: Vec<(String, f64)> = Vec::new();
+    let mut numeric_values: Vec<(String, f64)> = prior.to_vec();
+    let enum_name = decl.id.name.as_str();
     // Tracks the running value for TypeScript's own auto-increment rule: a
     // numeric member with no initializer takes the previous numeric member's
     // value plus one. Reset to None whenever a string member breaks that chain,
@@ -1279,7 +1297,7 @@ fn resolve_enum_members(
             // function call, leaves the whole enum unresolved rather than
             // guessing a value.
             Some(initializer) => {
-                let value = eval_enum_constant(initializer, &numeric_values)?;
+                let value = eval_enum_constant(initializer, enum_name, &numeric_values)?;
                 prev_numeric = Some(value);
                 numeric_values.push((name.clone(), value));
                 arena.alloc(Type::NumberLiteral(value))
@@ -1308,13 +1326,46 @@ fn resolve_enum_members(
 // bitwise binary operators, and references to earlier members of the same enum.
 // Anything else, or a result that is not a finite number, is None, which leaves
 // the enum unresolved the same way an unsupported initializer always has.
-fn eval_enum_constant(expr: &Expression, known: &[(String, f64)]) -> Option<f64> {
+fn eval_enum_constant(expr: &Expression, enum_name: &str, known: &[(String, f64)]) -> Option<f64> {
     let value = match expr {
         Expression::NumericLiteral(n) => n.value,
-        Expression::ParenthesizedExpression(inner) => eval_enum_constant(&inner.expression, known)?,
+        Expression::ParenthesizedExpression(inner) => {
+            eval_enum_constant(&inner.expression, enum_name, known)?
+        }
         Expression::Identifier(id) => known.iter().find(|(name, _)| name == id.name.as_str())?.1,
+        // `Enum.Member`, `Enum["Member"]` and ``Enum[`Member`]`` name a member of this enum.
+        Expression::StaticMemberExpression(member) => {
+            let Expression::Identifier(object) = &member.object else {
+                return None;
+            };
+            if object.name.as_str() != enum_name {
+                return None;
+            }
+            known
+                .iter()
+                .find(|(name, _)| name == member.property.name.as_str())?
+                .1
+        }
+        Expression::ComputedMemberExpression(member) => {
+            let Expression::Identifier(object) = &member.object else {
+                return None;
+            };
+            if object.name.as_str() != enum_name {
+                return None;
+            }
+            let key = match &member.expression {
+                Expression::StringLiteral(s) => s.value.to_string(),
+                Expression::TemplateLiteral(t)
+                    if t.expressions.is_empty() && t.quasis.len() == 1 =>
+                {
+                    t.quasis[0].value.cooked.as_ref()?.to_string()
+                }
+                _ => return None,
+            };
+            known.iter().find(|(name, _)| *name == key)?.1
+        }
         Expression::UnaryExpression(unary) => {
-            let operand = eval_enum_constant(&unary.argument, known)?;
+            let operand = eval_enum_constant(&unary.argument, enum_name, known)?;
             match unary.operator {
                 UnaryOperator::UnaryPlus => operand,
                 UnaryOperator::UnaryNegation => -operand,
@@ -1323,8 +1374,8 @@ fn eval_enum_constant(expr: &Expression, known: &[(String, f64)]) -> Option<f64>
             }
         }
         Expression::BinaryExpression(binary) => {
-            let left = eval_enum_constant(&binary.left, known)?;
-            let right = eval_enum_constant(&binary.right, known)?;
+            let left = eval_enum_constant(&binary.left, enum_name, known)?;
+            let right = eval_enum_constant(&binary.right, enum_name, known)?;
             match binary.operator {
                 BinaryOperator::Addition => left + right,
                 BinaryOperator::Subtraction => left - right,

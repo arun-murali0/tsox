@@ -107,12 +107,75 @@ pub(super) fn report_implicit_any_params(
             continue;
         }
         let BindingPattern::BindingIdentifier(id) = &param.pattern else {
+            let mut found = Vec::new();
+            implicit_any_bindings(&param.pattern, &mut found);
+            for (name, span) in found {
+                ctx.error(
+                    crate::diagnostic_messages::messages::binding_element_implicitly_any(&name),
+                    span,
+                );
+            }
             continue;
         };
         ctx.error(
             crate::diagnostic_messages::messages::parameter_implicitly_any(&id.name),
             id.span,
         );
+    }
+    // A rest parameter with no type is the same code (TS7006) with tsc's rest wording,
+    // which the items loop above does not reach. A destructured rest (`...[a, b]`)
+    // reports its binding elements instead (TS7031), as a destructured parameter does.
+    if let Some(rest) = &params.rest {
+        if rest.type_annotation.is_some() {
+            return;
+        }
+        match &rest.rest.argument {
+            BindingPattern::BindingIdentifier(id) => {
+                ctx.error(
+                    crate::diagnostic_messages::messages::rest_parameter_implicitly_any(&id.name),
+                    id.span,
+                );
+            }
+            pattern => {
+                let mut found = Vec::new();
+                implicit_any_bindings(pattern, &mut found);
+                for (name, span) in found {
+                    ctx.error(
+                        crate::diagnostic_messages::messages::binding_element_implicitly_any(&name),
+                        span,
+                    );
+                }
+            }
+        }
+    }
+}
+
+// The names bound by a destructuring parameter that has neither a type nor a default: each
+// is a binding element with no type (TS7031). A default on an element or on a nested pattern
+// gives its names a type, so those are skipped.
+pub(in crate::bridge) fn implicit_any_bindings(
+    pattern: &BindingPattern,
+    out: &mut Vec<(String, oxc_span::Span)>,
+) {
+    match pattern {
+        BindingPattern::BindingIdentifier(id) => out.push((id.name.to_string(), id.span)),
+        BindingPattern::ObjectPattern(object) => {
+            for property in &object.properties {
+                implicit_any_bindings(&property.value, out);
+            }
+            if let Some(rest) = &object.rest {
+                implicit_any_bindings(&rest.argument, out);
+            }
+        }
+        BindingPattern::ArrayPattern(array) => {
+            for element in array.elements.iter().flatten() {
+                implicit_any_bindings(element, out);
+            }
+            if let Some(rest) = &array.rest {
+                implicit_any_bindings(&rest.argument, out);
+            }
+        }
+        BindingPattern::AssignmentPattern(_) => {}
     }
 }
 

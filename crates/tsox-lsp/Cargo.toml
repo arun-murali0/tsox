@@ -1,0 +1,30 @@
+[package]
+name = "tsox-lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A language server for tsox, built on tower."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+oxc_allocator.workspace = true
+oxc_ast.workspace = true
+oxc_parser.workspace = true
+oxc_semantic.workspace = true
+oxc_span.workspace = true
+serde_json = "1"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "io-std", "sync"] }
+tower-lsp-server = "0.23.0"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tsox = { path = "../..", features = ["incremental"] }
+tsox-base = { path = "../tsox-base" }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3.27.0"

@@ -13,9 +13,11 @@ mod support;
 mod variables;
 
 pub(super) use patterns::{bind_params, bind_pattern};
+pub(in crate::bridge) use support::implicit_any_bindings;
 pub(super) use support::statement_leaves_flow;
 
 use classes::check_class_declaration;
+pub(in crate::bridge) use classes::report_class_surface;
 use control_flow::{
     check_do_while_statement, check_for_in_statement, check_for_of_statement, check_for_statement,
     check_if_statement, check_labeled_statement, check_switch_statement, check_try_statement,
@@ -29,6 +31,7 @@ pub fn check_top_level(program: &Program, scoping: &Scoping, ctx: &mut CheckCont
     // try blocks ask which variables they assign, and closures whether a variable is
     // assigned after they are made.
     ctx.writes = super::narrow::WriteMap::collect(program, scoping);
+    ctx.expandos = super::expando::collect(program, scoping);
     for stmt in &program.body {
         check_statement(stmt, scoping, ctx);
     }
@@ -135,6 +138,7 @@ pub fn check_statement(stmt: &Statement, scoping: &Scoping, ctx: &mut CheckConte
         return;
     }
     crate::stack_guard::reset_instantiations();
+    crate::subtyping::clear_relation_overflow();
     // A chain of `else if`, or blocks nested through control flow, recurses here once per
     // level; past the stack budget the rest is left unchecked and the file says so once.
     if crate::stack_guard::exhausted() {
@@ -322,7 +326,11 @@ fn check_namespace(
 // pass, the same as when they are not exported.
 fn check_declaration(declaration: &Declaration, scoping: &Scoping, ctx: &mut CheckContext<'_, '_>) {
     match declaration {
-        Declaration::VariableDeclaration(decl) => check_variable_declaration(decl, scoping, ctx),
+        Declaration::VariableDeclaration(decl) => {
+            ctx.in_export_declaration = true;
+            check_variable_declaration(decl, scoping, ctx);
+            ctx.in_export_declaration = false;
+        }
         Declaration::FunctionDeclaration(func) => check_function_declaration(func, scoping, ctx),
         Declaration::ClassDeclaration(class) => check_class_declaration(class, scoping, ctx),
         Declaration::TSTypeAliasDeclaration(_)

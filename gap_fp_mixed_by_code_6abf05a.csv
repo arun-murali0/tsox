@@ -1,0 +1,702 @@
+code,message,gap_missed_lines,fp_extra_lines,mixed_missed_lines,mixed_extra_lines,gap_missed_files,fp_extra_files,mixed_missed_files,mixed_extra_files,total_lines
+TS2322,Type 'X' is not assignable to type 'X'.,1125,398,223,397,411,162,87,105,2143
+TS2304,Cannot find name 'X'.,1777,16,15,3,444,7,8,2,1811
+TS2339,Property 'X' does not exist on type 'X'.,550,320,85,385,205,102,34,92,1340
+TS2454,Variable 'X' is used before being assigned.,1150,70,48,24,140,23,17,8,1292
+TS2345,Argument of type 'X' is not assignable to parameter of type 'X'.,302,290,152,243,133,133,38,63,987
+TS7006,Parameter 'X' implicitly has an 'X' type.,548,14,51,1,211,10,27,1,614
+TS1005,'X' expected.,521,0,1,0,232,0,1,0,522
+TS2300,Duplicate identifier 'X'.,406,0,8,0,76,0,4,0,414
+TS2564,Property 'X' has no initializer and is not definitely assigned in the constructor.,352,0,37,0,186,0,22,0,389
+TS2365,Operator 'X' cannot be applied to types 'X' and 'X'.,355,3,1,7,37,3,1,5,366
+TS4114,This member must have an 'X' modifier because it overrides a member in the base class 'X'.,312,16,8,9,72,9,4,5,345
+TS18048,'X' is possibly 'X'.,247,15,42,36,58,7,14,7,340
+TS2367,This comparison appears to be unintentional because the types 'X' and 'X' have no overlap.,295,0,18,6,37,0,6,2,319
+TS2693,"'X' only refers to a type, but is being used as a value here.",65,27,0,203,34,19,0,17,295
+TS2550,Property 'X' does not exist on type 'X'. Do you need to change your target library? Try ch,256,0,10,0,48,0,2,0,266
+TS1109,Expression expected.,246,0,0,0,133,0,0,0,246
+TS2532,Object is possibly 'X'.,183,7,42,0,71,3,20,0,232
+TS2307,Cannot find module 'X' or its corresponding type declarations.,216,0,4,0,36,0,2,0,220
+TS2683,'X' implicitly has type 'X' because it does not have a type annotation.,170,0,33,0,93,0,16,0,203
+TS2356,"An arithmetic operand must be of type 'X', 'X', 'X' or an enum type.",202,0,1,0,20,0,1,0,203
+TS2554,"Expected N arguments, but got N.",122,7,8,63,51,4,6,11,200
+TS2403,Subsequent variable declarations must have the same type.  Variable 'X' must be of type 'X,96,11,79,2,38,6,16,2,188
+TS2769,"No overload matches this call.
+  Overload N of N, 'X', gave the following error.
+    Argum",120,5,57,2,28,3,8,2,184
+TS2344,Type 'X' does not satisfy the constraint 'X'.,24,91,14,55,16,55,5,26,184
+TS7005,Variable 'X' implicitly has an 'X' type.,160,1,15,0,68,1,8,0,176
+TS7053,Element implicitly has an 'X' type because expression of type 'X' can'X'{}'X'string'X'{}'.,126,19,13,16,52,10,6,9,174
+TS2349,"This expression is not callable.
+  Type 'X' has no call signatures.",32,89,3,38,25,30,2,14,162
+TS2352,Conversion of type 'X' to type 'X' may be a mistake because neither type sufficiently over,156,0,3,0,62,0,2,0,159
+TS2430,"Interface 'X' incorrectly extends interface 'X'.
+  Types of property 'X' are incompatible.",143,10,0,3,29,9,0,3,156
+TS7027,Unreachable code detected.,91,19,44,0,22,3,12,0,154
+TS2411,Property 'X' of type 'X' is not assignable to 'X' index type 'X'.,127,0,7,11,44,0,3,7,145
+TS2353,"Object literal may only specify known properties, and 'X' does not exist in type 'X'.",98,5,36,5,41,3,15,4,144
+TS1214,Identifier expected. 'X' is a reserved word in strict mode. Modules are automatically in s,143,0,0,0,54,0,0,0,143
+TS7008,Member 'X' implicitly has an 'X' type.,128,7,0,3,46,5,0,3,138
+TS1128,Declaration or statement expected.,138,0,0,0,67,0,0,0,138
+TS17006,An unary expression with the 'X' operator is not allowed in the left-hand side of an expon,132,0,0,0,5,0,0,0,132
+TS2741,Property 'X' is missing in type 'X' but required in type 'X'.,63,38,6,23,29,18,4,10,130
+TS2664,"Invalid module name in augmentation, module 'X' cannot be found.",116,0,8,0,47,0,6,0,124
+TS7022,'X' implicitly has type 'X' because it does not have a type annotation and is referenced d,94,0,24,0,57,0,6,0,118
+TS1240,"Unable to resolve signature of property decorator when called as an expression.
+  Argument",118,0,0,0,14,0,0,0,118
+TS7009,"'X' expression, whose target lacks a construct signature, implicitly has an 'X' type.",81,0,32,0,39,0,18,0,113
+TS2503,Cannot find namespace 'X'.,81,0,30,0,28,0,1,0,111
+TS2449,Class 'X' used before its declaration.,103,0,0,0,26,0,0,0,103
+TS2416,"Property 'X' in type 'X' is not assignable to the same property in base type 'X'.
+  Type '",72,23,5,0,21,11,2,0,100
+TS1215,Invalid use of 'X'. Modules are automatically in strict mode.,99,0,0,0,34,0,0,0,99
+TS2362,"The left-hand side of an arithmetic operation must be of type 'X', 'X', 'X' or an enum typ",88,0,3,5,19,0,1,3,96
+TS7010,"'X', which lacks return-type annotation, implicitly has an 'X' return type.",96,0,0,0,43,0,0,0,96
+TS2694,Namespace 'X' has no exported member 'X'.,89,0,5,0,22,0,1,0,94
+TS2488,Type 'X' must have a 'X' method that returns an iterator.,44,22,0,27,35,9,0,9,93
+TS1487,Octal escape sequences are not allowed. Use the syntax 'X'.,88,0,0,0,2,0,0,0,88
+TS7020,"Call signature, which lacks return-type annotation, implicitly has an 'X' return type.",85,0,0,0,10,0,0,0,85
+TS2873,This kind of expression is always falsy.,75,0,6,0,11,0,3,0,81
+TS1121,Octal literals are not allowed. Use the syntax 'X'.,76,0,0,0,16,0,0,0,76
+TS2540,Cannot assign to 'X' because it is a read-only property.,60,2,12,1,16,2,7,1,75
+TS1344,'A label is not allowed here.,74,0,0,0,26,0,0,0,74
+TS2364,The left-hand side of an assignment expression must be a variable or a property access.,74,0,0,0,15,0,0,0,74
+TS2464,"A computed property name must be of type 'X', 'X', 'X', or 'X'.",71,0,0,0,30,0,0,0,71
+TS2415,"Class 'X' incorrectly extends base class 'X'.
+  Property 'X' is private in type 'X' but no",48,6,6,6,24,5,1,2,66
+TS2357,The operand of an increment or decrement operator must be a variable or a property access.,65,0,0,0,8,0,0,0,65
+TS1206,Decorators are not valid here.,64,0,0,0,27,0,0,0,64
+TS1183,An implementation cannot be declared in ambient contexts.,63,0,0,0,5,0,0,0,63
+TS1166,A computed property name in a class property declaration must have a simple literal type o,63,0,0,0,13,0,0,0,63
+TS7013,"Construct signature, which lacks return-type annotation, implicitly has an 'X' return type",63,0,0,0,5,0,0,0,63
+TS2699,Static property 'X' conflicts with built-in property 'X' of constructor function 'X'.,63,0,0,0,3,0,0,0,63
+TS17009,'X' must be called before accessing 'X' in the constructor of a derived class.,61,0,0,0,23,0,0,0,61
+TS1161,Unterminated regular expression literal.,61,0,0,0,13,0,0,0,61
+TS2391,Function implementation is missing or not immediately following the declaration.,54,0,5,0,30,0,5,0,59
+TS2538,Type 'X' cannot be used as an index type.,47,0,12,0,21,0,2,0,59
+TS2420,"Class 'X' incorrectly implements interface 'X'.
+  Property 'X' is missing in type 'X' but ",15,19,9,13,12,11,3,13,56
+TS2448,Block-scoped variable 'X' used before its declaration.,54,0,2,0,21,0,2,0,56
+TS2369,A parameter property is only allowed in a constructor implementation.,55,0,0,0,19,0,0,0,55
+TS7032,"Property 'X' implicitly has type 'X', because its set accessor lacks a parameter type anno",45,0,10,0,36,0,2,0,55
+TS1210,"Code contained in a class is evaluated in JavaScript'X'arguments'. For more information, s",55,0,0,0,8,0,0,0,55
+TS2678,Type 'X' is not comparable to type 'X'.,55,0,0,0,21,0,0,0,55
+TS7034,Variable 'X' implicitly has type 'X' in some locations where its type cannot be determined,44,0,10,0,35,0,7,0,54
+TS2774,This condition will always return true since this function is always defined. Did you mean,50,0,4,0,6,0,2,0,54
+TS1117,An object literal cannot have multiple properties with the same name.,53,0,0,0,15,0,0,0,53
+TS2551,Property 'X' does not exist on type 'X'. Did you mean 'X'?,23,22,5,1,15,8,2,1,51
+TS4111,"Property 'X' comes from an index signature, so it must be accessed with ['X'].",30,1,16,4,15,1,7,3,51
+TS7019,Rest parameter 'X' implicitly has an 'X' type.,47,0,2,2,26,0,1,1,51
+TS2341,Property 'X' is private and only accessible within class 'X'.,21,0,12,18,7,0,1,4,51
+TS1125,Hexadecimal digit expected.,50,0,0,0,17,0,0,0,50
+TS2695,Left side of comma operator is unused and has no side effects.,39,4,2,4,21,4,1,3,49
+TS2537,Type 'X' has no matching index signature for type 'X'.,41,0,8,0,14,0,3,0,49
+TS1241,"Unable to resolve signature of method decorator when called as an expression.
+  The runtim",49,0,0,0,26,0,0,0,49
+TS1029,'X' modifier must precede 'X' modifier.,41,0,8,0,19,0,2,0,49
+TS1335,'X' types are not allowed here.,49,0,0,0,1,0,0,0,49
+TS2445,Property 'X' is protected and only accessible within class 'X' and its subclasses.,4,10,13,21,1,2,3,5,48
+TS2591,Cannot find name 'X'. Do you need to install type definitions for node? Try `npm i --save-,46,0,1,0,30,0,1,0,47
+TS1270,Decorator function return type 'X' is not assignable to type 'X'.,47,0,0,0,22,0,0,0,47
+TS2729,Property 'X' is used before its initialization.,39,0,7,0,18,0,4,0,46
+TS2749,"'X' refers to a value, but is being used as a type here. Did you mean 'X'?",46,0,0,0,12,0,0,0,46
+TS2872,This kind of expression is always truthy.,45,0,1,0,21,0,1,0,46
+TS2842,'X' is an unused renaming of 'X'. Did you intend to use it as a type annotation?,45,0,0,0,7,0,0,0,45
+TS2374,Duplicate index signature for type 'X'.,45,0,0,0,8,0,0,0,45
+TS7031,Binding element 'X' implicitly has an 'X' type.,39,2,0,3,14,2,0,3,44
+TS2394,This overload signature is not compatible with its implementation signature.,42,0,1,0,26,0,1,0,43
+TS1003,Identifier expected.,41,0,0,0,34,0,0,0,41
+TS2393,Duplicate function implementation.,39,0,2,0,13,0,1,0,41
+TS2739,"Type 'X' is missing the following properties from type 'X': hello, world",7,22,2,8,4,13,2,7,39
+TS2314,Generic type 'X' requires N type argument(s).,12,19,1,7,5,8,1,4,39
+TS7057,'X' expression implicitly results in an 'X' type because its containing generator lacks a ,39,0,0,0,28,0,0,0,39
+TS18050,The value 'X' cannot be used here.,39,0,0,0,14,0,0,0,39
+TS2363,"The right-hand side of an arithmetic operation must be of type 'X', 'X', 'X' or an enum ty",34,0,3,0,14,0,1,0,37
+TS2528,A module cannot have multiple default exports.,37,0,0,0,15,0,0,0,37
+TS2409,Return type of constructor signature must be assignable to the instance type of the class.,36,0,0,0,18,0,0,0,36
+TS2428,All declarations of 'X' must have identical type parameters.,30,0,0,6,6,0,0,1,36
+TS2378,A 'X' accessor must return a value.,35,0,0,0,31,0,0,0,35
+TS1044,'X' modifier cannot appear on a module or namespace element.,35,0,0,0,8,0,0,0,35
+TS2740,"Type 'X' is missing the following properties from type 'X': length, pop, push, concat, and",1,11,6,16,1,9,5,13,34
+TS1107,Jump target cannot cross function boundary.,34,0,0,0,22,0,0,0,34
+TS2351,"This expression is not constructable.
+  Type 'X' has no construct signatures.",26,3,1,4,10,2,1,3,34
+TS1345,An expression of type 'X' cannot be tested for truthiness.,34,0,0,0,6,0,0,0,34
+TS18016,Private identifiers are not allowed outside class bodies.,34,0,0,0,12,0,0,0,34
+TS17013,"Meta-property 'X' is only allowed in the body of a function declaration, function expressi",34,0,0,0,2,0,0,0,34
+TS2722,Cannot invoke an object which is possibly 'X'.,26,0,7,0,20,0,5,0,33
+TS2804,Duplicate identifier 'X'. Static and instance elements cannot share the same private name.,33,0,0,0,2,0,0,0,33
+TS1011,An element access expression should take an argument.,32,0,0,0,17,0,0,0,32
+TS2313,Type parameter 'X' has a circular constraint.,27,0,5,0,7,0,3,0,32
+TS2337,Super calls are not permitted outside constructors or in nested functions inside construct,32,0,0,0,8,0,0,0,32
+TS18046,'X' is of type 'X'.,12,0,20,0,3,0,5,0,32
+TS2469,The 'X' operator cannot be applied to type 'X'.,31,0,0,0,5,0,0,0,31
+TS2839,"This condition will always return 'X' since JavaScript compares objects by reference, not ",30,0,0,0,6,0,0,0,30
+TS2559,Type 'X' has no properties in common with type 'X'.,21,0,9,0,6,0,5,0,30
+TS6188,Numeric separators are not allowed here.,30,0,0,0,3,0,0,0,30
+TS2446,Property 'X' is protected and only accessible through an instance of class 'X'. This is an,30,0,0,0,4,0,0,0,30
+TS1434,Unexpected keyword or identifier.,29,0,0,0,21,0,0,0,29
+TS1127,Invalid character.,29,0,0,0,24,0,0,0,29
+TS2407,"The right-hand side of a 'X' statement must be of type 'X', an object type or a type param",26,0,3,0,11,0,1,0,29
+TS2507,Type 'X' is not a constructor function type.,29,0,0,0,17,0,0,0,29
+TS7015,Element implicitly has an 'X' type because index expression is not of type 'X'.,22,0,7,0,14,0,5,0,29
+TS1156,'X' declarations can only be declared inside a block.,29,0,0,0,8,0,0,0,29
+TS2358,"The left-hand side of an 'X' expression must be of type 'X', an object type or a type para",29,0,0,0,9,0,0,0,29
+TS18013,Property 'X' is not accessible outside class 'X' because it has a private identifier.,29,0,0,0,17,0,0,0,29
+TS7033,"Property 'X' implicitly has type 'X', because its get accessor lacks a return type annotat",28,0,0,0,5,0,0,0,28
+TS1359,Identifier expected. 'X' is a reserved word that cannot be used here.,28,0,0,0,15,0,0,0,28
+TS1110,Type expected.,28,0,0,0,17,0,0,0,28
+TS7030,Not all code paths return a value.,0,14,0,14,0,9,0,9,28
+TS2366,Function lacks ending return statement and return type does not include 'X'.,3,1,0,24,2,1,0,6,28
+TS2660,'X' can only be referenced in members of derived classes or object literal expressions.,28,0,0,0,8,0,0,0,28
+TS1147,Import declarations in a namespace cannot reference a module.,28,0,0,0,4,0,0,0,28
+TS17019,'X' at the end of a type is not valid TypeScript syntax. Did you mean to write 'X'?,27,0,1,0,6,0,1,0,28
+TS2698,Spread types may only be created from object types.,22,0,6,0,6,0,3,0,28
+TS2480,'X' is not allowed to be used as a name in 'X' or 'X' declarations.,28,0,0,0,9,0,0,0,28
+TS1034,'X' must be followed by an argument list or member access.,28,0,0,0,7,0,0,0,28
+TS2526,A 'X' type is available only in a non-static member of a class or interface.,28,0,0,0,6,0,0,0,28
+TS2855,Class field 'X' defined by the parent class is not accessible in the child class via super,27,0,0,0,10,0,0,0,27
+TS2335,'X' can only be referenced in a derived class.,27,0,0,0,14,0,0,0,27
+TS2502,'X' is referenced directly or indirectly in its own type annotation.,24,0,3,0,9,0,2,0,27
+TS18047,'X' is possibly 'X'.,18,1,0,8,7,1,0,3,27
+TS1123,Variable declaration list cannot be empty.,27,0,0,0,19,0,0,0,27
+TS1042,'X' modifier cannot be used here.,27,0,0,0,17,0,0,0,27
+TS1134,Variable declaration expected.,27,0,0,0,15,0,0,0,27
+TS2359,"The right-hand side of an 'X' expression must be either of type 'X', a class, function, or",27,0,0,0,5,0,0,0,27
+TS1101,'X' statements are not allowed in strict mode.,26,0,0,0,21,0,0,0,26
+TS2506,'X' is referenced directly or indirectly in its own base expression.,26,0,0,0,11,0,0,0,26
+TS2302,Static members cannot reference class type parameters.,26,0,0,0,13,0,0,0,26
+TS1213,Identifier expected. 'X' is a reserved word in strict mode. Class definitions are automati,26,0,0,0,6,0,0,0,26
+TS1030,'X' modifier already seen.,24,0,2,0,8,0,2,0,26
+TS2371,A parameter initializer is only allowed in a function or constructor implementation.,26,0,0,0,13,0,0,0,26
+TS1194,Export declarations are not permitted in a namespace.,26,0,0,0,5,0,0,0,26
+TS2373,Parameter 'X' cannot reference identifier 'X' declared after it.,25,0,0,0,12,0,0,0,25
+TS2845,This condition will always return 'X'.,25,0,0,0,2,0,0,0,25
+TS1182,A destructuring declaration must have an initializer.,25,0,0,0,6,0,0,0,25
+TS2511,Cannot create an instance of an abstract class.,23,0,1,0,11,0,1,0,24
+TS2410,The 'X' statement is not supported. All symbols in a 'X' block will have type 'X'.,24,0,0,0,20,0,0,0,24
+TS1015,Parameter cannot have question mark and initializer.,24,0,0,0,5,0,0,0,24
+TS2347,Untyped function calls may not accept type arguments.,15,0,9,0,8,0,1,0,24
+TS2542,Index signature in type 'X' only permits reading.,17,0,7,0,6,0,3,0,24
+TS17020,'X' at the start of a type is not valid TypeScript syntax. Did you mean to write 'X'?,24,0,0,0,4,0,0,0,24
+TS2628,Cannot assign to 'X' because it is an enum.,24,0,0,0,5,0,0,0,24
+TS1187,A parameter property may not be declared using a binding pattern.,23,0,0,0,8,0,0,0,23
+TS1228,A type predicate is only allowed in return type position for functions and methods.,16,0,7,0,4,0,1,0,23
+TS7023,'X' implicitly has return type 'X' because it does not have a return type annotation and i,17,3,2,0,15,1,1,0,22
+TS18004,No value exists in scope for the shorthand property 'X'. Either declare one or provide an ,22,0,0,0,15,0,0,0,22
+TS2536,Type 'X' cannot be used to index type 'X'.,6,0,16,0,3,0,9,0,22
+TS2323,Cannot redeclare exported variable 'X'.,22,0,0,0,10,0,0,0,22
+TS2709,Cannot use namespace 'X' as a type.,22,0,0,0,12,0,0,0,22
+TS1014,A rest parameter must be last in a parameter list.,22,0,0,0,8,0,0,0,22
+TS2783,"'X' is specified more than once, so this usage will be overwritten.",22,0,0,0,6,0,0,0,22
+TS2631,Cannot assign to 'X' because it is a namespace.,21,0,1,0,12,0,1,0,22
+TS1497,Expression must be enclosed in parentheses to be used as a decorator.,22,0,0,0,1,0,0,0,22
+TS1068,"Unexpected token. A constructor, method, accessor, or property was expected.",21,0,0,0,15,0,0,0,21
+TS2493,Tuple type 'X' of length 'X' has no element at index 'X'.,9,0,12,0,8,0,8,0,21
+TS2310,Type 'X' recursively references itself as a base type.,19,0,2,0,7,0,1,0,21
+TS18033,Type 'X' is not assignable to type 'X' as required for computed enum member values.,21,0,0,0,5,0,0,0,21
+TS1155,'X' declarations must be initialized.,21,0,0,0,15,0,0,0,21
+TS7052,Element implicitly has an 'X' type because type 'X' has no index signature. Did you mean t,21,0,0,0,1,0,0,0,21
+TS1200,Line terminator not permitted before arrow.,20,0,0,0,3,0,0,0,20
+TS4115,This parameter property must have an 'X' modifier because it overrides a member in base cl,20,0,0,0,10,0,0,0,20
+TS1184,Modifiers cannot appear here.,20,0,0,0,12,0,0,0,20
+TS1232,An import declaration can only be used at the top level of a namespace or module.,20,0,0,0,5,0,0,0,20
+TS2869,Right operand of ?? is unreachable because the left operand is never nullish.,20,0,0,0,4,0,0,0,20
+TS1501,This regular expression flag is only available when targeting 'X' or later.,20,0,0,0,4,0,0,0,20
+TS1308,'X' expressions are only allowed within async functions and at the top levels of modules.,19,0,0,0,5,0,0,0,19
+TS2456,Type alias 'X' circularly references itself.,10,0,9,0,3,0,3,0,19
+TS2372,Parameter 'X' cannot reference itself.,18,0,1,0,12,0,1,0,19
+TS2301,Initializer of instance member variable 'X' cannot reference identifier 'X' declared in th,19,0,0,0,10,0,0,0,19
+TS1163,A 'X' expression is only allowed in a generator body.,19,0,0,0,15,0,0,0,19
+TS2558,"Expected N type arguments, but got N.",16,0,1,1,10,0,1,1,18
+TS2814,Function with bodies can only merge with classes that are ambient.,9,0,9,0,7,0,6,0,18
+TS1435,Unknown keyword or identifier. Did you mean 'X'?,18,0,0,0,2,0,0,0,18
+TS1115,A 'X' statement can only jump to a label of an enclosing iteration statement.,18,0,0,0,9,0,0,0,18
+TS2370,A rest parameter must be of an array type.,18,0,0,0,8,0,0,0,18
+TS1096,An index signature must have exactly one parameter.,18,0,0,0,9,0,0,0,18
+TS2413,'X' index type 'X' is not assignable to 'X' index type 'X'.,17,0,1,0,10,0,1,0,18
+TS2435,Ambient modules cannot be nested in other modules or namespaces.,18,0,0,0,5,0,0,0,18
+TS6807,This operation can be simplified. This shift is identical to `N << N`.,18,0,0,0,1,0,0,0,18
+TS1346,This parameter is not allowed with 'X' directive.,18,0,0,0,3,0,0,0,18
+TS1347,'X' directive cannot be used with non-simple parameter list.,18,0,0,0,3,0,0,0,18
+TS1262,Identifier expected. 'X' is a reserved word at the top-level of a module.,18,0,0,0,18,0,0,0,18
+TS1119,An object literal cannot have property and accessor with the same name.,18,0,0,0,1,0,0,0,18
+TS2395,Individual declarations in merged declaration 'X' must be all exported or all local.,15,2,0,0,5,1,0,0,17
+TS2417,"Class static side 'X' incorrectly extends base class static side 'X'.
+  Types of property ",17,0,0,0,13,0,0,0,17
+TS2320,"Interface 'X' cannot simultaneously extend types 'X' and 'X'.
+  Named property 'X' of type",13,0,4,0,12,0,3,0,17
+TS2481,Cannot initialize outer scoped variable 'X' in the same scope as block scoped declaration ,17,0,0,0,6,0,0,0,17
+TS1002,Unterminated string literal.,17,0,0,0,4,0,0,0,17
+TS1489,Decimals with leading zeros are not allowed.,17,0,0,0,3,0,0,0,17
+TS2376,A 'X' call must be the first statement in the constructor to refer to 'X' or 'X' when a de,17,0,0,0,5,0,0,0,17
+TS2389,Function implementation name must be 'X'.,15,0,1,0,14,0,1,0,16
+TS2427,Interface name cannot be 'X'.,16,0,0,0,9,0,0,0,16
+TS2450,Enum 'X' used before its declaration.,16,0,0,0,9,0,0,0,16
+TS2531,Object is possibly 'X'.,12,2,2,0,5,1,1,0,16
+TS2392,Multiple constructor implementations are not allowed.,16,0,0,0,3,0,0,0,16
+TS2524,'X' expressions cannot be used in a parameter initializer.,16,0,0,0,16,0,0,0,16
+TS1021,An index signature must have a type annotation.,16,0,0,0,7,0,0,0,16
+TS1235,A namespace declaration is only allowed at the top level of a namespace or module.,16,0,0,0,7,0,0,0,16
+TS1507,There is nothing available for repetition.,16,0,0,0,2,0,0,0,16
+TS1275,'X' modifier can only appear on a property declaration.,16,0,0,0,1,0,0,0,16
+TS2777,The operand of an increment or decrement operator may not be an optional property access.,16,0,0,0,2,0,0,0,16
+TS2779,The left-hand side of an assignment expression may not be an optional property access.,16,0,0,0,2,0,0,0,16
+TS2813,Class declaration cannot implement overload list for 'X'.,9,0,6,0,7,0,6,0,15
+TS2377,Constructors for derived classes must contain a 'X' call.,15,0,0,0,11,0,0,0,15
+TS1116,A 'X' statement can only jump to a label of an enclosing statement.,15,0,0,0,7,0,0,0,15
+TS1185,Merge conflict marker encountered.,15,0,0,0,5,0,0,0,15
+TS2452,An enum member cannot have a numeric name.,15,0,0,0,6,0,0,0,15
+TS1351,An identifier or keyword cannot immediately follow a numeric literal.,15,0,0,0,3,0,0,0,15
+TS2871,This expression is always nullish.,15,0,0,0,1,0,0,0,15
+TS2637,"Variance annotations are only supported in type aliases for object, function, constructor,",15,0,0,0,3,0,0,0,15
+TS4113,This member cannot have an 'X' modifier because it is not declared in the base class 'X'.,7,0,8,0,5,0,3,0,15
+TS17011,'X' must be called before accessing a property of 'X' in the constructor of a derived clas,14,0,0,0,8,0,0,0,14
+TS2717,Subsequent property declarations must have the same type.  Property 'X' must be of type 'X,12,0,0,2,10,0,0,2,14
+TS6053,File 'X' not found.,14,0,0,0,11,0,0,0,14
+TS1136,Property assignment expected.,14,0,0,0,13,0,0,0,14
+TS2687,All declarations of 'X' must have identical modifiers.,10,0,4,0,3,0,1,0,14
+TS1319,A default export can only be used in an ECMAScript-style module.,14,0,0,0,4,0,0,0,14
+TS2355,"A function whose declared type is neither 'X', 'X', nor 'X' must return a value.",13,0,0,1,6,0,0,1,14
+TS1071,'X' modifier cannot appear on an index signature.,14,0,0,0,8,0,0,0,14
+TS2700,Rest types may only be created from object types.,13,0,1,0,2,0,1,0,14
+TS1160,Unterminated template literal.,14,0,0,0,14,0,0,0,14
+TS2390,Constructor implementation is missing.,13,0,0,0,13,0,0,0,13
+TS2815,'X' cannot be referenced in property initializers or class static initialization blocks.,13,0,0,0,2,0,0,0,13
+TS2589,Type instantiation is excessively deep and possibly infinite.,5,0,8,0,4,0,4,0,13
+TS2689,Cannot extend an interface 'X'. Did you mean 'X'?,8,0,5,0,5,0,1,0,13
+TS1031,'X' modifier cannot appear on class elements of this kind.,13,0,0,0,10,0,0,0,13
+TS2790,The operand of a 'X' operator must be optional.,3,4,0,6,3,1,0,2,13
+TS2713,"Cannot access 'X' because 'X' is a type, but not a namespace. Did you mean to retrieve the",13,0,0,0,3,0,0,0,13
+TS8020,JSDoc types can only be used inside documentation comments.,13,0,0,0,3,0,0,0,13
+TS2457,Type alias name cannot be 'X'.,13,0,0,0,5,0,0,0,13
+TS2684,The 'X' context of type 'X' is not assignable to method'X'this'X'A & B'X'void'X'A'.,12,0,1,0,5,0,1,0,13
+TS18037,'X' expression cannot be used inside a class static block.,13,0,0,0,3,0,0,0,13
+TS2401,A 'X' call must be a root-level statement within a constructor of a derived class that con,13,0,0,0,2,0,0,0,13
+TS2414,Class name cannot be 'X'.,12,0,0,0,6,0,0,0,12
+TS2309,An export assignment cannot be used in a module with other exported elements.,12,0,0,0,12,0,0,0,12
+TS2662,Cannot find name 'X'. Did you mean the static member 'X'?,12,0,0,0,8,0,0,0,12
+TS1104,A 'X' statement can only be used within an enclosing iteration statement.,12,0,0,0,12,0,0,0,12
+TS1268,"An index signature parameter type must be 'X', 'X', 'X', or a template literal type.",12,0,0,0,10,0,0,0,12
+TS2504,Type 'X' must have a 'X' method that returns an async iterator.,12,0,0,0,5,0,0,0,12
+TS1028,Accessibility modifier already seen.,12,0,0,0,9,0,0,0,12
+TS2565,Property 'X' is used before being assigned.,12,0,0,0,4,0,0,0,12
+TS2386,Overload signatures must all be optional or required.,12,0,0,0,4,0,0,0,12
+TS1038,A 'X' modifier cannot be used in an already ambient context.,12,0,0,0,8,0,0,0,12
+TS1124,Digit expected.,12,0,0,0,5,0,0,0,12
+TS2858,Import attribute values must be string literal expressions.,12,0,0,0,2,0,0,0,12
+TS1131,Property or signature expected.,12,0,0,0,6,0,0,0,12
+TS2635,Type 'X' has no signatures for which the type argument list is applicable.,12,0,0,0,3,0,0,0,12
+TS2331,'X' cannot be referenced in a module or namespace body.,12,0,0,0,11,0,0,0,12
+TS1517,Range out of order in character class.,12,0,0,0,2,0,0,0,12
+TS2630,Cannot assign to 'X' because it is a function.,12,0,0,0,4,0,0,0,12
+TS1064,The return type of an async function or method must be the global Promise<T> type. Did you,12,0,0,0,4,0,0,0,12
+TS2803,Cannot assign to private method 'X'. Private methods are not writable.,12,0,0,0,4,0,0,0,12
+TS18010,An accessibility modifier cannot be used with a private identifier.,12,0,0,0,1,0,0,0,12
+TS2629,Cannot assign to 'X' because it is a class.,12,0,0,0,5,0,0,0,12
+TS2552,Cannot find name 'X'. Did you mean 'X'?,11,0,0,0,9,0,0,0,11
+TS2576,Property 'X' does not exist on type 'X'. Did you mean to access the static member 'X' inst,11,0,0,0,7,0,0,0,11
+TS1144,'X' or 'X' expected.,11,0,0,0,6,0,0,0,11
+TS2744,Type parameter defaults can only reference previously declared type parameters.,0,0,11,0,0,0,1,0,11
+TS2515,Non-abstract class 'X' does not implement inherited abstract member foo from class 'X'.,10,0,1,0,6,0,1,0,11
+TS1049,A 'X' accessor must have exactly one parameter.,11,0,0,0,10,0,0,0,11
+TS1036,Statements are not allowed in ambient contexts.,10,0,0,0,6,0,0,0,10
+TS1039,Initializers are not allowed in ambient contexts.,10,0,0,0,4,0,0,0,10
+TS1098,Type parameter list cannot be empty.,10,0,0,0,3,0,0,0,10
+TS2808,A get accessor must be at least as accessible as the setter,4,0,6,0,2,0,1,0,10
+TS2375,Type 'X' is not assignable to type 'X' with 'X'. Consider adding 'X' to the types of the t,5,0,5,0,3,0,3,0,10
+TS1233,An export declaration can only be used at the top level of a namespace or module.,10,0,0,0,4,0,0,0,10
+TS1092,Type parameters cannot appear on a constructor declaration.,10,0,0,0,3,0,0,0,10
+TS1198,An extended Unicode escape value must be between 0x0 and 0x10FFFF inclusive.,10,0,0,0,7,0,0,0,10
+TS2863,A class cannot extend a primitive type like 'X'. Classes can only extend constructable val,10,0,0,0,2,0,0,0,10
+TS2784,'X' and 'X' accessors cannot declare 'X' parameters.,10,0,0,0,2,0,0,0,10
+TS1490,File appears to be binary.,9,0,0,0,9,0,0,0,9
+TS1108,A 'X' statement can only be used within a function body.,9,0,0,0,9,0,0,0,9
+TS1105,A 'X' statement can only be used within an enclosing iteration or switch statement.,9,0,0,0,9,0,0,0,9
+TS2348,Value of type 'X' is not callable. Did you mean to include 'X'?,9,0,0,0,6,0,0,0,9
+TS2864,A class cannot implement a primitive type like 'X'. It can only implement other named obje,9,0,0,0,1,0,0,0,9
+TS1135,Argument expression expected.,9,0,0,0,9,0,0,0,9
+TS2593,Cannot find name 'X'. Do you need to install type definitions for a test runner? Try `npm ,9,0,0,0,5,0,0,0,9
+TS1162,An object member cannot be declared optional.,9,0,0,0,8,0,0,0,9
+TS2668,'X' modifier cannot be applied to ambient modules and module augmentations since they are ,9,0,0,0,4,0,0,0,9
+TS4104,The type 'X' is 'X' and cannot be assigned to the mutable type 'X'.,7,0,2,0,2,0,1,0,9
+TS1508,Unexpected 'X'. Did you mean to escape it with backslash?,9,0,0,0,4,0,0,0,9
+TS2806,Private accessor was defined without a getter.,9,0,0,0,2,0,0,0,9
+TS1070,'X' modifier cannot appear on a type member.,9,0,0,0,4,0,0,0,9
+TS1255,A definite assignment assertion 'X' is not permitted in this context.,9,0,0,0,3,0,0,0,9
+TS2462,A rest element must be last in a destructuring pattern.,9,0,0,0,4,0,0,0,9
+TS7061,A mapped type may not declare properties or methods.,9,0,0,0,1,0,0,0,9
+TS2715,Abstract property 'X' in class 'X' cannot be accessed in the constructor.,1,0,7,0,1,0,1,0,8
+TS2708,Cannot use namespace 'X' as a value.,8,0,0,0,6,0,0,0,8
+TS1099,Type argument list cannot be empty.,8,0,0,0,3,0,0,0,8
+TS2702,"'X' only refers to a type, but is being used as a namespace here.",8,0,0,0,5,0,0,0,8
+TS2405,The left-hand side of a 'X' statement must be of type 'X' or 'X'.,8,0,0,0,6,0,0,0,8
+TS2674,Constructor of class 'X' is protected and only accessible within the class declaration.,8,0,0,0,6,0,0,0,8
+TS1488,Escape sequence 'X' is not allowed.,8,0,0,0,1,0,0,0,8
+TS7029,Fallthrough case in switch.,6,2,0,0,4,1,0,0,8
+TS2412,Type 'X' is not assignable to type 'X' with 'X'. Consider adding 'X' to the type of the ta,0,0,8,0,0,0,2,0,8
+TS2332,'X' cannot be referenced in current location.,8,0,0,0,4,0,0,0,8
+TS1386,Constructor type notation must be parenthesized when used in a union type.,8,0,0,0,1,0,0,0,8
+TS1388,Constructor type notation must be parenthesized when used in an intersection type.,8,0,0,0,1,0,0,0,8
+TS1385,Function type notation must be parenthesized when used in a union type.,8,0,0,0,1,0,0,0,8
+TS1387,Function type notation must be parenthesized when used in an intersection type.,8,0,0,0,1,0,0,0,8
+TS2465,'X' cannot be referenced in a computed property name.,8,0,0,0,6,0,0,0,8
+TS7017,Element implicitly has an 'X' type because type 'X' has no index signature.,8,0,0,0,5,0,0,0,8
+TS2466,'X' cannot be referenced in a computed property name.,8,0,0,0,8,0,0,0,8
+TS2703,The operand of a 'X' operator must be a property reference.,8,0,0,0,4,0,0,0,8
+TS1102,'X' cannot be called on an identifier in strict mode.,8,0,0,0,4,0,0,0,8
+TS1188,Only a single variable declaration is allowed in a 'X' statement.,8,0,0,0,8,0,0,0,8
+TS4112,This member cannot have an 'X' modifier because its containing class 'X' does not extend a,2,0,6,0,1,0,3,0,8
+TS1103,'X' loops are only allowed within async functions and at the top levels of modules.,7,0,0,0,1,0,0,0,7
+TS1009,Trailing comma not allowed.,7,0,0,0,7,0,0,0,7
+TS2477,'X' enum member initializer was evaluated to a non-finite value.,7,0,0,0,2,0,0,0,7
+TS2463,A binding pattern parameter cannot be optional in an implementation signature.,7,0,0,0,4,0,0,0,7
+TS2431,Enum name cannot be 'X'.,7,0,0,0,2,0,0,0,7
+TS1337,An index signature parameter type cannot be a literal type or generic type. Consider using,7,0,0,0,3,0,0,0,7
+TS2669,Augmentations for the global scope can only be directly nested in external modules or ambi,4,2,0,1,4,2,0,1,7
+TS2556,A spread argument must either have a tuple type or be passed to a rest parameter.,7,0,0,0,7,0,0,0,7
+TS1518,Anything that would possibly match more than a single character is invalid inside a negate,7,0,0,0,1,0,0,0,7
+TS2567,Enum declarations can only merge with namespace or other enum declarations.,7,0,0,0,3,0,0,0,7
+TS2636,"Type 'X' is not assignable to type 'X' as implied by variance annotation.
+  Types of prope",6,0,1,0,1,0,1,0,7
+TS1089,'X' modifier cannot appear on a constructor declaration.,5,0,2,0,4,0,2,0,7
+TS2673,Constructor of class 'X' is private and only accessible within the class declaration.,7,0,0,0,3,0,0,0,7
+TS2578,Unused 'X' directive.,2,0,5,0,2,0,1,0,7
+TS1357,"An enum member name must be followed by a 'X', 'X', or 'X'.",7,0,0,0,3,0,0,0,7
+TS1164,Computed property names are not allowed in enums.,7,0,0,0,5,0,0,0,7
+TS1437,Namespace must be given a name.,6,0,0,0,4,0,0,0,6
+TS2696,The 'X' type is assignable to very few other types. Did you mean to use the 'X' type inste,4,0,2,0,2,0,1,0,6
+TS2571,Object is of type 'X'.,4,0,2,0,3,0,1,0,6
+TS1146,Declaration expected.,6,0,0,0,5,0,0,0,6
+TS1090,'X' modifier cannot appear on a parameter.,6,0,0,0,4,0,0,0,6
+TS2384,Overload signatures must all be ambient or non-ambient.,6,0,0,0,5,0,0,0,6
+TS2315,Type 'X' is not generic.,6,0,0,0,2,0,0,0,6
+TS2590,Expression produces a union type that is too complex to represent.,2,1,3,0,2,1,1,0,6
+TS1118,An object literal cannot have multiple get/set accessors with the same name.,6,0,0,0,6,0,0,0,6
+TS2440,Import declaration conflicts with local declaration of 'X'.,6,0,0,0,5,0,0,0,6
+TS2312,An interface can only extend an object type or intersection of object types with staticall,6,0,0,0,4,0,0,0,6
+TS1169,A computed property name in an interface must refer to an expression whose type is a liter,6,0,0,0,6,0,0,0,6
+TS2731,Implicit conversion of a 'X' to a 'X' will fail at runtime. Consider wrapping this express,6,0,0,0,1,0,0,0,6
+TS2561,"Object literal may only specify known properties, but 'X' does not exist in type 'X'. Did ",5,0,1,0,1,0,1,0,6
+TS2677,"A type predicate'X's type.
+  Type 'X' is not assignable to type 'X'.",6,0,0,0,3,0,0,0,6
+TS2492,Cannot redeclare identifier 'X' in catch clause.,5,0,1,0,3,0,1,0,6
+TS1535,This character cannot be escaped in a regular expression.,6,0,0,0,2,0,0,0,6
+TS1243,'X' modifier cannot be used with 'X' modifier.,6,0,0,0,2,0,0,0,6
+TS18014,The property 'X' cannot be accessed on type 'X' within this class because it is shadowed b,6,0,0,0,6,0,0,0,6
+TS1238,"Unable to resolve signature of class decorator when called as an expression.
+  The runtime",6,0,0,0,4,0,0,0,6
+TS1433,Neither decorators nor modifiers may be applied to 'X' parameters.,6,0,0,0,3,0,0,0,6
+TS5076,'X' and 'X' operations cannot be mixed without parentheses.,6,0,0,0,2,0,0,0,6
+TS1244,Abstract methods can only appear within an abstract class.,5,0,0,0,4,0,0,0,5
+TS1174,Classes can only extend a single class.,5,0,0,0,4,0,0,0,5
+TS1054,A 'X' accessor cannot have parameters.,5,0,0,0,5,0,0,0,5
+TS2651,"A member initializer in a enum declaration cannot reference members declared after it, inc",5,0,0,0,2,0,0,0,5
+TS1355,"A 'X' assertion can only be applied to references to enum members, or string, number, bool",2,0,3,0,2,0,1,0,5
+TS2809,"Declaration or statement expected. This 'X' follows a block of statements, so if you inten",5,0,0,0,2,0,0,0,5
+TS1114,Duplicate label 'X'.,5,0,0,0,5,0,0,0,5
+TS1172,'X' clause already seen.,5,0,0,0,5,0,0,0,5
+TS1047,A rest parameter cannot be optional.,5,0,0,0,5,0,0,0,5
+TS1048,A rest parameter cannot have an initializer.,5,0,0,0,5,0,0,0,5
+TS1477,An instantiation expression cannot be followed by a property access.,5,0,0,0,4,0,0,0,5
+TS1019,An index signature parameter cannot have a question mark.,5,0,0,0,4,0,0,0,5
+TS1017,An index signature cannot have a rest parameter.,5,0,0,0,4,0,0,0,5
+TS2437,Module 'X' is hidden by a local declaration with the same name.,5,0,0,0,5,0,0,0,5
+TS1181,Array element destructuring pattern expected.,5,0,0,0,5,0,0,0,5
+TS2736,Operator 'X' cannot be applied to type 'X'.,5,0,0,0,2,0,0,0,5
+TS2819,Namespace name cannot be 'X'.,5,0,0,0,4,0,0,0,5
+TS2663,Cannot find name 'X'. Did you mean the instance member 'X'?,5,0,0,0,3,0,0,0,5
+TS1531,'X' must be followed by a Unicode property value expression enclosed in braces.,5,0,0,0,2,0,0,0,5
+TS1390,'X' is not allowed as a parameter name.,5,0,0,0,1,0,0,0,5
+TS1312,Did you mean to use a 'X'? An 'X' can only follow a property name when the containing obje,5,0,0,0,4,0,0,0,5
+TS2754,'X' may not use type arguments.,5,0,0,0,5,0,0,0,5
+TS2801,This condition will always return true since this 'X' is always defined.,5,0,0,0,1,0,0,0,5
+TS2385,"Overload signatures must all be public, private or protected.",5,0,0,0,2,0,0,0,5
+TS18030,An optional chain cannot contain private identifiers.,5,0,0,0,2,0,0,0,5
+TS1436,Decorators must precede the name and all keywords of property declarations.,5,0,0,0,5,0,0,0,5
+TS7036,Dynamic import'X'string'X'boolean'.,5,0,0,0,1,0,0,0,5
+TS2501,A rest element cannot contain a binding pattern.,5,0,0,0,2,0,0,0,5
+TS1221,Generators are not allowed in an ambient context.,5,0,0,0,3,0,0,0,5
+TS17007,A type assertion expression is not allowed in the left-hand side of an exponentiation expr,5,0,0,0,1,0,0,0,5
+TS1013,A rest parameter or binding pattern may not have a trailing comma.,5,0,0,0,2,0,0,0,5
+TS2539,Cannot assign to 'X' because it is not a variable.,5,0,0,0,3,0,0,0,5
+TS1196,Catch clause variable type annotation must be 'X' or 'X' if specified.,1,0,4,0,1,0,1,0,5
+TS1097,'X' list cannot be empty.,5,0,0,0,5,0,0,0,5
+TS1548,'X' declarations are not allowed in 'X' or 'X' clauses unless contained within a block.,5,0,0,0,1,0,0,0,5
+TS1547,'X' declarations are not allowed in 'X' or 'X' clauses unless contained within a block.,5,0,0,0,1,0,0,0,5
+TS2555,"Expected at least N arguments, but got N.",4,0,1,0,2,0,1,0,5
+TS1248,A class member cannot have the 'X' keyword.,4,0,0,0,3,0,0,0,4
+TS2676,Accessors must both be abstract or non-abstract.,0,0,4,0,0,0,1,0,4
+TS7039,Mapped object type implicitly has an 'X' template type.,4,0,0,0,3,0,0,0,4
+TS2447,The 'X' operator is not allowed for boolean types. Consider using 'X' instead.,4,0,0,0,2,0,0,0,4
+TS17005,A constructor cannot contain a 'X' call when its class extends 'X'.,4,0,0,0,3,0,0,0,4
+TS2474,const enum member initializers must be constant expressions.,4,0,0,0,2,0,0,0,4
+TS2476,A const enum member can only be accessed using a string literal.,4,0,0,0,2,0,0,0,4
+TS2475,'X' enums can only be used in property or index access expressions or the right hand side ,4,0,0,0,2,0,0,0,4
+TS1320,Type of 'X' operand must either be a valid promise or must not contain a callable 'X' memb,3,0,1,0,3,0,1,0,4
+TS18026,'X' can only be used at the start of a file.,4,0,0,0,4,0,0,0,4
+TS1300,'X' statements are not allowed in an async function block.,4,0,0,0,1,0,0,0,4
+TS1141,String literal expected.,4,0,0,0,4,0,0,0,4
+TS2523,'X' expressions cannot be used in a parameter initializer.,4,0,0,0,4,0,0,0,4
+TS2404,The left-hand side of a 'X' statement cannot use a type annotation.,3,0,1,0,3,0,1,0,4
+TS2652,Merged declaration 'X' cannot include a default export declaration. Consider adding a sepa,4,0,0,0,2,0,0,0,4
+TS2882,Cannot find module or type declarations for side-effect import of 'X'.,4,0,0,0,3,0,0,0,4
+TS1180,Property destructuring pattern expected.,4,0,0,0,1,0,0,0,4
+TS17012,'X' is not a valid meta-property for keyword 'X'. Did you mean 'X'?,4,0,0,0,3,0,0,0,4
+TS1258,A default export must be at the top level of a file or module declaration.,4,0,0,0,4,0,0,0,4
+TS2724,'X' has no exported member named 'X'. Did you mean 'X'?,4,0,0,0,2,0,0,0,4
+TS1329,'X' accepts too few arguments to be used as a decorator here. Did you mean to call it firs,4,0,0,0,2,0,0,0,4
+TS2661,Cannot export 'X'. Only local declarations can be exported from a module.,3,0,1,0,2,0,1,0,4
+TS1138,Parameter declaration expected.,4,0,0,0,4,0,0,0,4
+TS2451,Cannot redeclare block-scoped variable 'X'.,4,0,0,0,4,0,0,0,4
+TS1506,Numbers out of order in quantifier.,4,0,0,0,2,0,0,0,4
+TS1499,Unknown regular expression flag.,4,0,0,0,3,0,0,0,4
+TS1530,Unicode property value expressions are only available when the Unicode (u) flag or the Uni,4,0,0,0,1,0,0,0,4
+TS1529,Unknown Unicode property name or value.,4,0,0,0,2,0,0,0,4
+TS1524,Unknown Unicode property name.,4,0,0,0,2,0,0,0,4
+TS1317,A parameter property cannot be declared using a rest parameter.,4,0,0,0,4,0,0,0,4
+TS1186,A rest element cannot have an initializer.,4,0,0,0,4,0,0,0,4
+TS2408,Setters cannot return a value.,4,0,0,0,3,0,0,0,4
+TS1040,'X' modifier cannot be used in an ambient context.,2,0,2,0,2,0,2,0,4
+TS6234,This expression is not callable because it is a 'X' accessor. Did you mean to use it witho,4,0,0,0,2,0,0,0,4
+TS1263,Declarations with initializers cannot also have definite assignment assertions.,4,0,0,0,1,0,0,0,4
+TS1249,"A decorator can only decorate a method implementation, not an overload.",4,0,0,0,2,0,0,0,4
+TS2467,A computed property name cannot reference a type parameter from its containing type.,4,0,0,0,4,0,0,0,4
+TS1443,"Module declaration names may only use ' or "" quoted strings.",4,0,0,0,2,0,0,0,4
+TS1222,An overload signature cannot be declared as a generator.,4,0,0,0,2,0,0,0,4
+TS2780,The left-hand side of a 'X' statement may not be an optional property access.,4,0,0,0,2,0,0,0,4
+TS2781,The left-hand side of a 'X' statement may not be an optional property access.,4,0,0,0,2,0,0,0,4
+TS2778,The target of an object rest assignment may not be an optional property access.,4,0,0,0,2,0,0,0,4
+TS1360,Type 'X' does not satisfy the expected type 'X'.,0,3,0,1,0,1,0,1,4
+TS2765,"Cannot iterate value because the 'X' method of its iterator expects type 'X', but array de",4,0,0,0,1,0,0,0,4
+TS4127,This member cannot have an 'X' modifier because its name is dynamic.,4,0,0,0,2,0,0,0,4
+TS1189,The variable declaration of a 'X' statement cannot have an initializer.,4,0,0,0,4,0,0,0,4
+TS1091,Only a single variable declaration is allowed in a 'X' statement.,4,0,0,0,4,0,0,0,4
+TS1546,'X' declarations are not allowed in ambient contexts.,4,0,0,0,1,0,0,0,4
+TS1545,'X' declarations are not allowed in ambient contexts.,4,0,0,0,1,0,0,0,4
+TS2730,An arrow function cannot have a 'X' parameter.,4,0,0,0,1,0,0,0,4
+TS1354,'X' type modifier is only permitted on array and tuple literal types.,4,0,0,0,1,0,0,0,4
+TS1274,"'X' modifier can only appear on a type parameter of a class, interface or type alias",4,0,0,0,1,0,0,0,4
+TS2654,"Non-abstract class 'X' is missing implementations for the following members of 'X': 'X', '",2,0,1,0,1,0,1,0,3
+TS1052,A 'X' accessor parameter cannot have an initializer.,3,0,0,0,2,0,0,0,3
+TS2588,Cannot assign to 'X' because it is a constant.,3,0,0,0,3,0,0,0,3
+TS7024,Function implicitly has return type 'X' because it does not have a return type annotation ,2,0,1,0,2,0,1,0,3
+TS2862,Type 'X' is generic and can only be indexed for reading.,2,0,1,0,1,0,1,0,3
+TS2478,'X' enum member initializer was evaluated to disallowed value 'X'.,3,0,0,0,2,0,0,0,3
+TS18006,Classes may not have a field named 'X'.,3,0,0,0,3,0,0,0,3
+TS2499,An interface can only extend an identifier/qualified-name with optional type arguments.,3,0,0,0,3,0,0,0,3
+TS2704,The operand of a 'X' operator cannot be a read-only property.,2,0,1,0,2,0,1,0,3
+TS2820,Type 'X' is not assignable to type 'X'. Did you mean 'X'?,2,0,1,0,1,0,1,0,3
+TS1120,An export assignment cannot have modifiers.,3,0,0,0,3,0,0,0,3
+TS1016,A required parameter cannot follow an optional parameter.,3,0,0,0,2,0,0,0,3
+TS1352,A bigint literal cannot use exponential notation.,3,0,0,0,2,0,0,0,3
+TS2638,"Type 'X' may represent a primitive value, which is not permitted as the right operand of t",1,0,2,0,1,0,1,0,3
+TS1018,An index signature parameter cannot have an accessibility modifier.,3,0,0,0,2,0,0,0,3
+TS1025,An index signature cannot have a trailing comma.,3,0,0,0,1,0,0,0,3
+TS2848,The right-hand side of an 'X' expression must not be an instantiation expression.,3,0,0,0,1,0,0,0,3
+TS1176,Interface declaration cannot have 'X' clause.,3,0,0,0,3,0,0,0,3
+TS7051,Parameter has a name but no type. Did you mean 'X'?,3,0,0,0,3,0,0,0,3
+TS2387,Function overload must be static.,3,0,0,0,2,0,0,0,3
+TS2670,Augmentations for the global scope should have 'X' modifier unless they appear in already ,3,0,0,0,3,0,0,0,3
+TS1234,An ambient module declaration is only allowed at the top level in a file.,3,0,0,0,3,0,0,0,3
+TS1231,An export assignment must be at the top level of a file or module declaration.,3,0,0,0,3,0,0,0,3
+TS2721,Cannot invoke an object which is possibly 'X'.,3,0,0,0,3,0,0,0,3
+TS2566,A rest element cannot have a property name.,3,0,0,0,3,0,0,0,3
+TS2379,Argument of type 'X' is not assignable to parameter of type 'X' with 'X'. Consider adding ,0,0,3,0,0,0,2,0,3
+TS1177,Binary digit expected.,3,0,0,0,2,0,0,0,3
+TS1178,Octal digit expected.,3,0,0,0,2,0,0,0,3
+TS1512,'X' must be followed by an ASCII letter.,3,0,0,0,2,0,0,0,3
+TS1505,Incomplete quantifier. Digit expected.,3,0,0,0,1,0,0,0,3
+TS1527,Expected a Unicode property name or value.,3,0,0,0,1,0,0,0,3
+TS1523,Expected a Unicode property name.,3,0,0,0,1,0,0,0,3
+TS1525,Expected a Unicode property value.,3,0,0,0,1,0,0,0,3
+TS2438,Import name cannot be 'X'.,3,0,0,0,3,0,0,0,3
+TS1389,'X' is not allowed as a variable declaration name.,3,0,0,0,2,0,0,0,3
+TS2690,"'X' only refers to a type, but is being used as a value here. Did you mean to use 'X'?",3,0,0,0,1,0,0,0,3
+TS2560,Value of type 'X' has no properties in common with type 'X'. Did you mean to call it?,3,0,0,0,1,0,0,0,3
+TS4116,This member must have an 'X' modifier because it overrides an abstract method that is decl,3,0,0,0,2,0,0,0,3
+TS18038,'X' loops cannot be used inside a class static block.,3,0,0,0,2,0,0,0,3
+TS18041,A 'X' statement cannot be used inside a class static block.,3,0,0,0,2,0,0,0,3
+TS1451,Private identifiers are only allowed in class bodies and may only be used as part of a cla,3,0,0,0,2,0,0,0,3
+TS2406,The left-hand side of a 'X' statement must be a variable or a property access.,3,0,0,0,3,0,0,0,3
+TS1024,'X' modifier can only appear on a property declaration or index signature.,3,0,0,0,1,0,0,0,3
+TS1267,Property 'X' cannot have an initializer because it is marked abstract.,3,0,0,0,3,0,0,0,3
+TS2509,Base constructor return type 'X' is not an object type or intersection of object types wit,0,0,3,0,0,0,1,0,3
+TS2775,Assertions require every name in the call target to be declared with an explicit type anno,0,0,3,0,0,0,1,0,3
+TS2680,A 'X' parameter must be the first parameter.,3,0,0,0,2,0,0,0,3
+TS1325,Argument of dynamic import cannot be spread element.,3,0,0,0,2,0,0,0,3
+TS2701,The target of an object rest assignment must be a variable or a property access.,3,0,0,0,2,0,0,0,3
+TS1199,Unterminated Unicode escape sequence.,3,0,0,0,3,0,0,0,3
+TS1358,Tagged template expressions are not permitted in an optional chain.,3,0,0,0,2,0,0,0,3
+TS1230,A type predicate cannot reference element 'X' in a binding pattern.,3,0,0,0,1,0,0,0,3
+TS2763,"Cannot iterate value because the 'X' method of its iterator expects type 'X', but for-of w",3,0,0,0,1,0,0,0,3
+TS2766,Cannot delegate iteration to value because the 'X' method of its iterator expects type 'X',3,0,0,0,1,0,0,0,3
+TS1190,The variable declaration of a 'X' statement cannot have an initializer.,3,0,0,0,3,0,0,0,3
+TS2491,The left-hand side of a 'X' statement cannot be a destructuring pattern.,3,0,0,0,3,0,0,0,3
+TS2592,Cannot find name 'X'. Do you need to install type definitions for jQuery? Try `npm i --sav,3,0,0,0,2,0,0,0,3
+TS1338,'X' declarations are only permitted in the 'X' clause of a conditional type.,0,0,3,0,0,0,2,0,3
+TS2577,Return type annotation circularly references itself.,0,0,3,0,0,0,1,0,3
+TS2681,A constructor cannot have a 'X' parameter.,3,0,0,0,1,0,0,0,3
+TS2574,A rest element type must be an array type.,1,0,2,0,1,0,1,0,3
+TS2795,The 'X' keyword can only be used to declare compiler provided intrinsic types.,2,0,1,0,1,0,1,0,3
+TS1331,A property of a class whose type is a 'X' type must be both 'X' and 'X'.,3,0,0,0,1,0,0,0,3
+TS1253,Abstract properties can only appear within an abstract class.,1,0,1,0,1,0,1,0,2
+TS1066,In ambient enum declarations member initializer must be constant expression.,2,0,0,0,2,0,0,0,2
+TS2545,A mixin class must have a constructor with a single rest parameter of type 'X'.,2,0,0,0,2,0,0,0,2
+TS1197,Catch clause variable cannot have an initializer.,2,0,0,0,2,0,0,0,2
+TS4109,Type arguments for 'X' circularly reference themselves.,2,0,0,0,2,0,0,0,2
+TS4110,Tuple type arguments circularly reference themselves.,2,0,0,0,1,0,0,0,2
+TS1438,Interface must be given a name.,2,0,0,0,2,0,0,0,2
+TS1139,Type parameter declaration expected.,2,0,0,0,2,0,0,0,2
+TS1313,The body of an 'X' statement cannot be the empty statement.,2,0,0,0,1,0,0,0,2
+TS2840,An interface cannot extend a primitive type like 'X'. It can only extend other named objec,2,0,0,0,2,0,0,0,2
+TS1247,A type literal property cannot have an initializer.,2,0,0,0,1,0,0,0,2
+TS2799,Type produces a tuple type that is too large to represent.,0,0,2,0,0,0,1,0,2
+TS1211,A class declaration without the 'X' modifier must have a name.,2,0,0,0,2,0,0,0,2
+TS2675,Cannot extend a class 'X'. Class constructor is marked as private.,2,0,0,0,2,0,0,0,2
+TS2632,Cannot assign to 'X' because it is an import.,2,0,0,0,1,0,0,0,2
+TS4105,Private or protected member 'X' cannot be accessed on a type parameter.,2,0,0,0,1,0,0,0,2
+TS2388,Function overload must not be static.,2,0,0,0,2,0,0,0,2
+TS1051,A 'X' accessor cannot have an optional parameter.,2,0,0,0,2,0,0,0,2
+TS1353,A bigint literal must be an integer.,2,0,0,0,1,0,0,0,2
+TS1035,Only ambient modules can use quoted names.,2,0,0,0,2,0,0,0,2
+TS2615,Type of property 'X' circularly references itself in mapped type 'X'.,1,0,1,0,1,0,1,0,2
+TS1538,Unicode escape sequences are only available when the Unicode (u) flag or the Unicode Sets ,2,0,0,0,2,0,0,0,2
+TS1532,There is no capturing group named 'X' in this regular expression.,2,0,0,0,2,0,0,0,2
+TS1500,Duplicate regular expression flag.,2,0,0,0,1,0,0,0,2
+TS1534,This backreference refers to a group that does not exist. There are no capturing groups in,2,0,0,0,1,0,0,0,2
+TS1536,Octal escape sequences and backreferences are not allowed in a character class. If this wa,2,0,0,0,1,0,0,0,2
+TS1537,Decimal escape sequences and backreferences are not allowed in a character class.,2,0,0,0,1,0,0,0,2
+TS1533,This backreference refers to a group that does not exist. There are only N capturing group,2,0,0,0,1,0,0,0,2
+TS1528,Any Unicode property that would possibly match more than a single character is only availa,2,0,0,0,1,0,0,0,2
+TS1511,'X' is only available inside character class.,2,0,0,0,1,0,0,0,2
+TS1519,Operators must not be mixed within a character class. Wrap it in a nested class instead.,2,0,0,0,1,0,0,0,2
+TS2533,Object is possibly 'X' or 'X'.,2,0,0,0,1,0,0,0,2
+TS2336,'X' cannot be referenced in constructor arguments.,2,0,0,0,2,0,0,0,2
+TS1260,Keywords cannot contain escape characters.,1,0,1,0,1,0,1,0,2
+TS1113,A 'X' clause cannot appear more than once in a 'X' statement.,2,0,0,0,2,0,0,0,2
+TS1142,Line break not permitted here.,2,0,0,0,2,0,0,0,2
+TS1062,Type is referenced directly or indirectly in the fulfillment callback of its own 'X' metho,0,0,2,0,0,0,1,0,2
+TS1058,The return type of an async function must either be a valid promise or must not contain a ,2,0,0,0,2,0,0,0,2
+TS1318,An abstract accessor cannot have an implementation.,2,0,0,0,1,0,0,0,2
+TS1242,"'X' modifier can only appear on a class, method, or property declaration.",2,0,0,0,2,0,0,0,2
+TS1245,Method 'X' cannot have an implementation because it is marked abstract.,2,0,0,0,2,0,0,0,2
+TS1441,Cannot start a function call in a type annotation.,2,0,0,0,1,0,0,0,2
+TS1442,Expected 'X' for property initializer.,2,0,0,0,2,0,0,0,2
+TS18012,'X' is a reserved word.,2,0,0,0,2,0,0,0,2
+TS18029,Private identifiers are not allowed in variable declarations.,2,0,0,0,2,0,0,0,2
+TS18019,'X' modifier cannot be used with a private identifier.,2,0,0,0,1,0,0,0,2
+TS2611,"'X' is defined as a property in class 'X', but is overridden here in 'X' as an accessor.",2,0,0,0,2,0,0,0,2
+TS2844,Type of instance member variable 'X' cannot reference identifier 'X' declared in the const,2,0,0,0,1,0,0,0,2
+TS1264,Declarations with definite assignment assertions must also have type annotations.,2,0,0,0,1,0,0,0,2
+TS2534,A function returning 'X' cannot have a reachable end point.,0,0,0,2,0,0,0,1,2
+TS1132,Enum member expected.,2,0,0,0,2,0,0,0,2
+TS1170,A computed property name in a type literal must refer to an expression whose type is a lit,2,0,0,0,2,0,0,0,2
+TS1225,Cannot find parameter 'X'.,2,0,0,0,1,0,0,0,2
+TS2383,Overload signatures must all be exported or non-exported.,2,0,0,0,1,0,0,0,2
+TS4117,This member cannot have an 'X' modifier because it is not declared in the base class 'X'. ,2,0,0,0,2,0,0,0,2
+TS1137,Expression or comma expected.,2,0,0,0,2,0,0,0,2
+TS2483,The left-hand side of a 'X' statement cannot use a type annotation.,2,0,0,0,2,0,0,0,2
+TS1171,A comma expression is not allowed in a computed property name.,2,0,0,0,2,0,0,0,2
+TS1106,The left-hand side of a 'X' statement may not be 'X'.,2,0,0,0,2,0,0,0,2
+TS1341,Class constructor may not be an accessor.,2,0,0,0,1,0,0,0,2
+TS1495,'X' modifier cannot appear on an 'X' declaration.,2,0,0,0,1,0,0,0,2
+TS18054,'X' statements cannot be used inside a class static block.,2,0,0,0,1,0,0,0,2
+TS1492,'X' declarations may not have binding patterns.,2,0,0,0,2,0,0,0,2
+TS1491,'X' modifier cannot appear on a 'X' declaration.,2,0,0,0,1,0,0,0,2
+TS1326,"This use of 'X' is invalid. 'X' calls can be written, but they must have parentheses and c",2,0,0,0,1,0,0,0,2
+TS5087,"A labeled tuple element is declared as rest with a 'X' before the name, rather than before",2,0,0,0,1,0,0,0,2
+TS1265,A rest element cannot follow another rest element.,0,0,2,0,0,0,1,0,2
+TS1277,"'X' modifier can only appear on a type parameter of a function, method or class",0,0,2,0,0,0,1,0,2
+TS1332,A variable whose type is a 'X' type must be 'X'.,2,0,0,0,1,0,0,0,2
+TS1330,A property of an interface or type literal whose type is a 'X' type must be 'X'.,2,0,0,0,1,0,0,0,2
+TS1440,Variable declaration not allowed at this location.,1,0,0,0,1,0,0,0,1
+TS2458,An AMD module cannot have multiple name assignments.,1,0,0,0,1,0,0,0,1
+TS2562,Base class expressions cannot reference class type parameters.,1,0,0,0,1,0,0,0,1
+TS2303,Circular definition of import alias 'X'.,1,0,0,0,1,0,0,0,1
+TS2653,Non-abstract class expression does not implement inherited abstract member 'X' from class ,1,0,0,0,1,0,0,0,1
+TS2720,Class 'X' incorrectly implements class 'X'. Did you mean to extend 'X' and inherit its mem,1,0,0,0,1,0,0,0,1
+TS1254,A 'X' initializer in an ambient context must be a string or numeric literal or literal enu,1,0,0,0,1,0,0,0,1
+TS1079,A 'X' modifier cannot be used with an import declaration.,1,0,0,0,1,0,0,0,1
+TS1061,Enum member must have initializer.,1,0,0,0,1,0,0,0,1
+TS1246,An interface property cannot have an initializer.,1,0,0,0,1,0,0,0,1
+TS1540,A 'X' declaration should not be declared using the 'X' keyword. Please use the 'X' keyword,1,0,0,0,1,0,0,0,1
+TS2800,Expression produces a tuple type that is too large to represent.,0,0,1,0,0,0,1,0,1
+TS1315,Global module exports may only appear in declaration files.,0,0,1,0,0,0,1,0,1
+TS18049,'X' is possibly 'X' or 'X'.,0,1,0,0,0,1,0,0,1
+TS2434,A namespace declaration cannot be located prior to a class or function with which it is me,0,0,0,1,0,0,0,1,1
+TS1095,A 'X' accessor cannot have a return type annotation.,1,0,0,0,1,0,0,0,1
+TS1173,'X' clause must precede 'X' clause.,1,0,0,0,1,0,0,0,1
+TS1175,'X' clause already seen.,1,0,0,0,1,0,0,0,1
+TS2667,Imports are not permitted in module augmentations. Consider moving them to the enclosing e,0,0,1,0,0,0,1,0,1
+TS1020,An index signature parameter cannot have an initializer.,1,0,0,0,1,0,0,0,1
+TS2346,Call target does not contain any signatures.,1,0,0,0,1,0,0,0,1
+TS1209,Invalid optional chain from new expression. Did you mean to call 'X'?,1,0,0,0,1,0,0,0,1
+TS1084,Invalid 'X' directive syntax.,1,0,0,0,1,0,0,0,1
+TS2563,The containing function or module body is too large for control flow analysis.,1,0,0,0,1,0,0,0,1
+TS2796,It is likely that you are missing a comma to separate these two template expressions. They,1,0,0,0,1,0,0,0,1
+TS2484,Export declaration conflicts with exported declaration of 'X'.,1,0,0,0,1,0,0,0,1
+TS2425,"Class 'X' defines instance member property 'X', but extended class 'X' defines it as insta",1,0,0,0,1,0,0,0,1
+TS2743,"No overload expects N type arguments, but overloads do exist that expect either N or N typ",1,0,0,0,1,0,0,0,1
+TS2723,Cannot invoke an object which is possibly 'X' or 'X'.,1,0,0,0,1,0,0,0,1
+TS2398,'X' cannot be used as a parameter property name.,1,0,0,0,1,0,0,0,1
+TS6189,Multiple consecutive numeric separators are not permitted.,1,0,0,0,1,0,0,0,1
+TS1510,'X' must be followed by a capturing group name enclosed in angle brackets.,1,0,0,0,1,0,0,0,1
+TS1516,A character class range must not be bounded by another character class.,1,0,0,0,1,0,0,0,1
+TS1502,The Unicode (u) flag and the Unicode Sets (v) flag cannot be set simultaneously.,1,0,0,0,1,0,0,0,1
+TS1509,This regular expression flag cannot be toggled within a subpattern.,1,0,0,0,1,0,0,0,1
+TS1515,Named capturing groups with the same name must be mutually exclusive to each other.,1,0,0,0,1,0,0,0,1
+TS1521,'X' must be followed by string alternatives enclosed in braces.,1,0,0,0,1,0,0,0,1
+TS1522,A character class must not contain a reserved double punctuator. Did you mean to escape it,1,0,0,0,1,0,0,0,1
+TS1520,Expected a class set operand.,1,0,0,0,1,0,0,0,1
+TS1526,Unknown Unicode property value.,1,0,0,0,1,0,0,0,1
+TS2859,Excessive complexity comparing types 'X' and 'X'.,1,0,0,0,1,0,0,0,1
+TS2328,"Types of parameters 'X' and 'X' are incompatible.
+  Property 'X' is missing in type 'X' bu",1,0,0,0,1,0,0,0,1
+TS2422,A class can only implement an object type or intersection of object types with statically ,1,0,0,0,1,0,0,0,1
+TS2418,"Type of computed property'X'""str""'X'""sym""'.",0,0,1,0,0,0,1,0,1
+TS1126,Unexpected end of text.,1,0,0,0,1,0,0,0,1
+TS2655,"Non-abstract class 'X' is missing implementations for the following members of 'X': 'X', '",1,0,0,0,1,0,0,0,1
+TS2650,Non-abstract class expression is missing implementations for the following members of 'X':,1,0,0,0,1,0,0,0,1
+TS2512,Overload signatures must all be abstract or non-abstract.,1,0,0,0,1,0,0,0,1
+TS2513,Abstract method 'X' in class 'X' cannot be accessed via super expression.,1,0,0,0,1,0,0,0,1
+TS2508,No base constructor has the specified number of type arguments.,1,0,0,0,1,0,0,0,1
+TS2510,Base constructors must all have the same return type.,1,0,0,0,1,0,0,0,1
+TS2500,A class can only implement an identifier/qualified-name with optional type arguments.,1,0,0,0,1,0,0,0,1
+TS18024,An enum member cannot be named with a private identifier.,1,0,0,0,1,0,0,0,1
+TS18011,The operand of a 'X' operator cannot be a private identifier.,1,0,0,0,1,0,0,0,1
+TS18009,Private identifiers cannot be used as parameters.,1,0,0,0,1,0,0,0,1
+TS2797,A mixin class that extends from a type variable containing an abstract construct signature,0,0,1,0,0,0,1,0,1
+TS1276,An 'X' property cannot be declared optional.,1,0,0,0,1,0,0,0,1
+TS2610,"'X' is defined as an accessor in class 'X', but is overridden here in 'X' as an instance p",1,0,0,0,1,0,0,0,1
+TS2776,Assertions require the call target to be an identifier or qualified name.,0,0,1,0,0,0,1,0,1
+TS2666,Exports and export assignments are not permitted in module augmentations.,0,0,1,0,0,0,1,0,1
+TS2490,The type returned by the 'X' method of an iterator must have a 'X' property.,1,0,0,0,1,0,0,0,1
+TS2487,The left-hand side of a 'X' statement must be a variable or a property access.,1,0,0,0,1,0,0,0,1
+TS2767,The 'X' property of an iterator must be a method.,1,0,0,0,1,0,0,0,1
+TS2505,A generator cannot have a 'X' type annotation.,1,0,0,0,1,0,0,0,1
+TS2860,The left-hand side of an 'X' expression must be assignable to the first argument of the ri,1,0,0,0,1,0,0,0,1
+TS2861,An object'X'[Symbol.hasInstance]'X'instanceof' expression.,1,0,0,0,1,0,0,0,1
+TS1229,A type predicate cannot reference a rest parameter.,1,0,0,0,1,0,0,0,1
+TS2764,"Cannot iterate value because the 'X' method of its iterator expects type 'X', but array sp",1,0,0,0,1,0,0,0,1
+TS18061,'X' is not a valid meta-property for keyword 'X'. Did you mean 'X' or 'X'?,1,0,0,0,1,0,0,0,1
+TS1094,An accessor cannot have type parameters.,1,0,0,0,1,0,0,0,1
+TS1093,Type annotation cannot appear on a constructor declaration.,1,0,0,0,1,0,0,0,1
+TS1130,'X' or 'X' expected.,1,0,0,0,1,0,0,0,1
+TS1063,An export assignment cannot be used in a namespace.,1,0,0,0,1,0,0,0,1
+TS1368,Class constructor may not be a generator.,1,0,0,0,1,0,0,0,1
+TS1053,A 'X' accessor cannot have rest parameter.,1,0,0,0,1,0,0,0,1
+TS1191,An import declaration cannot have modifiers.,1,0,0,0,1,0,0,0,1
+TS1193,An export declaration cannot have modifiers.,1,0,0,0,1,0,0,0,1
+TS1010,'X' expected.,1,0,0,0,1,0,0,0,1
+TS2852,'X' statements are only allowed within async functions and at the top levels of modules.,1,0,0,0,1,0,0,0,1
+TS1494,The left-hand side of a 'X' statement cannot be an 'X' declaration.,1,0,0,0,1,0,0,0,1
+TS1493,The left-hand side of a 'X' statement cannot be a 'X' declaration.,1,0,0,0,1,0,0,0,1
+TS1472,'X' or 'X' expected.,1,0,0,0,1,0,0,0,1
+TS2838,All declarations of 'X' must have identical constraints.,1,0,0,0,1,0,0,0,1
+TS2514,A tuple type cannot be indexed with a negative value.,0,0,1,0,0,0,1,0,1
+TS5086,A labeled tuple element is declared as optional with a question mark after the name and be,1,0,0,0,1,0,0,0,1
+TS5085,A tuple member cannot be both optional and rest.,1,0,0,0,1,0,0,0,1
+TS1273,'X' modifier cannot appear on a type parameter,1,0,0,0,1,0,0,0,1
+TS1333,'X' types may not be used on a variable declaration with a binding name.,1,0,0,0,1,0,0,0,1
+TS2436,,0,0,0,0,0,0,0,0,0

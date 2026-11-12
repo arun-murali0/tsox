@@ -11,6 +11,7 @@ mod assignment;
 mod binary;
 mod calls;
 mod core;
+pub(in crate::bridge) use core::{is_ambient_global, is_library_type_only};
 mod elaborate;
 mod excess;
 mod functions;
@@ -18,11 +19,13 @@ mod logical;
 mod members;
 mod objects;
 mod spelling;
+mod truthiness;
 
 pub(super) use assignment::narrow_on_assignment;
 pub(super) use elaborate::report_mismatch;
 pub(super) use excess::check_excess_properties;
 pub(super) use members::infer_member_access_type;
+pub(super) use truthiness::check_truthiness;
 
 use assignment::infer_assignment_expression_type;
 use binary::infer_binary_expression_type;
@@ -62,6 +65,18 @@ pub fn infer_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
+    let type_id = infer_expression_type_inner(expr, scoping, ctx);
+    // When someone asked what type is at an offset, an expression that holds it says what it
+    // has. Inner expressions are typed first, so the innermost is the one kept.
+    super::probe::offer(ctx, expr.span(), type_id);
+    type_id
+}
+
+fn infer_expression_type_inner(
+    expr: &Expression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> TypeId {
     let expected = ctx.contextual.take();
     if crate::stack_guard::exhausted() {
         return ctx.nesting_too_deep(expr.span());
@@ -96,16 +111,25 @@ pub fn infer_expression_type(
         Expression::BinaryExpression(bin) => {
             let left = infer_expression_type(&bin.left, scoping, ctx);
             let right = infer_expression_type(&bin.right, scoping, ctx);
+            let (left, right) = binary::report_nullish_literal_operands(
+                bin.operator,
+                [(Some(&bin.left), left), (Some(&bin.right), right)],
+                ctx,
+            );
             let (left, right) = binary::strip_possibly_nullish(
                 bin.operator,
                 [(&bin.left, left), (&bin.right, right)],
                 ctx,
             );
             let (left, right) = widen_if_narrowed(bin, left, right, scoping, ctx);
-            infer_binary_expression_type(bin.operator, left, right, bin.span(), ctx)
+            ctx.operand_spans = Some((bin.left.span(), bin.right.span()));
+            let result = infer_binary_expression_type(bin.operator, left, right, bin.span(), ctx);
+            ctx.operand_spans = None;
+            result
         }
 
         Expression::CallExpression(call) => {
+            truthiness::note_indirect_call(&call.callee, ctx);
             ctx.call_return_context = expected;
             infer_call_expression_type(call, scoping, ctx)
         }
@@ -223,11 +247,13 @@ pub fn infer_expression_type(
 
         // Same shape as typeof just above: check the operand for its own errors,
         // but !'s result is always boolean regardless of what the operand is, so
-        // its inferred type is discarded rather than reused.
+        // its inferred type is discarded rather than reused. tsc applies its
+        // truthiness rules to the operand as well (TS1345, TS2872, TS2873).
         Expression::UnaryExpression(unary)
             if unary.operator == oxc_ast::ast::UnaryOperator::LogicalNot =>
         {
-            infer_expression_type(&unary.argument, scoping, ctx);
+            let operand_type = infer_expression_type(&unary.argument, scoping, ctx);
+            truthiness::check_truthiness(&unary.argument, operand_type, ctx);
             ctx.arena.boolean()
         }
 
@@ -242,7 +268,26 @@ pub fn infer_expression_type(
         // that for `-"a"` only under stricter rules, so nothing is lost today.
         Expression::UnaryExpression(unary) => {
             use oxc_ast::ast::UnaryOperator;
+            // `delete` owns its operand's checking entirely: the operand must be a
+            // property reference (TS2703) and, for `delete o.p`, the property must
+            // be optional (TS2790), and the object is inferred inside that check so
+            // its parts are not visited twice.
+            if unary.operator == UnaryOperator::Delete {
+                truthiness::check_delete_operand(&unary.argument, scoping, ctx);
+                return ctx.arena.boolean();
+            }
             let operand = infer_expression_type(&unary.argument, scoping, ctx);
+            // `-null`, `+undefined`, `~null`: the literal is the operand tsc will not take (TS18050).
+            if matches!(
+                unary.operator,
+                UnaryOperator::UnaryNegation | UnaryOperator::UnaryPlus | UnaryOperator::BitwiseNot
+            ) {
+                binary::report_nullish_literal_operands(
+                    oxc_ast::ast::BinaryOperator::Subtraction,
+                    [(None, operand), (Some(&unary.argument), operand)],
+                    ctx,
+                );
+            }
             match unary.operator {
                 UnaryOperator::UnaryNegation => match &unary.argument {
                     Expression::NumericLiteral(n) => ctx.arena.alloc(Type::NumberLiteral(-n.value)),
@@ -250,7 +295,6 @@ pub fn infer_expression_type(
                 },
                 UnaryOperator::UnaryPlus | UnaryOperator::BitwiseNot => ctx.arena.number(),
                 UnaryOperator::Void => ctx.arena.undefined(),
-                UnaryOperator::Delete => ctx.arena.boolean(),
                 _ => {
                     let _ = operand;
                     ctx.arena.error()
@@ -306,6 +350,54 @@ pub fn infer_expression_type(
             }
             let any = ctx.arena.any();
             ctx.arena.alloc_promise(any)
+        }
+
+        // `a, b` reads every part for its own errors and is typed by its last part, as
+        // tsc types a sequence. Every part but the last is discarded, so tsc checks the
+        // discarded ones for side effects (TS2695) — that check runs here, on each
+        // non-final part.
+        Expression::SequenceExpression(sequence) => {
+            let last = sequence.expressions.len().saturating_sub(1);
+            let mut result = ctx.arena.undefined();
+            for (index, part) in sequence.expressions.iter().enumerate() {
+                result = infer_expression_type(part, scoping, ctx);
+                // `(assert(x), x)`: an assertion call among the discarded parts narrows
+                // what follows it, as the same call as a statement does.
+                if index < last {
+                    let mut call_part = part;
+                    while let Expression::ParenthesizedExpression(inner) = call_part {
+                        call_part = &inner.expression;
+                    }
+                    if let Expression::CallExpression(call) = call_part
+                        && let Some((narrowed, _)) = crate::bridge::narrow::narrow_by_predicate_call(
+                            call, scoping, ctx, true,
+                        )
+                    {
+                        ctx.narrow.extend(narrowed);
+                    }
+                }
+                if index < last
+                    && !truthiness::has_side_effects(part)
+                    && !ctx.indirect_call_sequences.contains(&sequence.span.start)
+                {
+                    ctx.error(
+                        crate::diagnostic_messages::messages::comma_left_no_side_effect(),
+                        part.span(),
+                    );
+                }
+            }
+            result
+        }
+
+        // A class expression's body is not checked yet, but what is reported of a class
+        // however far it resolves (untyped parameters, fields never initialized) is.
+        Expression::ClassExpression(class) => {
+            super::statements::report_class_surface(class, ctx);
+            ctx.warning(
+                crate::diagnostic_messages::messages::unimplemented_expression_kind(),
+                expr.span(),
+            );
+            ctx.arena.error()
         }
 
         _ => {

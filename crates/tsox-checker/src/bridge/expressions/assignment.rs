@@ -128,28 +128,167 @@ pub(super) fn infer_assignment_expression_type(
         // `x op= y` is `x = x op y`: whatever the operator's own rule is,
         // applied with the target's current type on the left. That reuses
         // infer_binary_expression_type's own mismatch reporting (e.g. `x -=
-        // "a"` reports the same way `x - "a"` would). Not checked here, and a
-        // narrower gap than tsc: whether the *result* is itself assignable
-        // back to the target's type (`x: "a" | "b"; x += "c";` is invalid in
-        // tsc since the result widens to plain string), left for later.
+        // "a"` reports the same way `x - "a"` would). The write happens only
+        // when the result fits what the target reads as right now — the
+        // narrowed type, which is what tsc checks (TS2322, e.g. `x: "a" | "b"`
+        // narrowed to `"a"` and then `x += "c"` is invalid since the result
+        // widens to plain string) — and on a rejected write the old narrowing
+        // survives, as tsc keeps it too.
         operator => match compound_assignment_operator(operator) {
-            Some(binary_operator) => infer_binary_expression_type(
-                binary_operator,
-                target_type,
-                right_type,
-                assign.span(),
-                ctx,
-            ),
+            Some(binary_operator) => {
+                // `x += null`: the literal is reported (TS18050) and reads as `any`.
+                let (_, right_type) = super::binary::report_nullish_literal_operands(
+                    binary_operator,
+                    [(None, target_type), (Some(&assign.right), right_type)],
+                    ctx,
+                );
+                ctx.operand_spans = Some((assign.left.span(), assign.right.span()));
+                let result = infer_binary_expression_type(
+                    binary_operator,
+                    target_type,
+                    right_type,
+                    assign.span(),
+                    ctx,
+                );
+                ctx.operand_spans = None;
+                // The write happens only if the operation's result fits what the
+                // target reads as right now — the narrowed type, not the declared
+                // one — which tsc checks (TS2322). When it does not, the write is
+                // reported and the old narrowing survives: the target keeps
+                // reading as whatever the guard had made of it. The shadow note
+                // still records that a write ran, since at runtime one did. A
+                // member target reads through its narrowed path (`typeof o.s ===
+                // "number"` above the write), which resolve_assignment_target_type
+                // does not consult — it returns the property's declared type — so
+                // the path map is read here directly.
+                let current = match &assign.left {
+                    AssignmentTarget::StaticMemberExpression(member) => {
+                        path_of_member(member, scoping)
+                            .and_then(|reference| {
+                                ctx.narrow.get_path(reference.symbol_id, &reference.path)
+                            })
+                            .unwrap_or(target_type)
+                    }
+                    _ => target_type,
+                };
+                if ctx.is_assignable_instantiating(result, current) {
+                    if let Some((symbol_id, declared_type)) =
+                        declared_identifier_target(&assign.left, scoping, ctx)
+                    {
+                        ctx.shadow_note_assignment(
+                            assign.node_id.get().index() as u32,
+                            declared_type,
+                            result,
+                        );
+                        narrow_on_assignment(symbol_id, declared_type, result, ctx);
+                    }
+                    narrow_member_on_assignment(&assign.left, target_type, result, scoping, ctx);
+                } else {
+                    let whole = crate::diagnostic_messages::messages::declared_type_mismatch(
+                        &ctx.arena, result, current,
+                    );
+                    super::elaborate::report_mismatch(
+                        None,
+                        result,
+                        current,
+                        whole,
+                        assign.span(),
+                        ctx,
+                    );
+                    if let Some((_, declared_type)) =
+                        declared_identifier_target(&assign.left, scoping, ctx)
+                    {
+                        // tsc keeps the narrowing after a rejected write, so the
+                        // walk is told the target still holds what it read as.
+                        ctx.shadow_note_assignment(
+                            assign.node_id.get().index() as u32,
+                            declared_type,
+                            current,
+                        );
+                    }
+                }
+                result
+            }
             // Logical assignment (&&=, ||=, ??=): short-circuiting, so not a
-            // plain binary op the way the arithmetic ones are. Not modeled.
-            None => right_type,
+            // plain binary op the way the arithmetic ones are. The write does
+            // happen whenever the operator's condition says so, so the right
+            // side is checked against the target's type, and the target then
+            // holds the truthy (or falsy) part of what it had joined with the
+            // right side.
+            None => {
+                let declared = match &assign.left {
+                    AssignmentTarget::AssignmentTargetIdentifier(_) => {
+                        declared_identifier_target(&assign.left, scoping, ctx)
+                            .map(|(_, declared)| declared)
+                    }
+                    _ => Some(target_type),
+                };
+                if let Some(declared) = declared
+                    && !ctx.is_assignable_instantiating(right_type, declared)
+                {
+                    let whole = crate::diagnostic_messages::messages::declared_type_mismatch(
+                        &ctx.arena, right_type, declared,
+                    );
+                    super::elaborate::report_mismatch(
+                        Some(&assign.right),
+                        right_type,
+                        declared,
+                        whole,
+                        assign.span(),
+                        ctx,
+                    );
+                }
+                let narrowed = declared.and_then(|declared| {
+                    logical_narrowed_type(ctx, operator, declared, right_type)
+                });
+                if let Some(narrowed) = narrowed {
+                    if let Some((symbol_id, declared)) =
+                        declared_identifier_target(&assign.left, scoping, ctx)
+                    {
+                        ctx.shadow_note_assignment(
+                            assign.node_id.get().index() as u32,
+                            declared,
+                            narrowed,
+                        );
+                        ctx.narrow.remove_paths_of(symbol_id);
+                        ctx.narrow.insert(symbol_id, narrowed);
+                    }
+                    narrow_member_on_assignment(&assign.left, target_type, narrowed, scoping, ctx);
+                }
+                right_type
+            }
         },
     }
+}
+
+// What the target holds after a logical assignment. `x ??= y` and `x ||= y` keep
+// x when it is truthy and write y when it is not, so x then reads as the truthy
+// part of what it had joined with y; `x &&= y` keeps x when it is falsy, so it
+// reads as the falsy part joined with y. When that is the type it was declared
+// with, nothing about the value has changed and None says to leave the old
+// narrowing alone.
+fn logical_narrowed_type(
+    ctx: &mut CheckContext<'_, '_>,
+    operator: AssignmentOperator,
+    declared: TypeId,
+    right_type: TypeId,
+) -> Option<TypeId> {
+    let kept = if matches!(operator, AssignmentOperator::LogicalAnd) {
+        super::super::narrow::narrow_to_falsy(&mut ctx.arena, declared)
+    } else {
+        super::super::narrow::narrow_to_truthy(&mut ctx.arena, declared)
+    };
+    let narrowed = ctx.arena.alloc_union(vec![kept, right_type]);
+    (narrowed != declared).then_some(narrowed)
 }
 
 // `x++` and `--x`. The operand is read for its own errors; a `const` or an import cannot be
 // written to; the result is `number`. This checker has no `bigint` type, so a bigint operand
 // reads as `number` too.
+//
+// tsc's TS2357 (the operand of `++`/`--` must be a variable or a property access) is not
+// checked here: oxc's parser rejects an operand that is not an assignment target outright
+// ("Cannot assign to this expression"), so an invalid shape never reaches the checker.
 pub(super) fn infer_update_expression_type(
     update: &oxc_ast::ast::UpdateExpression,
     scoping: &Scoping,
@@ -174,6 +313,15 @@ pub(super) fn infer_update_expression_type(
             &member.property.name,
             member.property.span,
         );
+        // The property holds a new value afterwards, so what a guard narrowed it to
+        // ends, the rule narrow_member_on_assignment applies to a plain write. Nothing
+        // is inserted in its place: the result is a number, and whether that fits the
+        // property's declared type is the update's own check, which tsc reports under
+        // its own code (TS2356) and this checker does not report at all.
+        if let Some(reference) = path_of_member(member, scoping) {
+            ctx.narrow
+                .remove_path_prefix(reference.symbol_id, &reference.path);
+        }
     }
     ctx.arena.number()
 }
@@ -195,6 +343,16 @@ fn immutable_binding_message(
         Some(crate::diagnostic_messages::messages::assignment_to_constant(&ident.name))
     } else if flags.is_import() {
         Some(crate::diagnostic_messages::messages::assignment_to_import(
+            &ident.name,
+        ))
+    } else if flags.is_class() {
+        Some(crate::diagnostic_messages::messages::assignment_to_class(
+            &ident.name,
+        ))
+    } else if flags.is_function() && !flags.is_variable() {
+        Some(crate::diagnostic_messages::messages::assignment_to_function(&ident.name))
+    } else if flags.is_enum() {
+        Some(crate::diagnostic_messages::messages::assignment_to_enum(
             &ident.name,
         ))
     } else {

@@ -72,7 +72,10 @@ pub fn resolve_identifier_type(
         {
             crate::diagnostic_messages::messages::type_used_as_value(&ident.name)
         } else {
-            crate::diagnostic_messages::messages::unresolved_identifier(&ident.name)
+            crate::diagnostic_messages::messages::unresolved_identifier_hint(&ident.name)
+                .unwrap_or_else(|| {
+                    crate::diagnostic_messages::messages::unresolved_identifier(&ident.name)
+                })
         };
         ctx.error(message, ident.span());
         return ctx.arena.error();
@@ -103,15 +106,24 @@ pub fn resolve_identifier_type(
         Some(narrowed) => Some(narrowed),
         None => ctx.symbols.get(symbol_id),
     };
+    let result = result.map(|r| super::super::expando::apply(symbol_id, r, ctx));
     if let Some(result) = result {
-        if let Some(shadow) = ctx.shadow.as_mut() {
-            shadow.note_read(
+        // The backward flow walk, when it is on, answers the read if it can; otherwise this is
+        // the forward overlay's answer, noted for the comparison in shadow mode.
+        if let Some(mut flow) = ctx.shadow.take() {
+            let walked = flow.on_read(
+                ctx,
+                scoping,
                 ident.node_id.get().index() as u32,
                 symbol_id,
                 &ident.name,
                 ident.span(),
                 result,
             );
+            ctx.shadow = Some(flow);
+            if let Some(walked) = walked {
+                return walked;
+            }
         }
         return result;
     }
@@ -136,7 +148,7 @@ pub fn resolve_identifier_type(
 // Values the runtime provides in every script. A name is only here if a program can use
 // it with no import and no declaration; anything else is a real unresolved name.
 // Library names that are only types: using one as a value is TS2693, not an unknown name.
-fn is_library_type_only(name: &str) -> bool {
+pub(in crate::bridge) fn is_library_type_only(name: &str) -> bool {
     matches!(
         name,
         "Iterator"
@@ -165,7 +177,7 @@ fn is_library_type_only(name: &str) -> bool {
 // configured project must resolve these names from the selected `.d.ts` declarations or
 // report them as unresolved; otherwise an unselected DOM/runtime global would silently be
 // accepted as `any`.
-fn is_ambient_global(name: &str) -> bool {
+pub(in crate::bridge) fn is_ambient_global(name: &str) -> bool {
     matches!(
         name,
         "Error"

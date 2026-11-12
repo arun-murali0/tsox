@@ -58,9 +58,24 @@ pub fn parse<'a>(
         // Picked: the parser still builds the whole tree for them, so a file whose only
         // errors are these three is parsed normally and tuple_grammar.rs reports each one
         // at its element, under its own code. Any other error still refuses the file.
-        if !messages.is_empty() {
+        // Problem: any syntax error refused the whole file, but tsc reports the syntax error
+        // and goes on to check what it recovered, so every semantic error in the rest of the
+        // file went missing.
+        // Picked: a parse the parser recovered from (it did not give up) is checked like any
+        // other; only a parse that panicked, which has no usable tree, still refuses the file.
+        // Cost: the syntax errors themselves are not reported yet.
+        if !messages.is_empty()
+            && result.program.body.is_empty()
+            && result.program.directives.is_empty()
+        {
             tracing::warn!(error_count = messages.len(), "parse completed with errors");
             return Err(CheckerError::Parse(messages.join("; ")));
+        }
+        if !messages.is_empty() {
+            tracing::warn!(
+                error_count = messages.len(),
+                "parse recovered from errors; checking"
+            );
         }
         tracing::debug!("parse reported only tuple shape errors; continuing");
     }

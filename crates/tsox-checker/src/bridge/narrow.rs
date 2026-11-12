@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use oxc_ast::ast::{
     AssignmentExpression, AssignmentTarget, BinaryExpression, BinaryOperator, Expression,
-    IdentifierReference, LogicalOperator, Program, StaticMemberExpression, UnaryOperator,
+    IdentifierReference, LogicalOperator, Program, SimpleAssignmentTarget, StaticMemberExpression,
+    UnaryOperator, UpdateExpression,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::{Scoping, SymbolId};
@@ -268,6 +269,24 @@ impl<'a> Visit<'a> for WriteCollector<'_> {
         }
         walk::walk_assignment_expression(self, it);
     }
+
+    fn visit_update_expression(&mut self, it: &UpdateExpression<'a>) {
+        // `o.count++` writes the property the way `o.count = o.count + 1` does, so the
+        // loop and try walks must count it as a write too. A computed or a destructured
+        // write is left out on purpose: the forward walk resets no narrowing for those
+        // shapes, so head passes triggered for them would walk again only to conclude
+        // the same thing.
+        if let SimpleAssignmentTarget::StaticMemberExpression(member) = &it.argument
+            && let Some(target) = path_of_member(member, self.scoping)
+        {
+            self.map
+                .member
+                .entry(target.symbol_id)
+                .or_default()
+                .push(it.span.start);
+        }
+        walk::walk_update_expression(self, it);
+    }
 }
 
 // The state after two control-flow paths meet: a symbol narrowed on both paths
@@ -314,6 +333,12 @@ pub fn assigned_narrowed_type(
         Type::Union(members) => members.clone(),
         _ => return declared,
     };
+    // While a loop is only being probed for its head state, a value that came out of reading
+    // a variable the probe has not finished narrowing (`x = x.slice()` where `x` is still
+    // `never`) is an `any` that says nothing; tsc leaves such a type out as incomplete.
+    if ctx.loop_probe && matches!(ctx.arena.get(assigned), Type::Any | Type::Error) {
+        return ctx.arena.never();
+    }
     let mut kept = Vec::with_capacity(members.len());
     for member in members {
         if ctx.semantic().is_assignable(assigned, member) {
@@ -369,12 +394,39 @@ fn narrow_condition_by_symbol(
             narrow_condition(&inner.expression, scoping, ctx)
         }
 
+        // `if (o?.foo)`: truthy means the chain got past `o`.
+        Expression::ChainExpression(_) if chain_root(test, scoping).is_some() => {
+            let symbol_id = chain_root(test, scoping).expect("checked");
+            by_symbol(ctx, symbol_id, |arena, current, want_true| {
+                if want_true {
+                    narrow_to_non_nullish(arena, current)
+                } else {
+                    current
+                }
+            })
+        }
+
         Expression::BinaryExpression(bin) => {
             // `in` and `instanceof` are not equality at all, so they are handled before
             // the equality detection below, which would find nothing to match.
             match bin.operator {
                 BinaryOperator::In => return narrow_by_in(bin, scoping, ctx),
-                BinaryOperator::Instanceof => return narrow_by_instanceof(bin, scoping, ctx),
+                BinaryOperator::Instanceof => {
+                    let mut pair = narrow_by_instanceof(bin, scoping, ctx);
+                    // `o?.baz instanceof Error` holding means the chain got past `o`.
+                    if let Some(symbol_id) = chain_root(skip_parens_expr(&bin.left), scoping) {
+                        let (when_true, _) =
+                            by_symbol(ctx, symbol_id, |arena, current, want_true| {
+                                if want_true {
+                                    narrow_to_non_nullish(arena, current)
+                                } else {
+                                    current
+                                }
+                            });
+                        pair.0.extend(when_true);
+                    }
+                    return pair;
+                }
                 _ => {}
             }
 
@@ -394,6 +446,67 @@ fn narrow_condition_by_symbol(
             );
             if !is_equality {
                 return empty_pair();
+            }
+
+            // `typeof o?.foo === "number"`: any tag but "undefined" means the chain got past `o`.
+            for (typeof_side, tag_side) in [(&bin.left, &bin.right), (&bin.right, &bin.left)] {
+                if let Expression::UnaryExpression(unary) = skip_parens_expr(typeof_side)
+                    && unary.operator == UnaryOperator::Typeof
+                    && let Some(symbol_id) = chain_root(skip_parens_expr(&unary.argument), scoping)
+                    && let Expression::StringLiteral(tag) = skip_parens_expr(tag_side)
+                {
+                    let narrow_true = (tag.value != "undefined") != negated;
+                    return by_symbol(ctx, symbol_id, move |arena, current, want_true| {
+                        if want_true == narrow_true {
+                            narrow_to_non_nullish(arena, current)
+                        } else {
+                            current
+                        }
+                    });
+                }
+            }
+
+            // `o?.foo === value`: equal to something that is not nullish means the chain got
+            // past `o`, so `o` is there on that edge. Comparing with `undefined` or `null`
+            // says it on the other edge.
+            if let Some((symbol_id, other)) = chain_equality(&bin.left, &bin.right, scoping)
+                .or_else(|| chain_equality(&bin.right, &bin.left, scoping))
+            {
+                let nullish_literal = match other {
+                    Expression::NullLiteral(_) => true,
+                    Expression::Identifier(id) => id.name == "undefined",
+                    _ => false,
+                };
+                let on_equal = if nullish_literal {
+                    Some(false)
+                } else {
+                    let before = ctx.diagnostics.len();
+                    let other_type =
+                        crate::bridge::expressions::infer_expression_type(other, scoping, ctx);
+                    ctx.diagnostics.truncate(before);
+                    // `===` with `null` still means the chain produced a value; only `undefined`
+                    // (or a type that might be it) can equal a chain that stopped early.
+                    (!may_be_undefined(
+                        &ctx.arena,
+                        other_type,
+                        matches!(
+                            bin.operator,
+                            BinaryOperator::Equality | BinaryOperator::Inequality
+                        ),
+                    ))
+                    .then_some(true)
+                };
+                if let Some(on_equal) = on_equal {
+                    // Whether the true edge is the one that gets the narrowing.
+                    let narrow_true = on_equal != negated;
+                    return by_symbol(ctx, symbol_id, move |arena, current, want_true| {
+                        if want_true == narrow_true {
+                            narrow_to_non_nullish(arena, current)
+                        } else {
+                            current
+                        }
+                    });
+                }
             }
 
             let is_loose = matches!(
@@ -716,6 +829,82 @@ fn empty_pair() -> (NarrowState, NarrowState) {
     (NarrowState::new(), NarrowState::new())
 }
 
+// The variable an optional chain starts from, when the first link after it is the `?.`:
+// `o?.a.b`, `o?.[k]`, `f?.(x)`. A `?.` further along says nothing about the root.
+fn chain_root(expr: &Expression, scoping: &Scoping) -> Option<SymbolId> {
+    use oxc_ast::ast::ChainElement;
+    let Expression::ChainExpression(chain) = expr else {
+        return None;
+    };
+    match &chain.expression {
+        ChainElement::StaticMemberExpression(m) => chain_link(&m.object, m.optional, &*m, scoping)
+            .or_else(|| chain_descend(&m.object, scoping)),
+        ChainElement::ComputedMemberExpression(m) => {
+            chain_link(&m.object, m.optional, &*m, scoping)
+                .or_else(|| chain_descend(&m.object, scoping))
+        }
+        ChainElement::CallExpression(call) => {
+            chain_link(&call.callee, call.optional, &*call, scoping)
+                .or_else(|| chain_descend(&call.callee, scoping))
+        }
+        _ => None,
+    }
+}
+
+fn chain_link<T>(
+    object: &Expression,
+    optional: bool,
+    _node: &T,
+    scoping: &Scoping,
+) -> Option<SymbolId> {
+    if !optional {
+        return None;
+    }
+    match skip_parens_expr(object) {
+        Expression::Identifier(ident) => resolve_symbol_id(ident, scoping),
+        _ => None,
+    }
+}
+
+// Down through `.a`, `[k]` and `(...)` links to the one whose object is the root.
+fn chain_descend(expr: &Expression, scoping: &Scoping) -> Option<SymbolId> {
+    match skip_parens_expr(expr) {
+        Expression::StaticMemberExpression(m) => chain_link(&m.object, m.optional, &**m, scoping)
+            .or_else(|| chain_descend(&m.object, scoping)),
+        Expression::ComputedMemberExpression(m) => chain_link(&m.object, m.optional, &**m, scoping)
+            .or_else(|| chain_descend(&m.object, scoping)),
+        Expression::CallExpression(call) => {
+            chain_link(&call.callee, call.optional, &**call, scoping)
+                .or_else(|| chain_descend(&call.callee, scoping))
+        }
+        _ => None,
+    }
+}
+
+fn skip_parens_expr<'a, 'b>(mut expr: &'b Expression<'a>) -> &'b Expression<'a> {
+    while let Expression::ParenthesizedExpression(inner) = expr {
+        expr = &inner.expression;
+    }
+    expr
+}
+
+fn chain_equality<'a, 'b>(
+    chain: &'b Expression<'a>,
+    other: &'b Expression<'a>,
+    scoping: &Scoping,
+) -> Option<(SymbolId, &'b Expression<'a>)> {
+    chain_root(skip_parens_expr(chain), scoping).map(|symbol| (symbol, other))
+}
+
+fn may_be_undefined(arena: &TypeArena, id: TypeId, loose: bool) -> bool {
+    match arena.get(id) {
+        Type::Undefined | Type::Any | Type::Unknown | Type::Void => true,
+        Type::Null => loose,
+        Type::Union(members) => members.iter().any(|&m| may_be_undefined(arena, m, loose)),
+        _ => false,
+    }
+}
+
 fn by_symbol(
     ctx: &mut CheckContext<'_, '_>,
     symbol_id: SymbolId,
@@ -747,6 +936,8 @@ pub enum SwitchDiscriminant {
     Identifier(SymbolId),
     Property(SymbolId, String),
     Typeof(SymbolId),
+    // `switch (true)`: each clause's test is a condition, narrowing as `if` would.
+    True,
 }
 
 pub fn switch_discriminant(expr: &Expression, scoping: &Scoping) -> Option<SwitchDiscriminant> {
@@ -754,6 +945,7 @@ pub fn switch_discriminant(expr: &Expression, scoping: &Scoping) -> Option<Switc
         Expression::ParenthesizedExpression(inner) => {
             switch_discriminant(&inner.expression, scoping)
         }
+        Expression::BooleanLiteral(literal) if literal.value => Some(SwitchDiscriminant::True),
         Expression::Identifier(ident) => {
             resolve_symbol_id(ident, scoping).map(SwitchDiscriminant::Identifier)
         }
@@ -790,8 +982,17 @@ fn current_type(ctx: &CheckContext<'_, '_>, symbol_id: SymbolId) -> Option<TypeI
 pub fn narrow_switch_case(
     discriminant: &SwitchDiscriminant,
     tests: &[&Expression],
+    scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> NarrowState {
+    if matches!(discriminant, SwitchDiscriminant::True) {
+        // A body reached through one clause test holds what the test establishes. Several
+        // grouped tests would need the union of their states, which is left unnarrowed.
+        return match tests {
+            [test] => narrow_condition(test, scoping, ctx).0,
+            _ => NarrowState::new(),
+        };
+    }
     let state = narrow_switch_case_inner(discriminant, tests, ctx);
     propagate_destructured(ctx, state)
 }
@@ -802,6 +1003,7 @@ fn narrow_switch_case_inner(
     ctx: &mut CheckContext<'_, '_>,
 ) -> NarrowState {
     match discriminant {
+        SwitchDiscriminant::True => NarrowState::new(),
         SwitchDiscriminant::Identifier(symbol_id) => {
             let Some(literals) = resolve_all_literals(tests, &mut ctx.arena) else {
                 return NarrowState::new();
@@ -846,8 +1048,21 @@ fn narrow_switch_case_inner(
 pub fn narrow_switch_default(
     discriminant: &SwitchDiscriminant,
     tests: &[&Expression],
+    scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> NarrowState {
+    if matches!(discriminant, SwitchDiscriminant::True) {
+        // Every clause test was false, one after the other.
+        let saved = ctx.narrow.clone();
+        let mut gathered = NarrowState::new();
+        for test in tests {
+            let (_, when_false) = narrow_condition(test, scoping, ctx);
+            ctx.narrow.extend(when_false.clone());
+            gathered.extend(when_false);
+        }
+        ctx.narrow = saved;
+        return gathered;
+    }
     let state = narrow_switch_default_inner(discriminant, tests, ctx);
     propagate_destructured(ctx, state)
 }
@@ -858,6 +1073,7 @@ fn narrow_switch_default_inner(
     ctx: &mut CheckContext<'_, '_>,
 ) -> NarrowState {
     match discriminant {
+        SwitchDiscriminant::True => NarrowState::new(),
         SwitchDiscriminant::Identifier(symbol_id) => {
             let literals: Vec<TypeId> = tests
                 .iter()
@@ -934,6 +1150,9 @@ fn resolve_literal(expr: &Expression, arena: &mut TypeArena) -> Option<TypeId> {
         }
         Expression::NumericLiteral(lit) => Some(arena.alloc(Type::NumberLiteral(lit.value))),
         Expression::BooleanLiteral(lit) => Some(arena.alloc(Type::BooleanLiteral(lit.value))),
+        // `case null:` and `case undefined:` narrow like any other case.
+        Expression::NullLiteral(_) => Some(arena.null()),
+        Expression::Identifier(ident) if ident.name == "undefined" => Some(arena.undefined()),
         _ => None,
     }
 }
@@ -1053,14 +1272,15 @@ enum Presence {
     Required,
     Optional,
     Absent,
-    // Not an object, or a Record whose keys are not modelled: it may or may not have
-    // the property, so `in` can neither keep nor drop it with confidence.
+    // Not an object, or a Record whose generic key domain is not represented as a
+    // concrete property list: it may or may not have the property, so `in` can neither
+    // keep nor drop it with confidence.
     Unknown,
 }
 
 // Absent is only said of an object that lists its properties. A non-object, and a Record
-// (its keys come from K, not from a property list), read as Unknown, so neither branch
-// drops them.
+// (its keys come from K, not from a concrete property list while K is generic), read as
+// Unknown, so neither branch drops them.
 fn property_presence(arena: &TypeArena, member: TypeId, property: &str) -> Presence {
     let Type::Object(object) = arena.get(member) else {
         return Presence::Unknown;
@@ -1561,6 +1781,18 @@ fn narrow_by_nullish(
             Type::Any | Type::Unknown | Type::Error | Type::GenericParameter(..)
         )
     };
+    // A union that still holds `unknown` (what joining `null` with `unknown` leaves) is no
+    // narrower than `unknown`.
+    let id = match union_members(arena, id) {
+        Some(members)
+            if members
+                .iter()
+                .any(|&m| matches!(arena.get(m), Type::Unknown)) =>
+        {
+            arena.unknown()
+        }
+        _ => id,
+    };
     match union_members(arena, id) {
         Some(members) => {
             let filtered = members
@@ -1570,6 +1802,18 @@ fn narrow_by_nullish(
             arena.alloc_union(filtered)
         }
         None => {
+            // `unknown` is exactly what the test says it is where the test passes.
+            if want_match && matches!(arena.get(id), Type::Unknown) {
+                let null = arena.null();
+                let undefined = arena.undefined();
+                return if is_loose {
+                    arena.alloc_union(vec![null, undefined])
+                } else if target_is_null {
+                    null
+                } else {
+                    undefined
+                };
+            }
             if is_open(arena, id) || is_target(arena, id) == want_match {
                 id
             } else {
