@@ -148,7 +148,7 @@ pub fn resolve_identifier_type(
 // Values the runtime provides in every script. A name is only here if a program can use
 // it with no import and no declaration; anything else is a real unresolved name.
 // Library names that are only types: using one as a value is TS2693, not an unknown name.
-fn is_library_type_only(name: &str) -> bool {
+pub(in crate::bridge) fn is_library_type_only(name: &str) -> bool {
     matches!(
         name,
         "Iterator"
@@ -177,7 +177,7 @@ fn is_library_type_only(name: &str) -> bool {
 // configured project must resolve these names from the selected `.d.ts` declarations or
 // report them as unresolved; otherwise an unselected DOM/runtime global would silently be
 // accepted as `any`.
-fn is_ambient_global(name: &str) -> bool {
+pub(in crate::bridge) fn is_ambient_global(name: &str) -> bool {
     matches!(
         name,
         "Error"

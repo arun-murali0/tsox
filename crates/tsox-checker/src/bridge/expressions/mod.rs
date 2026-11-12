@@ -11,6 +11,7 @@ mod assignment;
 mod binary;
 mod calls;
 mod core;
+pub(in crate::bridge) use core::{is_ambient_global, is_library_type_only};
 mod elaborate;
 mod excess;
 mod functions;

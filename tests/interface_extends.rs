@@ -94,8 +94,17 @@ fn a_base_that_cannot_be_read_leaves_the_interface_unmodelled_and_silent() {
          declare const fc: FromClass;\nexport const kk = fc.k;\n\
          interface Loop1 extends Loop2 { a: number }\ninterface Loop2 extends Loop1 { b: number }\n\
          declare const l: Loop1;\nexport const lv = l.a;\n\
-         interface Gone extends Missing { g: number }\ndeclare const gone: Gone;\n\
-         export const gg = gone.g;\n",
+         ",
     );
     assert_eq!(result, Vec::<String>::new());
+}
+
+// An undeclared base is reported (TS2304), as tsc does; the interface itself stays unmodelled.
+#[test]
+fn an_undeclared_base_is_reported_and_leaves_the_interface_unmodelled() {
+    let result = errors(
+        "undeclared",
+        "interface Gone extends Missing { g: number }\ndeclare const gone: Gone;\nexport const gg = gone.g;\n",
+    );
+    assert_eq!(result, vec!["Some(2304)".to_string()]);
 }

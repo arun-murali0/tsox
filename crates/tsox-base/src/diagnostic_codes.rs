@@ -61,6 +61,7 @@ pub enum DiagnosticCode {
 
     // 1200s: name / member resolution
     UnresolvedIdentifier,
+    UnresolvedNamespace,
     PropertyDoesNotExist,
     PropertyDoesNotExistSuggestion,
     PropertyFromIndexSignature,
@@ -227,6 +228,7 @@ impl DiagnosticCode {
             NoOverloadMatches => "TSR1106",
 
             UnresolvedIdentifier => "TSR1201",
+            UnresolvedNamespace => "TSR1209",
             PropertyDoesNotExist => "TSR1202",
             PropertyDoesNotExistSuggestion => "TSR1210",
             PropertyFromIndexSignature => "TSR1211",
@@ -389,6 +391,7 @@ impl DiagnosticCode {
             NoOverloadMatches => 2769,
 
             UnresolvedIdentifier => 2304,
+            UnresolvedNamespace => 2503,
             PropertyDoesNotExist => 2339,
             PropertyDoesNotExistSuggestion => 2551,
             PropertyFromIndexSignature => 4111,

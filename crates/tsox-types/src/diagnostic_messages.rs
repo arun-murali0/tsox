@@ -809,6 +809,13 @@ pub mod messages {
         )
     }
 
+    pub fn unresolved_namespace(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::UnresolvedNamespace,
+            format!("Cannot find namespace '{name}'."),
+        )
+    }
+
     pub fn unresolved_identifier(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnresolvedIdentifier,
