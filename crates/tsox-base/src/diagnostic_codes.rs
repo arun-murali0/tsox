@@ -120,6 +120,9 @@ pub enum DiagnosticCode {
     ReadonlyPropertyAssignment,
     AssignmentToConstant,
     AssignmentToImport,
+    AssignmentToClass,
+    AssignmentToFunction,
+    AssignmentToEnum,
 
     // 1600s: reachability
     UnreachableCode,
@@ -147,6 +150,7 @@ pub enum DiagnosticCode {
     ImplicitAnyBinding,
     SubsequentVariableType,
     RedeclareExportedVariable,
+    ValueCannotBeUsedHere,
 
     // 1900s: expression grammar and conditions (each maps to the tsc code the
     // syntactic check matches; update/assignment-target grammar codes are not
@@ -279,6 +283,9 @@ impl DiagnosticCode {
             ReadonlyPropertyAssignment => "TSR1913",
             AssignmentToConstant => "TSR1907",
             AssignmentToImport => "TSR1908",
+            AssignmentToClass => "TSR1909",
+            AssignmentToFunction => "TSR1910",
+            AssignmentToEnum => "TSR1911",
 
             UnreachableCode => "TSR1601",
             FallthroughCaseInSwitch => "TSR1602",
@@ -303,6 +310,7 @@ impl DiagnosticCode {
             ImplicitAnyBinding => "TSR1811",
             SubsequentVariableType => "TSR1812",
             RedeclareExportedVariable => "TSR1813",
+            ValueCannotBeUsedHere => "TSR1814",
 
             CommaLeftNoSideEffect => "TSR1901",
             VoidTruthiness => "TSR1902",
@@ -426,6 +434,10 @@ impl DiagnosticCode {
             ReadonlyPropertyAssignment => 2540,
             AssignmentToConstant => 2588,
             AssignmentToImport => 2632,
+            AssignmentToClass => 2629,
+            AssignmentToFunction => 2630,
+            AssignmentToEnum => 2628,
+            ValueCannotBeUsedHere => 18050,
 
             ImplicitAnyParameter => 7006,
             ImplicitAnyRestParameter => 7019,

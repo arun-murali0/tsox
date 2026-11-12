@@ -1123,6 +1123,35 @@ pub mod messages {
         )
     }
 
+    pub fn assignment_to_class(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AssignmentToClass,
+            format!("Cannot assign to '{name}' because it is a class."),
+        )
+    }
+
+    pub fn assignment_to_function(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AssignmentToFunction,
+            format!("Cannot assign to '{name}' because it is a function."),
+        )
+    }
+
+    pub fn assignment_to_enum(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::AssignmentToEnum,
+            format!("Cannot assign to '{name}' because it is an enum."),
+        )
+    }
+
+    // tsc's TS18050, for a literal `null` or `undefined` used as an operand.
+    pub fn value_cannot_be_used_here(value: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ValueCannotBeUsedHere,
+            format!("The value '{value}' cannot be used here."),
+        )
+    }
+
     pub fn assignment_to_import(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::AssignmentToImport,

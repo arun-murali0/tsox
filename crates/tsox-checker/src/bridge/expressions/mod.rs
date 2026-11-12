@@ -110,13 +110,21 @@ fn infer_expression_type_inner(
         Expression::BinaryExpression(bin) => {
             let left = infer_expression_type(&bin.left, scoping, ctx);
             let right = infer_expression_type(&bin.right, scoping, ctx);
+            let (left, right) = binary::report_nullish_literal_operands(
+                bin.operator,
+                [(Some(&bin.left), left), (Some(&bin.right), right)],
+                ctx,
+            );
             let (left, right) = binary::strip_possibly_nullish(
                 bin.operator,
                 [(&bin.left, left), (&bin.right, right)],
                 ctx,
             );
             let (left, right) = widen_if_narrowed(bin, left, right, scoping, ctx);
-            infer_binary_expression_type(bin.operator, left, right, bin.span(), ctx)
+            ctx.operand_spans = Some((bin.left.span(), bin.right.span()));
+            let result = infer_binary_expression_type(bin.operator, left, right, bin.span(), ctx);
+            ctx.operand_spans = None;
+            result
         }
 
         Expression::CallExpression(call) => {

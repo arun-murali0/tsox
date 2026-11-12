@@ -149,6 +149,9 @@ pub struct CheckContext<'ast, 'src> {
     pub in_export_declaration: bool,
     // True while a loop body is walked only to find the state its head settles on.
     pub loop_probe: bool,
+    /// The spans of the operands of the binary operation being checked, for the diagnostics that
+    /// belong to one operand (TS2362 on the left, TS2363 on the right).
+    pub operand_spans: Option<(oxc_span::Span, oxc_span::Span)>,
     /// Set while a bracket access with a literal key is looked up like a property read.
     pub bracket_access: bool,
 
@@ -529,6 +532,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             var_annotations: Default::default(),
             in_export_declaration: false,
             loop_probe: false,
+            operand_spans: None,
             abstract_members: Default::default(),
             bracket_access: false,
             implicit_this: false,

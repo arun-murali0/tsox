@@ -136,6 +136,13 @@ pub(super) fn infer_assignment_expression_type(
         // survives, as tsc keeps it too.
         operator => match compound_assignment_operator(operator) {
             Some(binary_operator) => {
+                // `x += null`: the literal is reported (TS18050) and reads as `any`.
+                let (_, right_type) = super::binary::report_nullish_literal_operands(
+                    binary_operator,
+                    [(None, target_type), (Some(&assign.right), right_type)],
+                    ctx,
+                );
+                ctx.operand_spans = Some((assign.left.span(), assign.right.span()));
                 let result = infer_binary_expression_type(
                     binary_operator,
                     target_type,
@@ -143,6 +150,7 @@ pub(super) fn infer_assignment_expression_type(
                     assign.span(),
                     ctx,
                 );
+                ctx.operand_spans = None;
                 // The write happens only if the operation's result fits what the
                 // target reads as right now — the narrowed type, not the declared
                 // one — which tsc checks (TS2322). When it does not, the write is
@@ -335,6 +343,16 @@ fn immutable_binding_message(
         Some(crate::diagnostic_messages::messages::assignment_to_constant(&ident.name))
     } else if flags.is_import() {
         Some(crate::diagnostic_messages::messages::assignment_to_import(
+            &ident.name,
+        ))
+    } else if flags.is_class() {
+        Some(crate::diagnostic_messages::messages::assignment_to_class(
+            &ident.name,
+        ))
+    } else if flags.is_function() && !flags.is_variable() {
+        Some(crate::diagnostic_messages::messages::assignment_to_function(&ident.name))
+    } else if flags.is_enum() {
+        Some(crate::diagnostic_messages::messages::assignment_to_enum(
             &ident.name,
         ))
     } else {
