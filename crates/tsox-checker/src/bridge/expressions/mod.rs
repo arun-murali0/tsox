@@ -369,6 +369,17 @@ fn infer_expression_type_inner(
             result
         }
 
+        // A class expression's body is not checked yet, but what is reported of a class
+        // however far it resolves (untyped parameters, fields never initialized) is.
+        Expression::ClassExpression(class) => {
+            super::statements::report_class_surface(class, ctx);
+            ctx.warning(
+                crate::diagnostic_messages::messages::unimplemented_expression_kind(),
+                expr.span(),
+            );
+            ctx.arena.error()
+        }
+
         _ => {
             ctx.warning(
                 crate::diagnostic_messages::messages::unimplemented_expression_kind(),

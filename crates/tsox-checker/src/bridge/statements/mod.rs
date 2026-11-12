@@ -17,6 +17,7 @@ pub(in crate::bridge) use support::implicit_any_bindings;
 pub(super) use support::statement_leaves_flow;
 
 use classes::check_class_declaration;
+pub(in crate::bridge) use classes::report_class_surface;
 use control_flow::{
     check_do_while_statement, check_for_in_statement, check_for_of_statement, check_for_statement,
     check_if_statement, check_labeled_statement, check_switch_statement, check_try_statement,
