@@ -1121,22 +1121,33 @@ impl TypeArena {
     }
 
     // The slot and arguments of a built-in generic application (`Promise<T>`,
-    // `Record<K, V>`), found through any alias wrapped around it. `get` reads such an
-    // application as its empty body, so its arguments are only reachable from here.
-    pub fn builtin_app_args(&self, id: TypeId) -> Option<(DeclSlot, Vec<TypeId>)> {
+    // `Record<K, V>`), found through transparent aliases. `get` reads an application as
+    // its instantiated body, so its arguments are only reachable from here. A generic
+    // alias can itself be an App whose instantiated body is another App (`type Dict<K, V>
+    // = Record<K, V>`); follow that outer application only when its body is itself a
+    // top-level wrapper, never by walking into an object or one of its members.
+    pub fn builtin_app_parts(&self, id: TypeId) -> Option<(DeclSlot, &[TypeId])> {
         let mut current = id;
         loop {
             match self.types.get(current.0 as usize)? {
                 Type::Named(_, inner) => current = *inner,
-                Type::App(slot, args, _) => {
+                Type::App(slot, args, body) => {
                     let builtin = BUILTIN_GENERICS
                         .iter()
                         .any(|name| self.builtin_slots.get(name) == Some(slot));
-                    return builtin.then(|| (*slot, args.clone()));
+                    if builtin {
+                        return Some((*slot, args.as_slice()));
+                    }
+                    current = *body;
                 }
                 _ => return None,
             }
         }
+    }
+
+    pub fn builtin_app_args(&self, id: TypeId) -> Option<(DeclSlot, Vec<TypeId>)> {
+        self.builtin_app_parts(id)
+            .map(|(slot, arguments)| (slot, arguments.to_vec()))
     }
 
     // The slot of a built-in generic if one has been made in this arena, without making
@@ -1292,15 +1303,26 @@ impl TypeArena {
         )
     }
 
-    // The value type V of a `Record<K, V>`: any key reads as V. Record has no real index
-    // signature here, so this is the narrower stand-in the member access code uses (see
-    // type_annotation::resolve_builtin_generic), and it does not model K at all.
+    /// The key domain K of a `Record<K, V>`, including one behind a transparent type alias.
+    /// It is deliberately returned separately from the value type: a key is not usable
+    /// merely because the Record has some value type.
+    pub fn record_key_type(&self, type_id: TypeId) -> Option<TypeId> {
+        let record = *self.builtin_slots.get("Record")?;
+        let (slot, arguments) = self.builtin_app_parts(type_id)?;
+        (slot == record)
+            .then(|| arguments.first().copied())
+            .flatten()
+    }
+
+    /// The value type V of a `Record<K, V>`, including one behind a transparent alias.
+    /// Callers that perform a keyed lookup must also check the key against
+    /// `record_key_type`; this method alone does not authorize arbitrary keys.
     pub fn record_value_type(&self, type_id: TypeId) -> Option<TypeId> {
         let record = *self.builtin_slots.get("Record")?;
-        match self.types.get(type_id.0 as usize)? {
-            Type::App(slot, args, _) if *slot == record => args.get(1).copied(),
-            _ => None,
-        }
+        let (slot, arguments) = self.builtin_app_parts(type_id)?;
+        (slot == record)
+            .then(|| arguments.get(1).copied())
+            .flatten()
     }
 
     // Allocates the Ref for a declaration that is about to be resolved and hands back its
@@ -1849,8 +1871,17 @@ mod tests {
         assert_ne!(arena.builtin_slot("Promise"), record);
 
         let counts = arena.alloc_app(record, vec![string, number], body);
+        assert_eq!(arena.record_key_type(counts), Some(string));
         assert_eq!(arena.record_value_type(counts), Some(number));
-        // Not a Record: no value type to give back.
+
+        // A transparent generic alias can have the built-in application as its body.
+        let alias = arena.alloc_name("Dictionary");
+        let aliased_counts = arena.alloc_app(alias, vec![string, number], counts);
+        assert_eq!(arena.record_key_type(aliased_counts), Some(string));
+        assert_eq!(arena.record_value_type(aliased_counts), Some(number));
+
+        // Not a Record: no key or value type to give back.
+        assert_eq!(arena.record_key_type(body), None);
         assert_eq!(arena.record_value_type(body), None);
         // A user's own generic named Record does not borrow the built-in's meaning.
         let users = arena.alloc_name("Record");

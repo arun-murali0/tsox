@@ -442,6 +442,19 @@ pub fn resolve_ts_type(
         TSType::TSIndexedAccessType(access) => {
             let object = resolve_ts_type(&access.object_type, namespace, arena)?;
             let index = resolve_ts_type(&access.index_type, namespace, arena)?;
+            if matches!(arena.get(index), Type::Never) {
+                return Some(arena.never());
+            }
+            // A generic Record retains enough information to reduce its own key
+            // projection before either argument becomes concrete: `Record<K, V>[K]`
+            // is V, while a wider key such as `string` must remain unresolved.
+            if let (Some(key_domain), Some(value_type)) = (
+                arena.record_key_type(object),
+                arena.record_value_type(object),
+            ) && crate::subtyping::is_subtype(arena, index, key_domain)
+            {
+                return Some(value_type);
+            }
             // `T[K]` with a parameter on either side stays a symbolic node until
             // substitution makes both concrete.
             if crate::semantic::generics::contains_type_param(arena, object)
@@ -489,6 +502,11 @@ pub fn resolve_ts_type(
             if operator.operator == TSTypeOperatorOperator::Keyof =>
         {
             let operand = resolve_ts_type(&operator.type_annotation, namespace, arena)?;
+            // The keys of Record<K, V> are exactly K, even when K is still generic.
+            // Its structural body is intentionally opaque and appears empty through get().
+            if let Some(keys) = arena.record_key_type(operand) {
+                return Some(keys);
+            }
             if crate::semantic::generics::contains_type_param(arena, operand) {
                 return Some(arena.alloc(Type::Keyof(operand)));
             }
@@ -870,15 +888,12 @@ fn check_type_argument_constraint(
 // unresolvable explicit argument is treated for a user-defined generic
 // elsewhere in this file.
 //
-// `Record<K, V>` gets the same opaque-object treatment as Promise, plus one
-// more thing Promise doesn't need: its value type V is recorded on the
-// application (see TypeArena::record_value_type) so a later property access
-// can return V instead of "does not exist". This does not model K at all --
-// any key is accepted, not just ones K would allow -- so it under-checks
-// rather than risking a false positive on a key it can't classify. `Partial`
-// and other mapped types need real mapped-type support this checker doesn't
-// have yet, and are deliberately left alone; a plain `Partial<T>` still
-// resolves to nothing.
+// `Record<K, V>` gets the same opaque-object treatment as Promise, while retaining
+// both arguments on its application. `record_key_type` and `record_value_type` expose
+// the mapped key domain and value type to indexed access, `keyof`, and object-literal
+// checking without pretending the key domain is an unrestricted index signature.
+// `Partial` and other mapped types need broader mapped-type support and are deliberately
+// left alone; a plain `Partial<T>` still resolves to nothing.
 fn resolve_builtin_generic(
     name: &str,
     reference: &oxc_ast::ast::TSTypeReference,

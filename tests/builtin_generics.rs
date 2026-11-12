@@ -108,10 +108,7 @@ fn record_dot_access_returns_value_type() {
     assert!(errors(&diagnostics).is_empty(), "got: {diagnostics:?}");
 }
 
-// K is not modelled (see TypeArena::record_value_type's own doc comment),
-// so this only proves a computed access resolves and returns V, not that a
-// key outside K would be rejected (it wouldn't be, which is the documented,
-// deliberate under-check).
+// A key proven to belong to K indexes the opaque Record application and returns V.
 #[test]
 fn record_bracket_access_returns_value_type() {
     let source =
@@ -148,4 +145,13 @@ fn record_argument_infers_the_value_type() {
     let source = include_str!("fixtures/builtin-generics/record_argument_infers_the_value_type.ts");
     let diagnostics = check(source, "record_argument_infers_the_value_type.ts");
     assert!(errors(&diagnostics).is_empty(), "got: {diagnostics:?}");
+}
+
+#[test]
+fn generic_record_preserves_its_key_domain_across_access_and_projections() {
+    let source =
+        include_str!("fixtures/builtin-generics/generic_record_key_domain_is_preserved.ts");
+    let diagnostics = check(source, "generic_record_key_domain_is_preserved.ts");
+    let found = errors(&diagnostics);
+    assert_eq!(found.len(), 4, "got: {diagnostics:?}");
 }

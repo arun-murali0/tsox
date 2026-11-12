@@ -196,6 +196,14 @@ fn lookup_member(arena: &mut TypeArena, type_id: TypeId, property_name: &str) ->
         Type::GenericParameter(_, _, Some(constraint)) => *constraint,
         _ => type_id,
     };
+    // Capture the opaque Record arguments before get() exposes its empty object body.
+    let record = arena
+        .record_key_type(effective)
+        .zip(arena.record_value_type(effective));
+    // Allocate before borrowing the object body through get(); the lookup below only
+    // needs the id and can then compare it without mutating the arena while borrowed.
+    let record_property_key =
+        record.map(|_| arena.alloc(Type::StringLiteral(property_name.into())));
 
     match arena.get(effective) {
         Type::Any | Type::Error => Some(arena.error()),
@@ -221,7 +229,12 @@ fn lookup_member(arena: &mut TypeArena, type_id: TypeId, property_name: &str) ->
                         }
                     })
                     .or(indexed)
-                    .or_else(|| arena.record_value_type(effective)),
+                    .or_else(|| {
+                        let (key_domain, value_type) = record?;
+                        let property_key = record_property_key?;
+                        crate::subtyping::is_subtype(arena, property_key, key_domain)
+                            .then_some(value_type)
+                    }),
             }
         }
         Type::Union(members) => {
@@ -776,11 +789,30 @@ pub(super) fn infer_computed_member_access_type(
 ) -> TypeId {
     let key_type = infer_expression_type(key_expr, scoping, ctx);
 
-    // A Record<K, V>-tagged object accepts any key and yields V; see
-    // TypeArena::record_value_type's own doc comment on why K itself is not
-    // checked here.
-    if let Some(value_type) = ctx.arena.record_value_type(object_type) {
-        return value_type;
+    // Record<K, V> is an opaque application while K is generic, but the key domain
+    // remains semantically relevant. A computed lookup is valid only when the entire
+    // expression key type is assignable to K; only then does it yield V. In particular,
+    // a plain `string` cannot index `Record<K, V>` when K is an unknown subtype of string.
+    let effective_object_type = match ctx.arena.get(object_type) {
+        Type::GenericParameter(_, _, Some(constraint)) => *constraint,
+        _ => object_type,
+    };
+    if let (Some(key_domain), Some(value_type)) = (
+        ctx.arena.record_key_type(effective_object_type),
+        ctx.arena.record_value_type(effective_object_type),
+    ) {
+        if crate::subtyping::is_subtype(&ctx.arena, key_type, key_domain) {
+            return value_type;
+        }
+        ctx.error(
+            crate::diagnostic_messages::messages::element_implicitly_any(
+                &ctx.arena,
+                key_type,
+                effective_object_type,
+            ),
+            span,
+        );
+        return ctx.arena.error();
     }
 
     // A tuple knows its elements, so a literal index names one of them: `t[0]` on

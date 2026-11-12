@@ -1272,14 +1272,15 @@ enum Presence {
     Required,
     Optional,
     Absent,
-    // Not an object, or a Record whose keys are not modelled: it may or may not have
-    // the property, so `in` can neither keep nor drop it with confidence.
+    // Not an object, or a Record whose generic key domain is not represented as a
+    // concrete property list: it may or may not have the property, so `in` can neither
+    // keep nor drop it with confidence.
     Unknown,
 }
 
 // Absent is only said of an object that lists its properties. A non-object, and a Record
-// (its keys come from K, not from a property list), read as Unknown, so neither branch
-// drops them.
+// (its keys come from K, not from a concrete property list while K is generic), read as
+// Unknown, so neither branch drops them.
 fn property_presence(arena: &TypeArena, member: TypeId, property: &str) -> Presence {
     let Type::Object(object) = arena.get(member) else {
         return Presence::Unknown;
