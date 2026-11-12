@@ -116,28 +116,45 @@ impl Drop for PairMemoGuard {
 // as true (coinductively: two types that only differ by "going in circles"
 // are equivalent) rather than as a fresh comparison to keep making; this is
 // the standard rule for equirecursive subtyping and is what breaks the loop.
+//
 // What stands for "an instance of the same generic declaration" in the rule above. An
-// application names its declaration. An instantiated body keeps no origin, so a body with
-// four or more members is told by the names of its members: two different types sharing a
-// whole list of four names, three levels deep in one comparison, is rare, and the rule can
-// only make a comparison succeed (a missed error, never a wrong one).
+// application names its declaration (found through transparent Named wrappers; `get`
+// would unwrap it to its body and erase exactly that identity). An instantiated body keeps
+// no origin, so a body with four or more members is told by its member list: names,
+// optionality, method-ness, and the coarse kind of each member's type (never the member
+// types themselves, which are what grows). Two shapes that share four names but differ in
+// what those members are (a `string` where the other has a `number`) get different keys, so
+// the rule cannot end the descent before the member types are compared. Only a shape that
+// matches in every one of those respects, three levels deep in one comparison, is taken as
+// the same growing declaration, and the rule can only make a comparison succeed.
 fn growth_key(arena: &TypeArena, id: TypeId) -> Option<u64> {
     use std::hash::{Hash, Hasher};
-    let mut hasher = crate::fxhash::FxHasher::default();
-    match arena.get(id) {
-        Type::App(slot, ..) => {
-            0u8.hash(&mut hasher);
-            slot.hash(&mut hasher);
-        }
-        Type::Object(object) if object.properties.len() >= 4 => {
-            1u8.hash(&mut hasher);
-            for property in object.properties.iter() {
-                property.name.hash(&mut hasher);
-            }
-        }
-        _ => return None,
+    let mut current = id;
+    while let Type::Named(_, inner) = arena.raw(current) {
+        current = *inner;
     }
-    Some(hasher.finish())
+    let mut hasher = crate::fxhash::FxHasher::default();
+    // The same type can be met as an application and as its instantiated body, so a body
+    // with a member list is keyed by that list whichever way it arrives; only an
+    // application with no such body is keyed by its declaration.
+    if let Type::Object(object) = arena.get(current)
+        && object.properties.len() >= 4
+    {
+        1u8.hash(&mut hasher);
+        for property in object.properties.iter() {
+            property.name.hash(&mut hasher);
+            property.optional.hash(&mut hasher);
+            property.is_method.hash(&mut hasher);
+            std::mem::discriminant(arena.get(property.type_id)).hash(&mut hasher);
+        }
+        return Some(hasher.finish());
+    }
+    if let Type::App(slot, ..) = arena.raw(current) {
+        0u8.hash(&mut hasher);
+        slot.hash(&mut hasher);
+        return Some(hasher.finish());
+    }
+    None
 }
 
 fn is_subtype_inner(
@@ -159,6 +176,14 @@ fn is_subtype_inner(
         return true;
     }
     if is_trivial_subtype(arena, sub, sup) {
+        return true;
+    }
+    // The same type parameter reached through an application that reads as it (`Id<K>` for
+    // `type Id<T> = T`) is that parameter, though the application is a node of its own.
+    if let (Type::GenericParameter(sub_id, _, _), Type::GenericParameter(sup_id, _, _)) =
+        (arena.get(sub), arena.get(sup))
+        && sub_id == sup_id
+    {
         return true;
     }
 
@@ -934,6 +959,61 @@ mod tests {
 
     fn literal(arena: &mut TypeArena, value: &str) -> TypeId {
         arena.alloc(Type::StringLiteral(value.to_string()))
+    }
+
+    #[test]
+    fn object_shapes_with_different_member_kinds_get_different_growth_keys() {
+        use crate::types::{ObjectType, PropertyEntry};
+
+        let mut arena = TypeArena::new();
+        let number = arena.number();
+        let string = arena.string();
+        let properties = |first: TypeId| -> Vec<PropertyEntry> {
+            ["a", "b", "c", "d"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| PropertyEntry {
+                    name: name.into(),
+                    type_id: if index == 0 { first } else { string },
+                    optional: false,
+                    is_method: false,
+                    modifiers: Default::default(),
+                })
+                .collect()
+        };
+        let source = arena.alloc(Type::Object(ObjectType::new(properties(string))));
+        let target = arena.alloc(Type::Object(ObjectType::new(properties(number))));
+        let twin = arena.alloc(Type::Object(ObjectType::new(properties(string))));
+
+        // Same four names, but `a` is a string in one and a number in the other.
+        assert!(growth_key(&arena, source).is_some());
+        assert_ne!(growth_key(&arena, source), growth_key(&arena, target));
+        assert_eq!(growth_key(&arena, source), growth_key(&arena, twin));
+    }
+
+    #[test]
+    fn generic_application_growth_identity_uses_its_declaration_slot() {
+        let mut arena = TypeArena::new();
+        let declaration = arena.alloc_name("Box");
+        let other_declaration = arena.alloc_name("OtherBox");
+        let body = arena.alloc(Type::Object(crate::types::ObjectType::new(Vec::new())));
+        let number = arena.number();
+        let string = arena.string();
+        let number_app = arena.alloc_app(declaration, vec![number], body);
+        let string_app = arena.alloc_app(declaration, vec![string], body);
+        let other_app = arena.alloc_app(other_declaration, vec![number], body);
+        let alias_slot = arena.alloc_name("Alias");
+        let alias = arena.alloc_named(alias_slot, number_app);
+
+        assert_eq!(
+            growth_key(&arena, number_app),
+            growth_key(&arena, string_app)
+        );
+        assert_ne!(
+            growth_key(&arena, number_app),
+            growth_key(&arena, other_app)
+        );
+        assert_eq!(growth_key(&arena, alias), growth_key(&arena, number_app));
     }
 
     #[test]

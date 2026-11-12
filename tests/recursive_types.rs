@@ -40,6 +40,23 @@ fn linked_list_property_mismatch_is_caught() {
     assert_eq!(errors[0].code, DiagnosticCode::DeclaredTypeMismatch);
 }
 
+// Property-name similarity is not declaration identity. The old recursion-growth
+// shortcut stopped after three nested object pairs with the same four names and
+// accepted the source before checking the leaf `string` -> `number` mismatch.
+#[test]
+fn deep_anonymous_objects_with_same_property_names_still_compare_property_types() {
+    let source = include_str!(
+        "fixtures/recursive-types/deep_anonymous_object_same_names_do_not_imply_subtyping.ts"
+    );
+    let diagnostics = check(
+        source,
+        "deep_anonymous_object_same_names_do_not_imply_subtyping.ts",
+    );
+    let errors = errors(&diagnostics);
+    assert_eq!(errors.len(), 1, "got: {diagnostics:?}");
+    assert_eq!(errors[0].code, DiagnosticCode::DeclaredTypeMismatch);
+}
+
 // A resolves B resolves A: A's placeholder is registered before A's own body
 // is resolved, so when B's body refers back to A, it finds that placeholder
 // instead of failing circularly, and by the time A's body finishes, B (and
