@@ -1185,7 +1185,7 @@ pub struct CheckStats {
 /// The units of the second pass kept across checks, with the digest each was checked against.
 #[derive(Default)]
 struct SecondUnits {
-    kept: Mutex<HashMap<usize, KeptUnit>>,
+    kept: Mutex<HashMap<usize, Arc<KeptUnit>>>,
     // Set when a cycle must always be checked from the start.
     recheck_off: std::sync::atomic::AtomicBool,
     reused: std::sync::atomic::AtomicUsize,
@@ -1194,20 +1194,14 @@ struct SecondUnits {
 }
 
 impl UnitCache for SecondUnits {
-    fn get(&self, unit: usize, inputs: u128) -> Option<UnitResult> {
-        let kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
-        let held = kept.get(&unit)?;
-        (held.inputs == inputs).then(|| held.result.clone())
-    }
-
     fn put(&self, unit: usize, kept: KeptUnit) {
         self.kept
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(unit, kept);
+            .insert(unit, Arc::new(kept));
     }
 
-    fn previous(&self, unit: usize) -> Option<KeptUnit> {
+    fn previous(&self, unit: usize) -> Option<Arc<KeptUnit>> {
         if self.recheck_off.load(Ordering::SeqCst) {
             return None;
         }

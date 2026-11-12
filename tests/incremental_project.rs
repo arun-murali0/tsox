@@ -1615,3 +1615,47 @@ fn a_cycle_is_checked_whole_when_the_recheck_is_turned_off() {
     assert_same_as_cold(&mut project, &dir);
     assert_eq!(rechecked_members(&mut project), 1);
 }
+
+// A unit of the second pass is checked again only when what it read of another file changed. An
+// export that none of the importers asked for leaves them alone; a change to one they read does
+// not.
+#[test]
+fn an_export_added_in_the_second_pass_reaches_only_the_units_that_read_the_file_for_it() {
+    let mut texts: Vec<(String, String)> = vec![
+        ("g.ts".to_string(), GLOBAL_FN.to_string()),
+        (
+            "hub.ts".to_string(),
+            "export const h: string = gf(0);\n".to_string(),
+        ),
+    ];
+    for n in 0..20 {
+        texts.push((
+            format!("use{n}.ts"),
+            format!("import {{ h }} from './hub';\nexport const s{n}: string = gf({n}) + h;\n"),
+        ));
+    }
+    let files: Vec<(&str, &str)> = texts
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    let dir = Dir::new("second-reads", &files);
+    let mut project = dir.open();
+    assert_same_as_cold(&mut project, &dir);
+    assert!(project.stats().second_units_checked >= 21);
+
+    dir.write(
+        "hub.ts",
+        "export const h: string = gf(0);\nexport const added: number = 1;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert_eq!(project.stats().second_units_checked, 1);
+    assert!(project.stats().second_units_reused >= 20);
+
+    // What the importers read changed.
+    dir.write(
+        "hub.ts",
+        "export const h: number = gf(0).length;\nexport const added: number = 1;\n",
+    );
+    assert_same_as_cold(&mut project, &dir);
+    assert!(project.stats().second_units_checked >= 21);
+}

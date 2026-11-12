@@ -57,14 +57,13 @@ pub trait UnitMemo: Sync {
     }
 }
 
-/// The units of the second pass, each kept with a digest of everything it was checked against:
-/// its files' text, what its dependencies exported, and what the pass reads from the rest of the
-/// project. A unit whose digest is the one held is not checked again.
+/// The units of the second pass, each kept with what it was checked against: its files' text, what
+/// the pass reads of the globals, and the value of everything the unit read from other files. A
+/// unit for which all of those are as they were is not checked again.
 pub trait UnitCache: Sync {
-    fn get(&self, unit: usize, inputs: u128) -> Option<UnitResult>;
     fn put(&self, unit: usize, kept: KeptUnit);
     /// The unit as last kept, whatever it was checked against.
-    fn previous(&self, unit: usize) -> Option<KeptUnit>;
+    fn previous(&self, unit: usize) -> Option<Arc<KeptUnit>>;
     /// Counts what became of a unit in this pass.
     fn work(&self, kind: UnitWork);
 }
@@ -80,14 +79,25 @@ pub enum UnitWork {
     Checked,
 }
 
-/// A finished unit of the second pass with what it was checked against: `context` is everything
-/// but the text of its files, `texts` the digest of each file's text, and `inputs` both.
+/// A finished unit of the second pass with what it was checked against: `context` is what the
+/// pass reads of the globals and which files the unit holds, `texts` the digest of each file's
+/// text, `reads` what the unit read from other files and `read_digest` the value of that when it
+/// was checked. `reads` is `None` when it is not known, and the unit is then never reused.
 #[derive(Clone)]
 pub struct KeptUnit {
-    pub inputs: u128,
     pub context: u128,
     pub texts: Vec<u128>,
+    pub reads: Option<UnitReads>,
+    pub read_digest: u128,
     pub result: UnitResult,
+}
+
+/// What a unit read from the files it does not hold: declarations by key, and the questions it
+/// put to the export tables of the modules it imports.
+#[derive(Clone, Default)]
+pub struct UnitReads {
+    decls: Vec<DeclKey>,
+    imports: ImportReads,
 }
 
 // What the second pass reads, besides the first pass's results: the text of every file it
@@ -991,7 +1001,6 @@ pub fn run_project(
         };
         let inputs_base = match (unit_cache, options.texts) {
             (Some(_), Some(_)) => second_pass_inputs(
-                &units2,
                 declared,
                 (
                     second_globals.bare_reportable,
@@ -1247,9 +1256,8 @@ fn run_pass(setup: &PassSetup<'_>, globals: Globals) -> UnitResult {
         project.publish(*id, unit.clone());
     }
     let waits = unit_dependencies(setup.graph);
-    let cones = std::sync::Mutex::new(vec![None::<u128>; waits.len()]);
     let outcomes = run_units(worker_pool(), &waits, setup.cancel, |unit, _| {
-        run_unit_kept(&project, setup, unit, &waits[unit], &cones)
+        run_unit_kept(&project, setup, unit)
     })
     .expect("the components of a graph never wait on each other");
     let mut result = UnitResult::default();
@@ -1326,22 +1334,14 @@ fn digest_exports(exports: &UnitExports, hasher: &mut xxhash_rust::xxh3::Xxh3) {
     }
 }
 
-// What the second pass reads besides the files and dependencies of a unit: the exports of the
-// files it does not run (providers and the files kept from the first pass), what every file
-// declares globally, and the text of the files that declare any. A change to one of these gives
-// every unit a new digest, so it is checked again.
-fn second_pass_inputs(
-    kept: &[(FileId, UnitExports)],
-    declared: u128,
-    flags: (bool, bool, bool),
-) -> u128 {
+// What the second pass reads of the globals, which no single unit names as a read: what every
+// file declares globally, with the text of the files that declare any. A change to one of these
+// gives every unit a new context, so it is checked again. What a unit reads from another file's
+// exports is not here: the unit keeps it, and is checked again only when that changed.
+fn second_pass_inputs(declared: u128, flags: (bool, bool, bool)) -> u128 {
     let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     hasher.update(&[flags.0 as u8, flags.1 as u8, flags.2 as u8]);
     hasher.update(&declared.to_le_bytes());
-    for (id, exports) in kept {
-        hasher.update(&id.index().to_le_bytes());
-        digest_exports(exports, &mut hasher);
-    }
     hasher.digest128()
 }
 
@@ -1367,46 +1367,14 @@ fn declared_inputs(all: &[(FileId, &UnitExports)], texts: &TextFn) -> u128 {
     hasher.digest128()
 }
 
-fn unit_cone(
-    done: &UnitResult,
-    dependencies: &[usize],
-    cones: &std::sync::Mutex<Vec<Option<u128>>>,
-) -> u128 {
-    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
-    let mut files: Vec<&(FileReport, Option<UnitExports>)> = done.files.iter().collect();
-    files.sort_by_key(|(report, _)| report.file_id);
-    for (report, exports) in files {
-        hasher.update(&report.file_id.index().to_le_bytes());
-        match exports {
-            Some(exports) => {
-                hasher.update(&[1]);
-                digest_exports(exports, &mut hasher);
-            }
-            None => {
-                hasher.update(&[0]);
-            }
-        }
-    }
-    let held = cones.lock().unwrap_or_else(|e| e.into_inner());
-    let mut order = dependencies.to_vec();
-    order.sort_unstable();
-    order.dedup();
-    for dependency in order {
-        hasher.update(&(dependency as u64).to_le_bytes());
-        hasher.update(&held[dependency].unwrap_or(0).to_le_bytes());
-    }
-    hasher.digest128()
-}
-
-// What a unit is checked against, as the digest of everything but its files' text, and the digest
-// of each file's text. They are kept apart so a unit whose context is the one it was last checked
-// in, and whose text changed in some files only, can check just those.
+// What a unit is checked against, as the digest of what the pass reads of the globals and which
+// files the unit holds, and the digest of each file's text. They are kept apart so a unit whose
+// context is the one it was last checked in, and whose text changed in some files only, can check
+// just those.
 fn unit_inputs(
     setup: &PassSetup<'_>,
     unit: usize,
     members: &[FileId],
-    dependencies: &[usize],
-    cones: &std::sync::Mutex<Vec<Option<u128>>>,
 ) -> Option<(u128, Vec<u128>)> {
     let texts = setup.texts?;
     let mut hasher = xxhash_rust::xxh3::Xxh3::new();
@@ -1417,24 +1385,130 @@ fn unit_inputs(
         hasher.update(&id.index().to_le_bytes());
         digests.push(xxhash_rust::xxh3::xxh3_128(texts(*id)?.as_bytes()));
     }
-    let held = cones.lock().unwrap_or_else(|e| e.into_inner());
-    let mut order = dependencies.to_vec();
-    order.sort_unstable();
-    order.dedup();
-    for dependency in order {
-        hasher.update(&(dependency as u64).to_le_bytes());
-        hasher.update(&held[dependency].unwrap_or(0).to_le_bytes());
-    }
     Some((hasher.digest128(), digests))
 }
 
-fn combine_inputs(context: u128, texts: &[u128]) -> u128 {
-    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
-    hasher.update(&context.to_le_bytes());
-    for text in texts {
-        hasher.update(&text.to_le_bytes());
+// What a finished unit read from the files it does not hold, or `None` when a file's reads were
+// not recorded (a result replayed from a stored one).
+fn unit_reads(done: &UnitResult) -> Option<UnitReads> {
+    let mut reads = UnitReads::default();
+    for (report, _) in &done.files {
+        let imports = report.import_reads.as_ref()?;
+        reads.decls.extend(report.reads.iter().copied());
+        reads.imports.lists.extend(imports.lists.iter().copied());
+        reads.imports.names.extend(imports.names.iter().cloned());
+        reads
+            .imports
+            .complete
+            .extend(imports.complete.iter().copied());
+        reads
+            .imports
+            .prefixed
+            .extend(imports.prefixed.iter().cloned());
     }
-    hasher.digest128()
+    reads.decls.sort();
+    reads.decls.dedup();
+    reads.imports.lists.sort();
+    reads.imports.lists.dedup();
+    reads.imports.names.sort();
+    reads.imports.names.dedup();
+    reads.imports.complete.sort();
+    reads.imports.complete.dedup();
+    reads.imports.prefixed.sort();
+    reads.imports.prefixed.dedup();
+    Some(reads)
+}
+
+// The keys of the declarations a unit exports itself.
+fn own_decls(done: &UnitResult) -> std::collections::HashSet<DeclKey> {
+    done.files
+        .iter()
+        .filter_map(|(_, exports)| exports.as_ref())
+        .flat_map(|exports| exports.decls.iter().map(|decl| decl.key))
+        .collect()
+}
+
+// The value, now, of everything `reads` asked of the other files: what a unit would see if it
+// were checked again. What the unit holds itself is left out, since it is published only as the
+// unit is checked. Two units that read the same values are checked the same way.
+fn reads_digest(
+    project: &Project<'_>,
+    reads: &UnitReads,
+    members: &[FileId],
+    own: &std::collections::HashSet<DeclKey>,
+) -> u128 {
+    use std::hash::{Hash, Hasher};
+    let held: std::collections::HashSet<FileId> = members.iter().copied().collect();
+    let tables = project.read();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for key in reads.decls.iter().filter(|key| !own.contains(key)) {
+        key.hash(&mut hasher);
+        match tables.decl(key) {
+            Some(decl) => {
+                1u8.hash(&mut hasher);
+                decl.sig.hash(&mut hasher);
+            }
+            None => 0u8.hash(&mut hasher),
+        }
+    }
+    for id in reads
+        .imports
+        .complete
+        .iter()
+        .filter(|id| !held.contains(id))
+    {
+        (b'c', id.index(), tables.complete(id).copied()).hash(&mut hasher);
+    }
+    for id in reads.imports.lists.iter().filter(|id| !held.contains(id)) {
+        (b'l', id.index()).hash(&mut hasher);
+        match tables.names(id) {
+            Some(names) => {
+                1u8.hash(&mut hasher);
+                names.hash(&mut hasher);
+            }
+            None => 0u8.hash(&mut hasher),
+        }
+    }
+    for (id, name) in reads
+        .imports
+        .names
+        .iter()
+        .filter(|(id, _)| !held.contains(id))
+    {
+        (b'n', id.index(), name).hash(&mut hasher);
+        match tables.names(id) {
+            Some(names) => {
+                1u8.hash(&mut hasher);
+                for (exported, key) in names.iter().filter(|(exported, _)| exported == name) {
+                    exported.hash(&mut hasher);
+                    key.hash(&mut hasher);
+                }
+            }
+            None => 0u8.hash(&mut hasher),
+        }
+    }
+    for (id, prefix) in reads
+        .imports
+        .prefixed
+        .iter()
+        .filter(|(id, _)| !held.contains(id))
+    {
+        (b'p', id.index(), prefix).hash(&mut hasher);
+        match tables.names(id) {
+            Some(names) => {
+                1u8.hash(&mut hasher);
+                for (exported, key) in names
+                    .iter()
+                    .filter(|(exported, _)| exported.starts_with(prefix.as_str()))
+                {
+                    exported.hash(&mut hasher);
+                    key.hash(&mut hasher);
+                }
+            }
+            None => 0u8.hash(&mut hasher),
+        }
+    }
+    u128::from(hasher.finish())
 }
 
 /// A digest of what a unit's dependents can read of its exports, not its diagnostics.
@@ -1495,13 +1569,7 @@ fn recheck_members(
 
 // `run_unit`, answered from the kept units of the second pass when its inputs are the ones it
 // was last checked against.
-fn run_unit_kept(
-    project: &Project<'_>,
-    setup: &PassSetup<'_>,
-    unit: usize,
-    dependencies: &[usize],
-    cones: &std::sync::Mutex<Vec<Option<u128>>>,
-) -> UnitResult {
+fn run_unit_kept(project: &Project<'_>, setup: &PassSetup<'_>, unit: usize) -> UnitResult {
     let Some(cache) = setup.unit_cache else {
         return run_unit(project, setup, unit);
     };
@@ -1509,29 +1577,37 @@ fn run_unit_kept(
     if members.is_empty() {
         return UnitResult::default();
     }
-    let keys = unit_inputs(setup, unit, &members, dependencies, cones)
-        .map(|(context, texts)| (combine_inputs(context, &texts), context, texts));
-    if let Some((inputs, _, _)) = &keys
-        && let Some(done) = cache.get(unit, *inputs)
+    let keys = unit_inputs(setup, unit, &members);
+    let previous = cache.previous(unit);
+    // The unit as it was kept is the answer when the globals and the files are as they were and
+    // every value it read from the other files is the one it read then.
+    let standing = match (&keys, &previous) {
+        (Some((context, _)), Some(held)) if held.context == *context => {
+            held.reads.as_ref().is_some_and(|reads| {
+                reads_digest(project, reads, &members, &own_decls(&held.result)) == held.read_digest
+            })
+        }
+        _ => false,
+    };
+    if standing
+        && let (Some((_, texts)), Some(held)) = (&keys, &previous)
+        && held.texts == *texts
     {
         cache.work(UnitWork::Reused);
-        for (report, unit_exports) in &done.files {
+        for (report, unit_exports) in &held.result.files {
             if let Some(unit_exports) = unit_exports {
                 project.publish(report.file_id, unit_exports.clone());
             }
         }
-        let cone = unit_cone(&done, dependencies, cones);
-        cones.lock().unwrap_or_else(|e| e.into_inner())[unit] = Some(cone);
-        return done;
+        return held.result.clone();
     }
     let cyclic = setup.graph.sccs()[unit]
         .iter()
         .any(|id| setup.in_cycle.contains(id));
     let mut spliced = None;
     if cyclic
-        && let Some((_, context, texts)) = &keys
-        && let Some(held) = cache.previous(unit)
-        && held.context == *context
+        && standing
+        && let (Some((_, texts)), Some(held)) = (&keys, &previous)
         && held.texts.len() == texts.len()
     {
         let changed: Vec<FileId> = members
@@ -1559,19 +1635,22 @@ fn run_unit_kept(
             run_unit(project, setup, unit)
         }
     };
-    let cone = unit_cone(&done, dependencies, cones);
-    cones.lock().unwrap_or_else(|e| e.into_inner())[unit] = Some(cone);
     let stopped = setup.cancel.is_some_and(CancelToken::is_cancelled);
-    if let Some((inputs, context, texts)) = keys
+    if let Some((context, texts)) = keys
         && !stopped
         && second_pass_is_keepable(&done)
     {
+        let reads = unit_reads(&done);
+        let read_digest = reads.as_ref().map_or(0, |reads| {
+            reads_digest(project, reads, &members, &own_decls(&done))
+        });
         cache.put(
             unit,
             KeptUnit {
-                inputs,
                 context,
                 texts,
+                reads,
+                read_digest,
                 result: done.clone(),
             },
         );
