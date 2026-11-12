@@ -276,6 +276,17 @@ fn infer_expression_type_inner(
                 return ctx.arena.boolean();
             }
             let operand = infer_expression_type(&unary.argument, scoping, ctx);
+            // `-null`, `+undefined`, `~null`: the literal is the operand tsc will not take (TS18050).
+            if matches!(
+                unary.operator,
+                UnaryOperator::UnaryNegation | UnaryOperator::UnaryPlus | UnaryOperator::BitwiseNot
+            ) {
+                binary::report_nullish_literal_operands(
+                    oxc_ast::ast::BinaryOperator::Subtraction,
+                    [(None, operand), (Some(&unary.argument), operand)],
+                    ctx,
+                );
+            }
             match unary.operator {
                 UnaryOperator::UnaryNegation => match &unary.argument {
                     Expression::NumericLiteral(n) => ctx.arena.alloc(Type::NumberLiteral(-n.value)),

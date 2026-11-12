@@ -12,3 +12,10 @@ const concatenated = "s" + null;
 const concatenated2 = undefined + "s";
 const typed = 1 - (null as number | null); // error TS2531
 
+
+// The unary operators and `in` take the same operands.
+const negated = -null; // error TS18050
+const inverted = ~undefined; // error TS18050
+const plus = +null; // error TS18050
+const inRight = "a" in null; // error TS18050
+const inLeft = null in {}; // error TS18050

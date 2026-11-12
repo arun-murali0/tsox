@@ -35,6 +35,7 @@ pub(super) fn report_nullish_literal_operands(
             | BinaryOperator::GreaterThan
             | BinaryOperator::GreaterEqualThan
             | BinaryOperator::Addition
+            | BinaryOperator::In
     );
     let mut types = [operands[0].1, operands[1].1];
     if !applies {
