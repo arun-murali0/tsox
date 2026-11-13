@@ -213,6 +213,9 @@ pub fn analyze(program: &Program<'_>, scoping: &Scoping) -> Reachability {
     discover.is_script = program.source_type.is_script();
     let predicates = predicate_functions(program);
     discover.predicates = predicates.clone();
+    let mut namespaces = NamespaceMembers::new();
+    collect_namespaces(&program.body, &mut namespaces);
+    discover.namespaces = namespaces.clone();
     discover.visit_program(program);
     let mut analyzer = Analyzer::new(
         scoping,
@@ -222,6 +225,7 @@ pub fn analyze(program: &Program<'_>, scoping: &Scoping) -> Reachability {
     );
     analyzer.is_script = program.source_type.is_script();
     analyzer.predicates = predicates;
+    analyzer.namespaces = namespaces;
     analyzer.discovering = false;
     analyzer.visit_program(program);
     analyzer.out
@@ -476,6 +480,7 @@ struct Analyzer<'s> {
     // Functions declared with a type predicate (`x is T`) as their return type, which narrow
     // their argument where a call to one is a condition.
     predicates: HashSet<SymbolId>,
+    namespaces: NamespaceMembers,
     out: Reachability,
 }
 
@@ -489,6 +494,7 @@ impl<'s> Analyzer<'s> {
         Self {
             scoping,
             predicates: HashSet::new(),
+            namespaces: HashMap::new(),
             st: St::live(),
             within: false,
             jumps: Jumps::default(),
@@ -1378,10 +1384,13 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
             declaration_start: declarator.span.start,
             function: self.function,
             mutable_local,
-            allows_unassigned: declarator
-                .type_annotation
-                .as_ref()
-                .and_then(|annotation| annotation_allows_unassigned(&annotation.type_annotation)),
+            allows_unassigned: declarator.type_annotation.as_ref().and_then(|annotation| {
+                annotation_allows_unassigned(
+                    &annotation.type_annotation,
+                    self.scoping,
+                    &self.namespaces,
+                )
+            }),
         });
         self.st.assigned.clear(tracked.index);
     }
@@ -1666,7 +1675,11 @@ impl<'a, 's> Analyzer<'s> {
 // `assumeInitialized` for the declared type: `any`, `unknown`, `void` and `undefined` do, and so
 // does a union with one of them. A keyword type or a literal shape does not. A name could be an
 // alias for anything, so nothing is said about it.
-fn annotation_allows_unassigned(annotation: &oxc_ast::ast::TSType<'_>) -> Option<bool> {
+fn annotation_allows_unassigned(
+    annotation: &oxc_ast::ast::TSType<'_>,
+    scoping: &Scoping,
+    namespaces: &NamespaceMembers,
+) -> Option<bool> {
     use oxc_ast::ast::TSType;
     match annotation {
         TSType::TSAnyKeyword(_)
@@ -1701,10 +1714,36 @@ fn annotation_allows_unassigned(annotation: &oxc_ast::ast::TSType<'_>) -> Option
         {
             Some(false)
         }
+        // A class, interface or enum declared in the program: an instance of one is never
+        // `undefined`, whatever its members are, so the checker need not understand the shape
+        // for the read to be an error. A type alias or type parameter could stand for a union
+        // or `any` and still needs the checker; so does a name that is only imported.
+        TSType::TSTypeReference(reference) => {
+            let id = match &reference.type_name {
+                oxc_ast::ast::TSTypeName::IdentifierReference(id) => id,
+                oxc_ast::ast::TSTypeName::QualifiedName(qualified) => {
+                    return qualified_name_is_non_nullable(qualified, scoping, namespaces);
+                }
+                _ => return None,
+            };
+            let symbol = scoping.get_reference(id.reference_id.get()?).symbol_id()?;
+            let flags = scoping.symbol_flags(symbol);
+            let declared_here = flags.intersects(
+                oxc_semantic::SymbolFlags::Class
+                    | oxc_semantic::SymbolFlags::Interface
+                    | oxc_semantic::SymbolFlags::Enum,
+            );
+            let could_be_anything = flags.intersects(
+                oxc_semantic::SymbolFlags::TypeAlias
+                    | oxc_semantic::SymbolFlags::TypeParameter
+                    | oxc_semantic::SymbolFlags::Import,
+            );
+            (declared_here && !could_be_anything).then_some(false)
+        }
         TSType::TSUnionType(union) => {
             let mut all_known = true;
             for member in &union.types {
-                match annotation_allows_unassigned(member) {
+                match annotation_allows_unassigned(member, scoping, namespaces) {
                     Some(true) => return Some(true),
                     Some(false) => {}
                     None => all_known = false,
@@ -1714,6 +1753,124 @@ fn annotation_allows_unassigned(annotation: &oxc_ast::ast::TSType<'_>) -> Option
         }
         _ => None,
     }
+}
+
+/// What a namespace exports that a type annotation can name: a class, interface or enum (never
+/// nullable), or another namespace to keep walking into.
+#[derive(Debug, Clone, Copy)]
+enum NamespaceMember {
+    NonNullable,
+    Namespace(SymbolId),
+}
+
+/// For each namespace symbol, its exported members by name. Merged declarations of one namespace
+/// share a symbol, so they add to the same table.
+type NamespaceMembers = HashMap<SymbolId, HashMap<String, NamespaceMember>>;
+
+fn collect_namespaces(statements: &[Statement<'_>], members: &mut NamespaceMembers) {
+    for statement in statements {
+        let declaration = match statement {
+            Statement::ExportDeclaration(export) => Some(&export.declaration),
+            other => other.as_declaration(),
+        };
+        if let Some(Declaration::TSNamespaceDeclaration(namespace)) = declaration {
+            collect_namespace(namespace, members);
+        }
+    }
+}
+
+fn collect_namespace(namespace: &TSNamespaceDeclaration<'_>, members: &mut NamespaceMembers) {
+    let Some(symbol) = namespace.id.symbol_id.get() else {
+        return;
+    };
+    match &namespace.body {
+        // `namespace a.b {}`: `b` is an export of `a`.
+        TSNamespaceDeclarationBody::TSNamespaceDeclaration(inner) => {
+            if let Some(inner_symbol) = inner.id.symbol_id.get() {
+                members.entry(symbol).or_default().insert(
+                    inner.id.name.to_string(),
+                    NamespaceMember::Namespace(inner_symbol),
+                );
+            }
+            collect_namespace(inner, members);
+        }
+        TSNamespaceDeclarationBody::TSModuleBlock(block) => {
+            for statement in &block.body {
+                // Everything in an ambient namespace is exported; elsewhere only what says so.
+                let (exported, declaration) = match statement {
+                    Statement::ExportDeclaration(export) => (true, Some(&export.declaration)),
+                    other => (namespace.declare, other.as_declaration()),
+                };
+                let entry = match declaration {
+                    Some(Declaration::ClassDeclaration(class)) => class
+                        .id
+                        .as_ref()
+                        .map(|id| (id.name.to_string(), NamespaceMember::NonNullable)),
+                    Some(Declaration::TSInterfaceDeclaration(interface)) => {
+                        Some((interface.id.name.to_string(), NamespaceMember::NonNullable))
+                    }
+                    Some(Declaration::TSEnumDeclaration(e)) => {
+                        Some((e.id.name.to_string(), NamespaceMember::NonNullable))
+                    }
+                    Some(Declaration::TSNamespaceDeclaration(inner)) => {
+                        collect_namespace(inner, members);
+                        inner
+                            .id
+                            .symbol_id
+                            .get()
+                            .map(|s| (inner.id.name.to_string(), NamespaceMember::Namespace(s)))
+                    }
+                    _ => None,
+                };
+                if let (true, Some((name, member))) = (exported, entry) {
+                    members.entry(symbol).or_default().insert(name, member);
+                }
+            }
+        }
+    }
+}
+
+// `a.b.C` in an annotation: `a` is a namespace of this program, each step is an exported
+// namespace, and `C` is an exported class, interface or enum. Anything else is left to the checker.
+fn qualified_name_is_non_nullable(
+    qualified: &oxc_ast::ast::TSQualifiedName<'_>,
+    scoping: &Scoping,
+    namespaces: &NamespaceMembers,
+) -> Option<bool> {
+    let mut path = vec![qualified.right.name.as_str()];
+    let mut current = &qualified.left;
+    let root = loop {
+        match current {
+            oxc_ast::ast::TSTypeName::QualifiedName(inner) => {
+                path.push(inner.right.name.as_str());
+                current = &inner.left;
+            }
+            oxc_ast::ast::TSTypeName::IdentifierReference(id) => break id,
+            oxc_ast::ast::TSTypeName::ThisExpression(_) => return None,
+        }
+    };
+    path.reverse();
+    let mut symbol = scoping
+        .get_reference(root.reference_id.get()?)
+        .symbol_id()?;
+    let flags = scoping.symbol_flags(symbol);
+    if !flags.intersects(
+        oxc_semantic::SymbolFlags::NamespaceModule | oxc_semantic::SymbolFlags::ValueModule,
+    ) || flags
+        .intersects(oxc_semantic::SymbolFlags::Import | oxc_semantic::SymbolFlags::TypeImport)
+    {
+        return None;
+    }
+    for (index, segment) in path.iter().enumerate() {
+        let member = namespaces.get(&symbol)?.get(*segment)?;
+        let last = index + 1 == path.len();
+        match (member, last) {
+            (NamespaceMember::NonNullable, true) => return Some(false),
+            (NamespaceMember::Namespace(next), false) => symbol = *next,
+            _ => return None,
+        }
+    }
+    None
 }
 
 // The statements tsc extends the position of an assignment over: its `extendAssignmentPosition`.

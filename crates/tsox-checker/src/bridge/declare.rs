@@ -1169,6 +1169,23 @@ pub(super) fn find_constructor<'a>(
     })
 }
 
+// The constructor that has a body. With overloads, `find_constructor` finds the first signature,
+// which has none; the implementation, the one whose body assigns the fields, comes last.
+pub(super) fn find_constructor_body<'a>(
+    class: &'a oxc_ast::ast::Class<'a>,
+) -> Option<&'a oxc_ast::ast::FunctionBody<'a>> {
+    use oxc_ast::ast::{ClassElement, MethodDefinitionKind};
+    class.body.body.iter().find_map(|element| {
+        let ClassElement::MethodDefinition(method) = element else {
+            return None;
+        };
+        if method.kind != MethodDefinitionKind::Constructor {
+            return None;
+        }
+        method.value.body.as_deref()
+    })
+}
+
 fn declare_enum(decl: &oxc_ast::ast::TSEnumDeclaration, ctx: &mut CheckContext<'_, '_>) {
     let Some(symbol_id) = decl.id.symbol_id.get() else {
         return;

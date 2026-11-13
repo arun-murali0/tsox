@@ -85,8 +85,13 @@ pub(in crate::bridge) fn report_class_surface(
     }
 
     // Same reasoning: a field with no initializer is a problem whether or not the
-    // rest of the class could be resolved.
+    // rest of the class could be resolved. The class's `<T, ...>` scope is pushed around it, or
+    // `x: T` would not resolve and its missing initializer would go unreported.
+    let type_param_scope = ctx
+        .namespace
+        .push_decl_type_params(&mut ctx.arena, class.type_parameters.as_deref());
     report_uninitialized_properties(class, ctx);
+    ctx.namespace.pop_type_params(type_param_scope);
 }
 
 pub(super) fn check_class_declaration(
@@ -347,8 +352,7 @@ fn report_uninitialized_properties(
         return;
     }
 
-    let assigned_names = super::super::declare::find_constructor(class)
-        .and_then(|ctor| ctor.body.as_ref())
+    let assigned_names = super::super::declare::find_constructor_body(class)
         .map(|body| definitely_assigned_names(&body.statements))
         .unwrap_or_default();
 
