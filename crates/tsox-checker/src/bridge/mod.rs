@@ -123,7 +123,7 @@ pub fn check_file(
 
     let allocator = Allocator::default();
     let parsed = parse::parse_with_syntax_errors(&allocator, source, file_name)?;
-    let (program, syntax_errors, gave_up, offsets) = (
+    let (program, mut syntax_errors, gave_up, offsets) = (
         parsed.program,
         parsed.syntax,
         parsed.gave_up,
@@ -208,6 +208,26 @@ pub fn check_file(
 
     // The parser's syntax errors come first, at the original source's offsets (the repairs
     // already put them there, so they skip the mapping above).
+    // tsc's checker reports its grammar errors only for a file the parser found no error in
+    // (`hasParseDiagnostics`), so a repaired grammar error is dropped when the parser itself
+    // complained somewhere in the file.
+    use crate::diagnostic_codes::DiagnosticCode as Code;
+    let parser_complained = syntax_errors.iter().any(|found| {
+        matches!(
+            found.message.code,
+            Code::TokenExpected | Code::ElementAccessNeedsArgument | Code::LineBreakBeforeArrow
+        )
+    });
+    syntax_errors.retain(|found| {
+        !(parser_complained
+            && matches!(
+                found.message.code,
+                Code::RestParameterNotLast
+                    | Code::EnumMemberNumericName
+                    | Code::EnumComputedName
+                    | Code::IndexSignatureNeedsType
+            ))
+    });
     diagnostics.splice(
         0..0,
         syntax_errors.into_iter().map(|found| Diagnostic {

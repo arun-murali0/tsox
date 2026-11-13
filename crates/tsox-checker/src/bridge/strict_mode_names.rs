@@ -1,6 +1,7 @@
 use oxc_ast::ast::{
     AssignmentExpression, AssignmentTarget, BindingPattern, CatchClause, Class, Function,
-    FunctionType, Program, SimpleAssignmentTarget, UpdateExpression, VariableDeclarator,
+    FunctionType, Program, SimpleAssignmentTarget, TSExternalModuleDeclaration,
+    TSNamespaceDeclaration, UpdateExpression, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_span::Span;
@@ -34,6 +35,7 @@ pub fn report_strict_mode_names<'ast>(
         file_strict,
         in_module,
         class_depth: 0,
+        ambient_depth: 0,
     };
     walker.visit_program(program);
 }
@@ -43,11 +45,17 @@ struct Walker<'c, 'ast, 'src> {
     file_strict: bool,
     in_module: bool,
     class_depth: u32,
+    // Inside `declare class`, `declare function` or `declare namespace`: tsc's binder skips the
+    // strict-mode name check for ambient declarations.
+    ambient_depth: u32,
 }
 
 impl Walker<'_, '_, '_> {
     fn check(&mut self, name: &str, span: Span) {
-        if !matches!(name, "eval" | "arguments") || !(self.file_strict || self.class_depth > 0) {
+        if self.ambient_depth > 0
+            || !matches!(name, "eval" | "arguments")
+            || !(self.file_strict || self.class_depth > 0)
+        {
             return;
         }
         let message =
@@ -89,8 +97,22 @@ impl Walker<'_, '_, '_> {
 impl<'a> Visit<'a> for Walker<'_, '_, '_> {
     fn visit_class(&mut self, it: &Class<'a>) {
         self.class_depth += 1;
+        self.ambient_depth += u32::from(it.declare);
         walk::walk_class(self, it);
+        self.ambient_depth -= u32::from(it.declare);
         self.class_depth -= 1;
+    }
+
+    fn visit_ts_namespace_declaration(&mut self, it: &TSNamespaceDeclaration<'a>) {
+        self.ambient_depth += u32::from(it.declare);
+        walk::walk_ts_namespace_declaration(self, it);
+        self.ambient_depth -= u32::from(it.declare);
+    }
+
+    fn visit_ts_external_module_declaration(&mut self, it: &TSExternalModuleDeclaration<'a>) {
+        self.ambient_depth += u32::from(it.declare);
+        walk::walk_ts_external_module_declaration(self, it);
+        self.ambient_depth -= u32::from(it.declare);
     }
 
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
@@ -99,6 +121,7 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
     }
 
     fn visit_function(&mut self, it: &Function<'a>, flags: oxc_semantic::ScopeFlags) {
+        self.ambient_depth += u32::from(it.declare);
         if matches!(
             it.r#type,
             FunctionType::FunctionDeclaration | FunctionType::FunctionExpression
@@ -113,6 +136,7 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
             self.check_pattern(&rest.rest.argument);
         }
         walk::walk_function(self, it, flags);
+        self.ambient_depth -= u32::from(it.declare);
     }
 
     fn visit_catch_clause(&mut self, it: &CatchClause<'a>) {

@@ -213,6 +213,10 @@ fn rule_for(text: &str, start: usize, end: usize, message: &str) -> Option<Rule>
         "An index signature must have a type annotation." => {
             index_signature_without_type(text, start, end)
         }
+        "A rest parameter must be last in a parameter list" => rest_parameter_not_last(text, start),
+        "Cannot assign to this expression" => assignment_target(text, start, end),
+        "An enum member cannot have a numeric name." => enum_numeric_name(text, start, end),
+        "Computed property names are not allowed in enums." => enum_computed_name(text, start, end),
         _ => None,
     }
 }
@@ -269,14 +273,12 @@ fn element_without_argument(text: &str, start: usize, end: usize) -> Option<Rule
     })
 }
 
-// `[key: string];` with no type: tsc reports TS1021 on the signature and gives it type `any`.
+// `[key: string];` with no type: tsc reports TS1021 on the signature and gives it type `any`. tsc
+// checks the key first, so an optional key (TS1019) or a key type other than string, number or
+// symbol (TS1268) is not this error and is left alone.
 fn index_signature_without_type(text: &str, start: usize, end: usize) -> Option<Rule> {
     let signature = text.get(start..end)?;
-    if !(signature.starts_with('[') && signature.ends_with(']')) {
-        return None;
-    }
-    // tsc reports a bad key (`[k?: string]`, `[k: any]`) as TS1019/TS1268, not TS1021.
-    if !super::syntax_errors::plain_index_key(text, oxc_span::Span::new(start as u32, end as u32)) {
+    if !(signature.starts_with('[') && signature.ends_with(']')) || !plain_index_key(signature) {
         return None;
     }
     Some(Rule {
@@ -287,6 +289,160 @@ fn index_signature_without_type(text: &str, start: usize, end: usize) -> Option<
             message: messages::syntax(
                 Code::IndexSignatureNeedsType,
                 "An index signature must have a type annotation.".to_string(),
+            ),
+            start,
+            end,
+        },
+    })
+}
+
+// Whether `[name: string | number | symbol]` is a plain key (no `?`, an allowed key type).
+fn plain_index_key(signature: &str) -> bool {
+    let inner = &signature[1..signature.len() - 1];
+    let Some((name, key_type)) = inner.split_once(':') else {
+        return false;
+    };
+    !name.contains('?') && matches!(key_type.trim(), "string" | "number" | "symbol")
+}
+
+// `enum E { 1 = 0 }`: tsc reports TS2452 on the name and keeps the member under that name, so
+// the name becomes the same name as a string literal.
+fn enum_numeric_name(text: &str, start: usize, end: usize) -> Option<Rule> {
+    let name = text.get(start..end)?;
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(Rule {
+        start,
+        end,
+        with: format!("\"{name}\""),
+        note: Note {
+            message: messages::syntax(
+                Code::EnumMemberNumericName,
+                "An enum member cannot have a numeric name.".to_string(),
+            ),
+            start,
+            end,
+        },
+    })
+}
+
+// `enum E { [k] = 0 }`: tsc reports TS1164 on the computed name. The member cannot be reached by
+// any written name, so it becomes one with a name nothing refers to, unique to this position.
+fn enum_computed_name(text: &str, start: usize, end: usize) -> Option<Rule> {
+    let bytes = text.as_bytes();
+    let mut from = start;
+    while from > 0 && bytes[from - 1].is_ascii_whitespace() {
+        from -= 1;
+    }
+    if from == 0 || bytes[from - 1] != b'[' {
+        return None;
+    }
+    from -= 1;
+    let mut to = end;
+    while to < bytes.len() && bytes[to].is_ascii_whitespace() {
+        to += 1;
+    }
+    if to >= bytes.len() || bytes[to] != b']' {
+        return None;
+    }
+    to += 1;
+    Some(Rule {
+        start: from,
+        end: to,
+        with: format!("\"__computed_{from}\""),
+        note: Note {
+            message: messages::syntax(
+                Code::EnumComputedName,
+                "Computed property names are not allowed in enums.".to_string(),
+            ),
+            start: from,
+            end: to,
+        },
+    })
+}
+
+// `function f(...a, b) {}`: tsc reports TS1014 on the rest parameter and, because only the last
+// parameter is a rest parameter to it, treats `a` as an ordinary parameter of type `any[]`. The
+// dots go and an unannotated name is given that type, so the body sees the same type.
+fn rest_parameter_not_last(text: &str, start: usize) -> Option<Rule> {
+    let rest = text.get(start..)?.strip_prefix("...")?;
+    let name_len = rest
+        .bytes()
+        .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'$')
+        .count();
+    if name_len == 0 || rest.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let after = rest[name_len..].trim_start();
+    let name_end = start + 3 + name_len;
+    let (end, with) = if after.starts_with(':') {
+        (start + 3, String::new())
+    } else if after.starts_with(',') || after.starts_with(')') {
+        (name_end, format!("{}: any[]", &rest[..name_len]))
+    } else {
+        return None;
+    };
+    Some(Rule {
+        start,
+        end,
+        with,
+        note: Note {
+            message: messages::syntax(
+                Code::RestParameterNotLast,
+                "A rest parameter must be last in a parameter list.".to_string(),
+            ),
+            start,
+            end: name_end,
+        },
+    })
+}
+
+// `1 = 2;`, `f() = x;`, `(1, x) = 0;`, `1 >>= 2;`: tsc reports TS2364 on the left side (with its
+// parentheses) and still checks it, so the left side becomes `(left as any).__tsox_repair`: a
+// property of an `any` value is a target oxc accepts and the checker leaves alone, and `left`
+// itself is still checked as an expression. `++`/`--` operands and `for (x in y)` heads have other
+// codes (TS2357, TS2356, TS2405, TS2406) that depend on the operand's type, so they are left alone.
+fn assignment_target(text: &str, start: usize, end: usize) -> Option<Rule> {
+    text.get(start..end)?;
+    let (mut start, mut end) = (start, end);
+    loop {
+        let before = text.get(..start)?.trim_end();
+        let after = text.get(end..)?;
+        let trimmed = after.trim_start();
+        if before.ends_with('(') && trimmed.starts_with(')') {
+            start = before.len() - 1;
+            end = end + (after.len() - trimmed.len()) + 1;
+        } else {
+            break;
+        }
+    }
+    let left = text.get(start..end)?;
+    if left.is_empty() || left.starts_with("++") || left.starts_with("--") {
+        return None;
+    }
+    let before = text.get(..start)?.trim_end();
+    if before.ends_with("++") || before.ends_with("--") {
+        return None;
+    }
+    let after = text.get(end..)?.trim_start();
+    const OPERATORS: [&str; 16] = [
+        ">>>=", "**=", "<<=", ">>=", "&&=", "||=", "??=", "+=", "-=", "*=", "/=", "%=", "&=", "|=",
+        "^=", "=",
+    ];
+    let operator = OPERATORS.iter().find(|op| after.starts_with(**op))?;
+    if *operator == "=" && (after.starts_with("==") || after.starts_with("=>")) {
+        return None;
+    }
+    Some(Rule {
+        start,
+        end,
+        with: format!("({left} as any).__tsox_repair"),
+        note: Note {
+            message: messages::syntax(
+                Code::AssignmentTargetInvalid,
+                "The left-hand side of an assignment expression must be a variable or a property access."
+                    .to_string(),
             ),
             start,
             end,

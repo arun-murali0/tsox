@@ -127,3 +127,20 @@ fn eval_and_arguments_cannot_be_bound_or_assigned_in_strict_code() {
         "{found:?}"
     );
 }
+
+#[test]
+fn ambient_declarations_are_not_checked_for_eval_and_arguments() {
+    // Compared with tsc 6.0.3: no error for a parameter named `arguments` in a `declare class`
+    // or `declare function` (the binder skips ambient declarations), but one in a plain class.
+    let source = "declare class A { constructor(arguments: number); }\ndeclare function f(eval: number): void;\nclass B { constructor(arguments: number) {} }\n";
+    let result = TypeChecker::new()
+        .check_source(source, "case.ts")
+        .expect("checked");
+    let lines: Vec<usize> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("strict mode"))
+        .map(|d| source[..d.start as usize].matches('\n').count() + 1)
+        .collect();
+    assert_eq!(lines, vec![3], "{lines:?}");
+}

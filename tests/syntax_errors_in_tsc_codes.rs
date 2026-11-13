@@ -136,11 +136,16 @@ fn index_signature_rules_are_ts1021_and_ts1019() {
 }
 
 #[test]
-fn a_translated_rule_with_no_tree_reports_only_that_error() {
-    // The parser built no tree, so nothing else in the file can be checked: the translated
-    // error is the whole result, with no invented follow-on errors.
+fn a_repaired_rule_reports_the_syntax_error_and_what_follows_from_it() {
+    // The misplaced rest parameter is repaired, so the file is checked: tsc reports TS1014 and
+    // the implicit-any error for `b`, and nothing else.
     let found = errors("function f(...a, b) {}\nexport {};\n");
-    assert_eq!(found.len(), 1, "only the translated error: {found:?}");
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|(l, m)| *l == 1 && m.starts_with("A rest parameter"))
+    );
 }
 
 #[test]
