@@ -180,6 +180,8 @@ pub enum DiagnosticCode {
     EvalOrArgumentsInStrictMode,
     EvalOrArgumentsInClass,
     EvalOrArgumentsInModule,
+    ElementAccessNeedsArgument,
+    IndexSignatureNeedsType,
 
     // 1900s: expression grammar and conditions (each maps to the tsc code the
     // syntactic check matches; update/assignment-target grammar codes are not
@@ -369,6 +371,8 @@ impl DiagnosticCode {
             EvalOrArgumentsInStrictMode => "TSR3033",
             EvalOrArgumentsInClass => "TSR3034",
             EvalOrArgumentsInModule => "TSR3035",
+            ElementAccessNeedsArgument => "TSR3040",
+            IndexSignatureNeedsType => "TSR3041",
 
             CommaLeftNoSideEffect => "TSR1901",
             VoidTruthiness => "TSR1902",
@@ -525,6 +529,8 @@ impl DiagnosticCode {
             EvalOrArgumentsInStrictMode => 1100,
             EvalOrArgumentsInClass => 1210,
             EvalOrArgumentsInModule => 1215,
+            ElementAccessNeedsArgument => 1011,
+            IndexSignatureNeedsType => 1021,
 
             ImplicitAnyParameter => 7006,
             ImplicitAnyRestParameter => 7019,

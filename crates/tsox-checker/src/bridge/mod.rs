@@ -16,6 +16,7 @@ mod probe;
 mod statements;
 mod strict_mode_names;
 mod syntax_errors;
+mod syntax_repair;
 mod tuple_grammar;
 mod unreachable_code;
 mod unresolved_names;
@@ -121,8 +122,13 @@ pub fn check_file(
     }
 
     let allocator = Allocator::default();
-    let (program, syntax_errors, gave_up) =
-        parse::parse_with_syntax_errors(&allocator, source, file_name)?;
+    let parsed = parse::parse_with_syntax_errors(&allocator, source, file_name)?;
+    let (program, syntax_errors, gave_up, offsets) = (
+        parsed.program,
+        parsed.syntax,
+        parsed.gave_up,
+        parsed.offsets,
+    );
     // semantic is kept for the whole check on purpose: it owns the Scoping borrowed
     // here, and it is where the control flow graph lives once flow analysis reads
     // it. Keeping only the Scoping would drop the graph along with the rest.
@@ -134,9 +140,6 @@ pub fn check_file(
     ctx.imports = imports;
     ctx.options = options;
     ctx.probe = probe.map(|request| ProbeState::new(request.offset()));
-    for found in syntax_errors {
-        ctx.error(found.message, found.span);
-    }
 
     declare_phase(&program, semantic.scoping(), &mut ctx);
     // The pass is left out only when asked for and only when nothing in the file can need it.
@@ -194,7 +197,28 @@ pub fn check_file(
             })
         })
         .collect();
-    let (diagnostics, metrics) = publish(&mut ctx);
+    let (mut diagnostics, metrics) = publish(&mut ctx);
+    // A repaired copy of the source was checked: its offsets go back to the original's.
+    if let Some(map) = &offsets {
+        for diagnostic in &mut diagnostics {
+            diagnostic.start = map.to_original(diagnostic.start, false);
+            diagnostic.end = map.to_original(diagnostic.end, true);
+        }
+    }
+
+    // The parser's syntax errors come first, at the original source's offsets (the repairs
+    // already put them there, so they skip the mapping above).
+    diagnostics.splice(
+        0..0,
+        syntax_errors.into_iter().map(|found| Diagnostic {
+            severity: tsox_base::diagnostics::Severity::Error,
+            code: found.message.code,
+            message: found.message.text,
+            file_name: file_name.to_string(),
+            start: found.span.start,
+            end: found.span.end,
+        }),
+    );
 
     *arena = ctx.arena;
     Ok(Some((diagnostics, metrics, exports)))

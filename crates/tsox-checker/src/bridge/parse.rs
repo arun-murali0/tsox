@@ -24,23 +24,93 @@ pub fn parse<'a>(
     source: &'a str,
     file_name: &str,
 ) -> Result<Program<'a>, CheckerError> {
-    parse_with_syntax_errors(allocator, source, file_name).map(|(program, _, _)| program)
+    parse_with_syntax_errors(allocator, source, file_name).map(|parsed| parsed.program)
 }
 
-// The parse and the syntax errors in it that have a tsc code and wording (`syntax_errors`). The
-// flag says the parser gave up and the program is empty, so nothing about the file is known.
+pub struct Parsed<'a> {
+    pub program: Program<'a>,
+    // The syntax errors that have a tsc code and wording (`syntax_errors`), at offsets of the
+    // original source.
+    pub syntax: Vec<super::syntax_errors::SyntaxDiagnostic>,
+    // The parser gave up and the program is empty, so nothing about the file is known.
+    pub gave_up: bool,
+    // Set when the parser was handed a repaired copy of the source: the program's offsets are
+    // those of the copy, and every offset reported goes back through this.
+    pub offsets: Option<super::syntax_repair::OffsetMap>,
+}
+
+// One parse of one text. `first_error` is where the parser stopped, when it gave up.
+struct Attempt<'a> {
+    program: Program<'a>,
+    syntax: Vec<super::syntax_errors::SyntaxDiagnostic>,
+    messages: Vec<String>,
+    gave_up: bool,
+    first_error: Option<(usize, usize, String)>,
+}
+
+fn parse_attempt<'a>(
+    allocator: &'a Allocator,
+    source: &'a str,
+    source_type: SourceType,
+) -> Attempt<'a> {
+    let result = Parser::new(allocator, source, source_type).parse();
+    let mut syntax = Vec::new();
+    let mut messages = Vec::new();
+    let mut first_error = None;
+    if result.diagnostics.has_errors() {
+        for error in result.diagnostics.errors() {
+            let Some(label) = error.labels.first() else {
+                continue;
+            };
+            let span =
+                oxc_span::Span::new(label.offset() as u32, (label.offset() + label.len()) as u32);
+            if first_error.is_none() {
+                first_error = Some((
+                    label.offset() as usize,
+                    (label.offset() + label.len()) as usize,
+                    error.message.to_string(),
+                ));
+            }
+            if let Some(found) = super::syntax_errors::translate(source, &error.message, span) {
+                syntax.push(found);
+            }
+        }
+        messages = result
+            .diagnostics
+            .errors()
+            .map(ToString::to_string)
+            .filter(|message| !TUPLE_SHAPE_ERRORS.contains(&message.as_str()))
+            .collect();
+    }
+    // Problem: any syntax error refused the whole file, but tsc reports the syntax error and
+    // goes on to check what it recovered, so every semantic error in the rest of the file went
+    // missing.
+    // Picked: a parse the parser recovered from (it did not give up) is checked like any other;
+    // only a parse that panicked, which has no usable tree, is a failure. The three tuple shape
+    // rules and the two ambient context rules are not errors here: the checker reports them.
+    let gave_up = !messages.is_empty()
+        && result.program.body.is_empty()
+        && result.program.directives.is_empty();
+    Attempt {
+        program: result.program,
+        syntax,
+        messages,
+        gave_up,
+        first_error,
+    }
+}
+
+// The parse and the syntax errors in it that have a tsc code and wording (`syntax_errors`).
+//
+// Problem: a parse that gives up on one construct leaves no tree, so tsox checked nothing while
+// tsc reports the syntax error and checks the rest. 756 corpus files were lost this way.
+// Picked: for the constructs in `syntax_repair`, the source is patched into something the parser
+// accepts (with tsc's error recorded for it), parsed again, and offsets go back to the original.
 pub fn parse_with_syntax_errors<'a>(
     allocator: &'a Allocator,
     source: &'a str,
     file_name: &str,
-) -> Result<
-    (
-        Program<'a>,
-        Vec<super::syntax_errors::SyntaxDiagnostic>,
-        bool,
-    ),
-    CheckerError,
-> {
+) -> Result<Parsed<'a>, CheckerError> {
     // A recognized extension (.ts, .tsx, and so on) picks the right dialect
     // automatically. An unrecognized or missing extension, such as a file name
     // used only for a diagnostic label in a test, falls back to TypeScript rather
@@ -59,65 +129,56 @@ pub fn parse_with_syntax_errors<'a>(
         )));
     }
 
-    let result = Parser::new(allocator, source, source_type).parse();
-
-    let mut syntax = Vec::new();
-    if result.diagnostics.has_errors() {
-        for error in result.diagnostics.errors() {
-            let Some(label) = error.labels.first() else {
-                continue;
-            };
-            let span =
-                oxc_span::Span::new(label.offset() as u32, (label.offset() + label.len()) as u32);
-            if let Some(found) = super::syntax_errors::translate(source, &error.message, span) {
-                syntax.push(found);
-            }
+    let mut attempt = parse_attempt(allocator, source, source_type);
+    let mut repairs = super::syntax_repair::Repairs::new(source);
+    while attempt.gave_up && repairs.len() < super::syntax_repair::MAX_REPAIRS {
+        let Some((start, end, message)) = attempt.first_error.clone() else {
+            break;
+        };
+        if !repairs.apply(start, end, &message) {
+            break;
         }
-        let messages: Vec<String> = result
-            .diagnostics
-            .errors()
-            .map(ToString::to_string)
-            .filter(|message| !TUPLE_SHAPE_ERRORS.contains(&message.as_str()))
-            .collect();
-        // Problem: `type T = [string?, number]` made the parser report a syntax error, and a
-        // syntax error refuses the whole file, so one misplaced `?` stopped every other
-        // check in it, with no position and no code. tsc reports these three tuple rules as
-        // ordinary errors at the element and keeps checking.
-        // Picked: the parser still builds the whole tree for them, so a file whose only
-        // errors are these three is parsed normally and tuple_grammar.rs reports each one
-        // at its element, under its own code. Any other error still refuses the file.
-        // Problem: any syntax error refused the whole file, but tsc reports the syntax error
-        // and goes on to check what it recovered, so every semantic error in the rest of the
-        // file went missing.
-        // Picked: a parse the parser recovered from (it did not give up) is checked like any
-        // other; only a parse that panicked, which has no usable tree, still refuses the file.
-        // Cost: the syntax errors themselves are not reported yet.
-        if !messages.is_empty()
-            && result.program.body.is_empty()
-            && result.program.directives.is_empty()
-        {
-            tracing::warn!(error_count = messages.len(), "parse completed with errors");
-            // Nothing is left to check, but the syntax errors tsc would report are still
-            // the file's diagnostics.
-            if !syntax.is_empty() {
-                return Ok((result.program, syntax, true));
-            }
-            return Err(CheckerError::Parse(messages.join("; ")));
-        }
-        if !messages.is_empty() {
-            tracing::warn!(
-                error_count = messages.len(),
-                "parse recovered from errors; checking"
-            );
-        }
-        tracing::debug!("parse reported only tuple shape errors; continuing");
+        let patched: &'a str = allocator.alloc_str(repairs.text());
+        attempt = parse_attempt(allocator, patched, source_type);
     }
 
+    if attempt.gave_up {
+        // Nothing is left to check, but the syntax errors tsc would report are still the
+        // file's diagnostics.
+        let (mut syntax, offsets) = repairs.finish(attempt.syntax);
+        if !syntax.is_empty() {
+            syntax.sort_by_key(|found| found.span.start);
+            return Ok(Parsed {
+                program: attempt.program,
+                syntax,
+                gave_up: true,
+                offsets,
+            });
+        }
+        tracing::warn!(
+            error_count = attempt.messages.len(),
+            "parse completed with errors"
+        );
+        return Err(CheckerError::Parse(attempt.messages.join("; ")));
+    }
+    if !attempt.messages.is_empty() {
+        tracing::warn!(
+            error_count = attempt.messages.len(),
+            "parse recovered from errors; checking"
+        );
+    }
     tracing::debug!(
-        statement_count = result.program.body.len(),
+        statement_count = attempt.program.body.len(),
         "parsed successfully"
     );
-    Ok((result.program, syntax, false))
+    let (mut syntax, offsets) = repairs.finish(attempt.syntax);
+    syntax.sort_by_key(|found| found.span.start);
+    Ok(Parsed {
+        program: attempt.program,
+        syntax,
+        gave_up: false,
+        offsets,
+    })
 }
 
 // Semantic analysis with control flow graph construction and the node table
