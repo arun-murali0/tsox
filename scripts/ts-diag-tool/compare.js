@@ -331,6 +331,7 @@ const tsoxCompilerOptions = {
   strict: true,
   target: "es2020",
   module: "commonjs",
+  moduleDetection: "force",
   skipLibCheck: true,
   ...(strictOnly
     ? {}

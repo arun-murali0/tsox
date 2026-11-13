@@ -46,6 +46,9 @@ pub struct CheckOptions {
     /// `esnext`): `import x = require()` (TS1202) and `export =` (TS1203) are not allowed in a
     /// non-declaration file. Unset or any other `module` leaves both alone.
     pub module_is_es: bool,
+    /// `moduleDetection: "force"`: every file that is not a declaration file is a module, even
+    /// with no `import` or `export`, so its top-level names are its own and not global.
+    pub module_detection_force: bool,
 }
 
 impl CheckOptions {
@@ -73,6 +76,7 @@ impl CheckOptions {
             no_implicit_returns: false,
             no_fallthrough_cases_in_switch: false,
             module_is_es: false,
+            module_detection_force: false,
         }
     }
 

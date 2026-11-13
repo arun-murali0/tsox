@@ -61,7 +61,9 @@ pub(super) fn bind_imports<'ast>(
                 | Statement::TSImportEqualsDeclaration(_)
         )
     });
-    if !is_external_module {
+    if !is_external_module
+        && !(ctx.options.module_detection_force && !program.source_type.is_typescript_definition())
+    {
         for global in source.global_namespaces() {
             bind_global_namespace(ctx, source, &global);
         }

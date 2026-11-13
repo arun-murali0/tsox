@@ -502,6 +502,10 @@ impl ProjectConfig {
             no_implicit_override: flag("noImplicitOverride").unwrap_or(false),
             no_implicit_returns: flag("noImplicitReturns").unwrap_or(false),
             no_fallthrough_cases_in_switch: flag("noFallthroughCasesInSwitch").unwrap_or(false),
+            module_detection_force: self
+                .compiler_option("moduleDetection")
+                .and_then(Json::as_str)
+                .is_some_and(|mode| mode.eq_ignore_ascii_case("force")),
             module_is_es: self
                 .compiler_option("module")
                 .and_then(Json::as_str)
