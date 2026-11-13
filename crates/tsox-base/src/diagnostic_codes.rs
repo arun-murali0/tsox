@@ -174,6 +174,12 @@ pub enum DiagnosticCode {
     AwaitOutsideAsync,
     ForAwaitOutsideAsync,
     TokenExpected,
+    StaticMemberHint,
+    InstanceMemberHint,
+    ArgumentsInInitializer,
+    EvalOrArgumentsInStrictMode,
+    EvalOrArgumentsInClass,
+    EvalOrArgumentsInModule,
 
     // 1900s: expression grammar and conditions (each maps to the tsc code the
     // syntactic check matches; update/assignment-target grammar codes are not
@@ -357,6 +363,12 @@ impl DiagnosticCode {
             AwaitOutsideAsync => "TSR3019",
             ForAwaitOutsideAsync => "TSR3020",
             TokenExpected => "TSR3021",
+            StaticMemberHint => "TSR3030",
+            InstanceMemberHint => "TSR3031",
+            ArgumentsInInitializer => "TSR3032",
+            EvalOrArgumentsInStrictMode => "TSR3033",
+            EvalOrArgumentsInClass => "TSR3034",
+            EvalOrArgumentsInModule => "TSR3035",
 
             CommaLeftNoSideEffect => "TSR1901",
             VoidTruthiness => "TSR1902",
@@ -507,6 +519,12 @@ impl DiagnosticCode {
             AwaitOutsideAsync => 1308,
             ForAwaitOutsideAsync => 1103,
             TokenExpected => 1005,
+            StaticMemberHint => 2662,
+            InstanceMemberHint => 2663,
+            ArgumentsInInitializer => 2815,
+            EvalOrArgumentsInStrictMode => 1100,
+            EvalOrArgumentsInClass => 1210,
+            EvalOrArgumentsInModule => 1215,
 
             ImplicitAnyParameter => 7006,
             ImplicitAnyRestParameter => 7019,

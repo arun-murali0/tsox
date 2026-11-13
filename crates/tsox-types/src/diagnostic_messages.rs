@@ -809,6 +809,54 @@ pub mod messages {
         )
     }
 
+    pub fn static_member_hint(name: &str, class: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::StaticMemberHint,
+            format!("Cannot find name '{name}'. Did you mean the static member '{class}.{name}'?"),
+        )
+    }
+
+    pub fn instance_member_hint(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::InstanceMemberHint,
+            format!("Cannot find name '{name}'. Did you mean the instance member 'this.{name}'?"),
+        )
+    }
+
+    pub fn arguments_in_initializer() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ArgumentsInInitializer,
+            "'arguments' cannot be referenced in property initializers or class static initialization blocks.".to_string(),
+        )
+    }
+
+    /// `eval` or `arguments` bound or assigned in strict mode. tsc words it by what makes the
+    /// code strict: inside a class, a module, or neither.
+    pub fn eval_or_arguments_in_strict_mode(
+        name: &str,
+        in_class: bool,
+        in_module: bool,
+    ) -> DiagnosticMessage {
+        if in_class {
+            DiagnosticMessage::new(
+                DiagnosticCode::EvalOrArgumentsInClass,
+                format!(
+                    "Code contained in a class is evaluated in JavaScript's strict mode which does not allow this use of '{name}'. For more information, see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Strict_mode."
+                ),
+            )
+        } else if in_module {
+            DiagnosticMessage::new(
+                DiagnosticCode::EvalOrArgumentsInModule,
+                format!("Invalid use of '{name}'. Modules are automatically in strict mode."),
+            )
+        } else {
+            DiagnosticMessage::new(
+                DiagnosticCode::EvalOrArgumentsInStrictMode,
+                format!("Invalid use of '{name}' in strict mode."),
+            )
+        }
+    }
+
     pub fn unresolved_namespace(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnresolvedNamespace,

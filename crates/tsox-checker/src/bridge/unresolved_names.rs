@@ -1,5 +1,7 @@
+use std::collections::HashSet;
+
 use oxc_ast::ast::{
-    IdentifierReference, Program, TSClassImplements, TSImportEqualsDeclaration,
+    ClassElement, IdentifierReference, Program, TSClassImplements, TSImportEqualsDeclaration,
     TSInterfaceHeritage, TSModuleReference, TSNamespaceDeclaration, TSTypeName, TSTypeQuery,
     TSTypeQueryExprName, TSTypeReference,
 };
@@ -37,6 +39,8 @@ pub fn report_unresolved_type_names<'ast>(
         ctx,
         function_depth: 0,
         in_class_initializer: 0,
+        class_frames: Vec::new(),
+        member_function_pending: false,
     };
     walker.visit_program(program);
 }
@@ -67,7 +71,47 @@ struct Walker<'s, 'c, 'ast, 'src> {
     // Inside a class field initializer or a static block, where tsc has its own error for
     // `arguments` (TS2815) and says nothing about it being undeclared.
     in_class_initializer: u32,
+    // The classes around the node, innermost last, for tsc's "did you mean the static member"
+    // hints.
+    class_frames: Vec<ClassFrame>,
+    // The next function visited is the body of the class member being entered, not a nested one.
+    member_function_pending: bool,
 }
+
+// What a class declares by name, and where in it the walk is. `in_member` is set inside a
+// method, accessor, property or static block; `direct` while no function that is not an arrow
+// lies between the node and that member (so `this` is the member's own).
+struct ClassFrame {
+    name: String,
+    statics: HashSet<String>,
+    instances: HashSet<String>,
+    in_member: bool,
+    direct: bool,
+    member_is_static: bool,
+}
+
+// `Function` and `Object` members every class constructor and instance type has as well, which
+// tsc counts when it looks for a member the name could have meant.
+const FUNCTION_MEMBERS: [&str; 9] = [
+    "apply",
+    "call",
+    "bind",
+    "toString",
+    "length",
+    "arguments",
+    "caller",
+    "name",
+    "prototype",
+];
+const OBJECT_MEMBERS: [&str; 7] = [
+    "constructor",
+    "toString",
+    "toLocaleString",
+    "valueOf",
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+];
 
 impl Walker<'_, '_, '_, '_> {
     // A value name that nothing declares: no symbol, no library or project global, and not a
@@ -78,7 +122,6 @@ impl Walker<'_, '_, '_, '_> {
         let name = id.name.as_str();
         resolve_symbol_id(id, self.scoping).is_none()
             && !matches!(name, "undefined" | "globalThis")
-            && (name != "arguments" || (self.function_depth == 0 && self.in_class_initializer == 0))
             && !is_type_keyword(name)
             // The parser binds a reference only to a symbol with a value side, so a namespace
             // that holds only types, an enum member of another declaration of the enum, and
@@ -117,14 +160,85 @@ impl Walker<'_, '_, '_, '_> {
     }
 
     fn report_value(&mut self, id: &IdentifierReference) {
-        if self.value_unresolved(id) {
-            let message =
-                crate::diagnostic_messages::messages::unresolved_identifier_hint(&id.name)
-                    .unwrap_or_else(|| {
-                        crate::diagnostic_messages::messages::unresolved_identifier(&id.name)
-                    });
-            self.report_once(message, id);
+        if !self.value_unresolved(id) {
+            return;
         }
+        let name = id.name.as_str();
+        let message = if name == "arguments" && self.function_depth > 0 {
+            // A function encloses it, so `arguments` exists, except across the boundary of a
+            // class field initializer or static block (TS2815).
+            if self.in_class_initializer == 0 {
+                return;
+            }
+            crate::diagnostic_messages::messages::arguments_in_initializer()
+        } else {
+            self.member_hint(name).unwrap_or_else(|| {
+                crate::diagnostic_messages::messages::unresolved_identifier_hint(name)
+                    .unwrap_or_else(|| {
+                        crate::diagnostic_messages::messages::unresolved_identifier(name)
+                    })
+            })
+        };
+        // The expression pass may have reported it as a plain missing name already; tsc words
+        // it by the class members around it.
+        let existing = self.ctx.diagnostics.iter().position(|d| {
+            d.start == id.span.start
+                && d.code == crate::diagnostic_codes::DiagnosticCode::UnresolvedIdentifier
+        });
+        match existing {
+            Some(index)
+                if message.code
+                    != crate::diagnostic_codes::DiagnosticCode::UnresolvedIdentifier =>
+            {
+                let diagnostic = &mut self.ctx.diagnostics[index];
+                diagnostic.code = message.code;
+                diagnostic.message = message.text;
+            }
+            _ => self.report_once(message, id),
+        }
+    }
+
+    // Entering a class element: the frame notes it, and gives back what it held.
+    fn enter_member(&mut self, is_static: bool) -> Option<(bool, bool, bool)> {
+        let frame = self.class_frames.last_mut()?;
+        let saved = (frame.in_member, frame.direct, frame.member_is_static);
+        frame.in_member = true;
+        frame.direct = true;
+        frame.member_is_static = is_static;
+        Some(saved)
+    }
+
+    fn leave_member(&mut self, saved: Option<(bool, bool, bool)>) {
+        if let (Some(frame), Some((in_member, direct, is_static))) =
+            (self.class_frames.last_mut(), saved)
+        {
+            frame.in_member = in_member;
+            frame.direct = direct;
+            frame.member_is_static = is_static;
+        }
+    }
+
+    // tsc's `checkAndReportErrorForMissingPrefix`: the name is a static member of an enclosing
+    // class (TS2662), or an instance member of the one whose own `this` it is in (TS2663).
+    fn member_hint(&self, name: &str) -> Option<crate::diagnostic_messages::DiagnosticMessage> {
+        use crate::diagnostic_messages::messages;
+        let innermost = self.class_frames.len().checked_sub(1)?;
+        for (index, frame) in self.class_frames.iter().enumerate().rev() {
+            if !frame.in_member {
+                continue;
+            }
+            if frame.statics.contains(name) || FUNCTION_MEMBERS.contains(&name) {
+                return Some(messages::static_member_hint(name, &frame.name));
+            }
+            if index == innermost
+                && frame.direct
+                && !frame.member_is_static
+                && (frame.instances.contains(name) || OBJECT_MEMBERS.contains(&name))
+            {
+                return Some(messages::instance_member_hint(name));
+            }
+        }
+        None
     }
 
     fn type_unresolved(&self, id: &IdentifierReference) -> bool {
@@ -171,25 +285,102 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_, '_> {
     }
 
     // A function that is not an arrow has its own `arguments`: a declaration, an expression, a
-    // method, a constructor and an accessor are all `Function` nodes.
+    // method, a constructor and an accessor are all `Function` nodes. A function other than a
+    // class member's own body also takes `this` away from the member.
     fn visit_function(&mut self, it: &oxc_ast::ast::Function<'a>, flags: oxc_semantic::ScopeFlags) {
+        let own_body = std::mem::take(&mut self.member_function_pending);
         let outer_initializer = std::mem::take(&mut self.in_class_initializer);
+        let outer_direct = self.class_frames.last().map(|frame| frame.direct);
+        if !own_body && let Some(frame) = self.class_frames.last_mut() {
+            frame.direct = false;
+        }
         self.function_depth += 1;
         walk::walk_function(self, it, flags);
         self.function_depth -= 1;
         self.in_class_initializer = outer_initializer;
+        if let (Some(frame), Some(direct)) = (self.class_frames.last_mut(), outer_direct) {
+            frame.direct = direct;
+        }
+    }
+
+    fn visit_class(&mut self, it: &oxc_ast::ast::Class<'a>) {
+        let mut frame = ClassFrame {
+            name: it
+                .id
+                .as_ref()
+                .map_or_else(|| "(Anonymous class)".to_string(), |id| id.name.to_string()),
+            statics: HashSet::new(),
+            instances: HashSet::new(),
+            in_member: false,
+            direct: false,
+            member_is_static: false,
+        };
+        for element in &it.body.body {
+            let (key, is_static) = match element {
+                ClassElement::MethodDefinition(method) => {
+                    if method.kind == oxc_ast::ast::MethodDefinitionKind::Constructor {
+                        for parameter in &method.value.params.items {
+                            if (parameter.accessibility.is_some() || parameter.readonly)
+                                && let oxc_ast::ast::BindingPattern::BindingIdentifier(id) =
+                                    &parameter.pattern
+                            {
+                                frame.instances.insert(id.name.to_string());
+                            }
+                        }
+                        continue;
+                    }
+                    (&method.key, method.r#static)
+                }
+                ClassElement::PropertyDefinition(property) => (&property.key, property.r#static),
+                ClassElement::AccessorProperty(property) => (&property.key, property.r#static),
+                _ => continue,
+            };
+            let name = match key {
+                oxc_ast::ast::PropertyKey::StaticIdentifier(id) => id.name.to_string(),
+                oxc_ast::ast::PropertyKey::StringLiteral(text) => text.value.to_string(),
+                _ => continue,
+            };
+            if is_static {
+                frame.statics.insert(name);
+            } else {
+                frame.instances.insert(name);
+            }
+        }
+        self.class_frames.push(frame);
+        walk::walk_class(self, it);
+        self.class_frames.pop();
+    }
+
+    fn visit_method_definition(&mut self, it: &oxc_ast::ast::MethodDefinition<'a>) {
+        let saved = self.enter_member(it.r#static);
+        self.member_function_pending = true;
+        walk::walk_method_definition(self, it);
+        self.member_function_pending = false;
+        self.leave_member(saved);
+    }
+
+    fn visit_accessor_property(&mut self, it: &oxc_ast::ast::AccessorProperty<'a>) {
+        let saved = self.enter_member(it.r#static);
+        self.in_class_initializer += 1;
+        walk::walk_accessor_property(self, it);
+        self.in_class_initializer -= 1;
+        self.leave_member(saved);
     }
 
     fn visit_property_definition(&mut self, it: &oxc_ast::ast::PropertyDefinition<'a>) {
+        let saved = self.enter_member(it.r#static);
         self.in_class_initializer += 1;
         walk::walk_property_definition(self, it);
         self.in_class_initializer -= 1;
+        self.leave_member(saved);
     }
 
     fn visit_static_block(&mut self, it: &oxc_ast::ast::StaticBlock<'a>) {
+        let saved = self.enter_member(true);
         self.in_class_initializer += 1;
         walk::walk_static_block(self, it);
         self.in_class_initializer -= 1;
+        self.leave_member(saved);
     }
 
     // A name outside every type position is a value read: it has to be declared, however

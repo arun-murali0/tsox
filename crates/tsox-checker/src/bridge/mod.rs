@@ -14,6 +14,7 @@ mod narrow;
 mod parse;
 mod probe;
 mod statements;
+mod strict_mode_names;
 mod syntax_errors;
 mod tuple_grammar;
 mod unreachable_code;
@@ -277,6 +278,7 @@ fn bodies_phase<'ast>(
         return;
     }
     unresolved_names::report_unresolved_type_names(program, scoping, ctx);
+    strict_mode_names::report_strict_mode_names(program, ctx);
     implicit_any::report_implicit_any(program, ctx);
     duplicates::report_duplicate_declarations(program, ctx);
     class_implements::check_class_implements(program, ctx);
