@@ -24,6 +24,23 @@ pub fn parse<'a>(
     source: &'a str,
     file_name: &str,
 ) -> Result<Program<'a>, CheckerError> {
+    parse_with_syntax_errors(allocator, source, file_name).map(|(program, _, _)| program)
+}
+
+// The parse and the syntax errors in it that have a tsc code and wording (`syntax_errors`). The
+// flag says the parser gave up and the program is empty, so nothing about the file is known.
+pub fn parse_with_syntax_errors<'a>(
+    allocator: &'a Allocator,
+    source: &'a str,
+    file_name: &str,
+) -> Result<
+    (
+        Program<'a>,
+        Vec<super::syntax_errors::SyntaxDiagnostic>,
+        bool,
+    ),
+    CheckerError,
+> {
     // A recognized extension (.ts, .tsx, and so on) picks the right dialect
     // automatically. An unrecognized or missing extension, such as a file name
     // used only for a diagnostic label in a test, falls back to TypeScript rather
@@ -44,7 +61,18 @@ pub fn parse<'a>(
 
     let result = Parser::new(allocator, source, source_type).parse();
 
+    let mut syntax = Vec::new();
     if result.diagnostics.has_errors() {
+        for error in result.diagnostics.errors() {
+            let Some(label) = error.labels.first() else {
+                continue;
+            };
+            let span =
+                oxc_span::Span::new(label.offset() as u32, (label.offset() + label.len()) as u32);
+            if let Some(found) = super::syntax_errors::translate(source, &error.message, span) {
+                syntax.push(found);
+            }
+        }
         let messages: Vec<String> = result
             .diagnostics
             .errors()
@@ -69,6 +97,11 @@ pub fn parse<'a>(
             && result.program.directives.is_empty()
         {
             tracing::warn!(error_count = messages.len(), "parse completed with errors");
+            // Nothing is left to check, but the syntax errors tsc would report are still
+            // the file's diagnostics.
+            if !syntax.is_empty() {
+                return Ok((result.program, syntax, true));
+            }
             return Err(CheckerError::Parse(messages.join("; ")));
         }
         if !messages.is_empty() {
@@ -84,7 +117,7 @@ pub fn parse<'a>(
         statement_count = result.program.body.len(),
         "parsed successfully"
     );
-    Ok(result.program)
+    Ok((result.program, syntax, false))
 }
 
 // Semantic analysis with control flow graph construction and the node table

@@ -14,6 +14,7 @@ mod narrow;
 mod parse;
 mod probe;
 mod statements;
+mod syntax_errors;
 mod tuple_grammar;
 mod unreachable_code;
 mod unresolved_names;
@@ -119,7 +120,8 @@ pub fn check_file(
     }
 
     let allocator = Allocator::default();
-    let program = parse(&allocator, source, file_name)?;
+    let (program, syntax_errors, gave_up) =
+        parse::parse_with_syntax_errors(&allocator, source, file_name)?;
     // semantic is kept for the whole check on purpose: it owns the Scoping borrowed
     // here, and it is where the control flow graph lives once flow analysis reads
     // it. Keeping only the Scoping would drop the graph along with the rest.
@@ -131,6 +133,9 @@ pub fn check_file(
     ctx.imports = imports;
     ctx.options = options;
     ctx.probe = probe.map(|request| ProbeState::new(request.offset()));
+    for found in syntax_errors {
+        ctx.error(found.message, found.span);
+    }
 
     declare_phase(&program, semantic.scoping(), &mut ctx);
     // The pass is left out only when asked for and only when nothing in the file can need it.
@@ -162,6 +167,9 @@ pub fn check_file(
         Some(module) => exports::collect_exports(&program, semantic.scoping(), &mut ctx, module),
         None => ExportTable::default(),
     };
+    if gave_up {
+        exports.mark(IncompleteReason::SyntaxErrorNoTree);
+    }
     // Exported functions whose return type is inferred from imported functions: the project
     // looks for a circle among them, which no one file can see. A function that is not
     // exported cannot be the way back into this file, so it is not a node of such a circle.

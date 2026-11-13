@@ -1109,6 +1109,11 @@ pub mod messages {
         )
     }
 
+    /// A syntax rule oxc reported, in tsc's code and wording (see `bridge::syntax_errors`).
+    pub fn syntax(code: DiagnosticCode, text: String) -> DiagnosticMessage {
+        DiagnosticMessage::new(code, text)
+    }
+
     pub fn ambient_initializer() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::AmbientInitializer,

@@ -80,6 +80,8 @@ pub enum IncompleteReason {
     /// The file is in an import cycle that did not settle within its bound, so what it exports
     /// may still have been changing.
     CycleDidNotSettle,
+    /// The parser gave up on a syntax error and left no tree, so the file's exports are unknown.
+    SyntaxErrorNoTree,
 }
 
 impl IncompleteReason {
@@ -109,6 +111,7 @@ impl IncompleteReason {
                 "`export * as ns` from a module that is missing or not read"
             }
             Self::CycleDidNotSettle => "an import cycle that did not settle",
+            Self::SyntaxErrorNoTree => "a syntax error left the file without a tree",
         }
     }
 }
