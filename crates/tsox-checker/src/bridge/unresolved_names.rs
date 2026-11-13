@@ -32,7 +32,12 @@ pub fn report_unresolved_type_names<'ast>(
     scoping: &Scoping,
     ctx: &mut CheckContext<'ast, '_>,
 ) {
-    let mut walker = Walker { scoping, ctx };
+    let mut walker = Walker {
+        scoping,
+        ctx,
+        function_depth: 0,
+        in_class_initializer: 0,
+    };
     walker.visit_program(program);
 }
 
@@ -56,6 +61,12 @@ pub fn is_unresolved_type_name(
 struct Walker<'s, 'c, 'ast, 'src> {
     scoping: &'s Scoping,
     ctx: &'c mut CheckContext<'ast, 'src>,
+    // How many functions that are not arrows enclose the node: `arguments` is theirs, an arrow
+    // has none of its own. Zero means `arguments` names nothing.
+    function_depth: u32,
+    // Inside a class field initializer or a static block, where tsc has its own error for
+    // `arguments` (TS2815) and says nothing about it being undeclared.
+    in_class_initializer: u32,
 }
 
 impl Walker<'_, '_, '_, '_> {
@@ -66,7 +77,8 @@ impl Walker<'_, '_, '_, '_> {
         let ctx = &*self.ctx;
         let name = id.name.as_str();
         resolve_symbol_id(id, self.scoping).is_none()
-            && !matches!(name, "undefined" | "arguments" | "globalThis")
+            && !matches!(name, "undefined" | "globalThis")
+            && (name != "arguments" || (self.function_depth == 0 && self.in_class_initializer == 0))
             && !is_type_keyword(name)
             // The parser binds a reference only to a symbol with a value side, so a namespace
             // that holds only types, an enum member of another declaration of the enum, and
@@ -78,10 +90,11 @@ impl Walker<'_, '_, '_, '_> {
                 .any(|symbol| self.scoping.symbol_name(symbol) == name)
             && !ctx.type_only_value_names.contains(name)
             && !ctx.global_values.contains_key(name)
-            && !(ctx
-                .imports
-                .is_none_or(|source| !source.requires_registered_global_values())
-                && super::expressions::is_ambient_global(name))
+            && (name == "arguments"
+                || !(ctx
+                    .imports
+                    .is_none_or(|source| !source.requires_registered_global_values())
+                    && super::expressions::is_ambient_global(name)))
             && !ctx.namespace.is_unmodelled_global(name)
             && !ctx.namespace.contains(name)
             && !super::expressions::is_library_type_only(name)
@@ -155,6 +168,28 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_, '_> {
         self.ctx.namespace.push_scope(&it.id.name);
         walk::walk_ts_namespace_declaration(self, it);
         self.ctx.namespace.pop_scope();
+    }
+
+    // A function that is not an arrow has its own `arguments`: a declaration, an expression, a
+    // method, a constructor and an accessor are all `Function` nodes.
+    fn visit_function(&mut self, it: &oxc_ast::ast::Function<'a>, flags: oxc_semantic::ScopeFlags) {
+        let outer_initializer = std::mem::take(&mut self.in_class_initializer);
+        self.function_depth += 1;
+        walk::walk_function(self, it, flags);
+        self.function_depth -= 1;
+        self.in_class_initializer = outer_initializer;
+    }
+
+    fn visit_property_definition(&mut self, it: &oxc_ast::ast::PropertyDefinition<'a>) {
+        self.in_class_initializer += 1;
+        walk::walk_property_definition(self, it);
+        self.in_class_initializer -= 1;
+    }
+
+    fn visit_static_block(&mut self, it: &oxc_ast::ast::StaticBlock<'a>) {
+        self.in_class_initializer += 1;
+        walk::walk_static_block(self, it);
+        self.in_class_initializer -= 1;
     }
 
     // A name outside every type position is a value read: it has to be declared, however
