@@ -83,3 +83,90 @@ fn an_empty_type_argument_list_is_ts1099() {
         "Type argument list cannot be empty.",
     );
 }
+
+// Rules the parser gives up on (it builds no tree), so the translated error is the only thing the
+// file reports. Each source was compared with tsc 6.0.3, one file per case; tsc reports the
+// same code and text on the same line (tsc also reports implicit-any errors for some of these
+// files, which need the tree this parse does not have).
+
+#[test]
+fn a_rest_parameter_that_is_not_last_is_ts1014() {
+    only(
+        "function f(...a, b) {}\nexport {};\n",
+        1,
+        "A rest parameter must be last in a parameter list.",
+    );
+}
+
+#[test]
+fn a_rest_element_that_is_not_last_is_ts2462() {
+    only(
+        "let [...a, b] = [1, 2];\nexport {};\n",
+        1,
+        "A rest element must be last in a destructuring pattern.",
+    );
+}
+
+#[test]
+fn enum_member_name_rules_are_ts2452_and_ts1164() {
+    only(
+        "enum E { 1 = 0 }\nexport {};\n",
+        1,
+        "An enum member cannot have a numeric name.",
+    );
+    only(
+        "enum E { [k] = 0 }\nexport {};\n",
+        1,
+        "Computed property names are not allowed in enums.",
+    );
+}
+
+#[test]
+fn index_signature_rules_are_ts1021_and_ts1019() {
+    only(
+        "interface I { [k: string]; }\nexport {};\n",
+        1,
+        "An index signature must have a type annotation.",
+    );
+    only(
+        "interface I { [k?: string]: number; }\nexport {};\n",
+        1,
+        "An index signature parameter cannot have a question mark.",
+    );
+}
+
+#[test]
+fn a_translated_rule_with_no_tree_reports_only_that_error() {
+    // The parser built no tree, so nothing else in the file can be checked: the translated
+    // error is the whole result, with no invented follow-on errors.
+    let found = errors("function f(...a, b) {}\nexport {};\n");
+    assert_eq!(found.len(), 1, "only the translated error: {found:?}");
+}
+
+#[test]
+fn an_index_signature_with_a_bad_key_is_not_reported_as_ts1021() {
+    // tsc reports an invalid key type as TS1268 and an optional key as TS1019, not TS1021, so
+    // those stay unreported here rather than carry the wrong code.
+    for source in [
+        "var foo: { [index: any]; };\nexport {};\n",
+        "interface I { [a: boolean]; }\nexport {};\n",
+        "interface I { [k?: string]; }\nexport {};\n",
+    ] {
+        // Nothing translates, so the file is refused as before (an error, not diagnostics).
+        match TypeChecker::new().check_source(source, "case.ts") {
+            Err(_) => {}
+            Ok(result) => assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .all(|d| d.message != "An index signature must have a type annotation."),
+                "{source:?} reported TS1021"
+            ),
+        }
+    }
+    only(
+        "interface I { [k: number]; }\nexport {};\n",
+        1,
+        "An index signature must have a type annotation.",
+    );
+}

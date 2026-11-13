@@ -275,6 +275,10 @@ fn index_signature_without_type(text: &str, start: usize, end: usize) -> Option<
     if !(signature.starts_with('[') && signature.ends_with(']')) {
         return None;
     }
+    // tsc reports a bad key (`[k?: string]`, `[k: any]`) as TS1019/TS1268, not TS1021.
+    if !super::syntax_errors::plain_index_key(text, oxc_span::Span::new(start as u32, end as u32)) {
+        return None;
+    }
     Some(Rule {
         start: end,
         end,

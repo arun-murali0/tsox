@@ -174,14 +174,19 @@ pub enum DiagnosticCode {
     AwaitOutsideAsync,
     ForAwaitOutsideAsync,
     TokenExpected,
+    RestParameterNotLast,
+    EnumMemberNumericName,
+    EnumComputedName,
+    RestElementNotLast,
+    IndexSignatureNeedsType,
+    IndexSignatureOptionalParameter,
+    ElementAccessNeedsArgument,
     StaticMemberHint,
     InstanceMemberHint,
     ArgumentsInInitializer,
     EvalOrArgumentsInStrictMode,
     EvalOrArgumentsInClass,
     EvalOrArgumentsInModule,
-    ElementAccessNeedsArgument,
-    IndexSignatureNeedsType,
 
     // 1900s: expression grammar and conditions (each maps to the tsc code the
     // syntactic check matches; update/assignment-target grammar codes are not
@@ -273,7 +278,7 @@ impl DiagnosticCode {
             NoExportedMember => "TSR1204",
             NoDefaultExport => "TSR1205",
             TypeUsedAsValue => "TSR1206",
-            ImportTypeOnlyValue => "TSR1209",
+            ImportTypeOnlyValue => "TSR1217",
 
             ArrayDestructuringRequiresArray => "TSR1301",
 
@@ -313,11 +318,11 @@ impl DiagnosticCode {
             PrivatePropertyAccess => "TSR1911",
             ProtectedPropertyAccess => "TSR1912",
             ReadonlyPropertyAssignment => "TSR1913",
-            AssignmentToConstant => "TSR1907",
-            AssignmentToImport => "TSR1908",
-            AssignmentToClass => "TSR1909",
-            AssignmentToFunction => "TSR1910",
-            AssignmentToEnum => "TSR1911",
+            AssignmentToConstant => "TSR1914",
+            AssignmentToImport => "TSR1915",
+            AssignmentToClass => "TSR1916",
+            AssignmentToFunction => "TSR1917",
+            AssignmentToEnum => "TSR1918",
 
             UnreachableCode => "TSR1601",
             FallthroughCaseInSwitch => "TSR1602",
@@ -365,21 +370,26 @@ impl DiagnosticCode {
             AwaitOutsideAsync => "TSR3019",
             ForAwaitOutsideAsync => "TSR3020",
             TokenExpected => "TSR3021",
+            RestParameterNotLast => "TSR3022",
+            EnumMemberNumericName => "TSR3023",
+            EnumComputedName => "TSR3024",
+            RestElementNotLast => "TSR3025",
+            IndexSignatureNeedsType => "TSR3026",
+            IndexSignatureOptionalParameter => "TSR3027",
+            ElementAccessNeedsArgument => "TSR3040",
             StaticMemberHint => "TSR3030",
             InstanceMemberHint => "TSR3031",
             ArgumentsInInitializer => "TSR3032",
             EvalOrArgumentsInStrictMode => "TSR3033",
             EvalOrArgumentsInClass => "TSR3034",
             EvalOrArgumentsInModule => "TSR3035",
-            ElementAccessNeedsArgument => "TSR3040",
-            IndexSignatureNeedsType => "TSR3041",
 
-            CommaLeftNoSideEffect => "TSR1901",
-            VoidTruthiness => "TSR1902",
-            AlwaysTruthyExpression => "TSR1903",
-            AlwaysFalsyExpression => "TSR1904",
-            DeleteOperandNotProperty => "TSR1905",
-            DeleteOperandRequired => "TSR1906",
+            CommaLeftNoSideEffect => "TSR1951",
+            VoidTruthiness => "TSR1952",
+            AlwaysTruthyExpression => "TSR1953",
+            AlwaysFalsyExpression => "TSR1954",
+            DeleteOperandNotProperty => "TSR1955",
+            DeleteOperandRequired => "TSR1956",
 
             UnimplementedCallExpressionKind => "TSR9001",
             UnimplementedNewExpressionTarget => "TSR9002",
@@ -523,14 +533,19 @@ impl DiagnosticCode {
             AwaitOutsideAsync => 1308,
             ForAwaitOutsideAsync => 1103,
             TokenExpected => 1005,
+            RestParameterNotLast => 1014,
+            EnumMemberNumericName => 2452,
+            EnumComputedName => 1164,
+            RestElementNotLast => 2462,
+            IndexSignatureNeedsType => 1021,
+            IndexSignatureOptionalParameter => 1019,
+            ElementAccessNeedsArgument => 1011,
             StaticMemberHint => 2662,
             InstanceMemberHint => 2663,
             ArgumentsInInitializer => 2815,
             EvalOrArgumentsInStrictMode => 1100,
             EvalOrArgumentsInClass => 1210,
             EvalOrArgumentsInModule => 1215,
-            ElementAccessNeedsArgument => 1011,
-            IndexSignatureNeedsType => 1021,
 
             ImplicitAnyParameter => 7006,
             ImplicitAnyRestParameter => 7019,
@@ -603,5 +618,26 @@ impl DiagnosticCode {
 impl std::fmt::Display for DiagnosticCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_code_has_its_own_id() {
+        let source = include_str!("diagnostic_codes.rs");
+        let mut seen = std::collections::HashSet::new();
+        // Each id string appears once in `as_str`, so a repeat anywhere is a collision.
+        for part in source.split("=> \"TSR").skip(1) {
+            let id = &part[..part.find('"').unwrap()];
+            assert!(seen.insert(id.to_string()), "TSR{id} is used twice");
+        }
+        assert!(
+            DiagnosticCode::ElementAccessNeedsArgument
+                .as_str()
+                .starts_with("TSR")
+        );
     }
 }

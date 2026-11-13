@@ -37,10 +37,36 @@ pub fn translate(source: &str, message: &str, span: Span) -> Option<SyntaxDiagno
     {
         return None;
     }
+    // oxc says "must have a type annotation" for every index signature with none, but tsc checks
+    // the key first: a key that is optional (`[k?: string];`) is TS1019, and a key type that is
+    // not string, number or symbol (`[k: any];`) is TS1268. Only a plain valid key is TS1021.
+    if message == "An index signature must have a type annotation."
+        && !plain_index_key(source, span)
+    {
+        return None;
+    }
     Some(SyntaxDiagnostic {
         span,
         message: translated,
     })
+}
+
+/// Whether the index signature at `span` is `[name: string | number | symbol]`, the one shape
+/// where a missing value type is tsc's TS1021 and not a complaint about the key.
+pub(super) fn plain_index_key(source: &str, span: Span) -> bool {
+    let Some(text) = source.get(span.start as usize..) else {
+        return false;
+    };
+    let Some(rest) = text.strip_prefix('[') else {
+        return false;
+    };
+    let Some(close) = rest.find(']') else {
+        return false;
+    };
+    let Some((name, key_type)) = rest[..close].split_once(':') else {
+        return false;
+    };
+    !name.contains('?') && matches!(key_type.trim(), "string" | "number" | "symbol")
 }
 
 fn translate_message(message: &str) -> Option<DiagnosticMessage> {
@@ -121,6 +147,26 @@ fn translate_message(message: &str) -> Option<DiagnosticMessage> {
         }
         "A 'return' statement can only be used within a function body." => {
             same(Code::ReturnOutsideFunction, message)
+        }
+        // oxc and tsc word these the same, give or take the final full stop. The parser gives up
+        // on all but the last (no tree), so the diagnostic is all the file reports.
+        "A rest parameter must be last in a parameter list" => same(
+            Code::RestParameterNotLast,
+            "A rest parameter must be last in a parameter list.",
+        ),
+        "An enum member cannot have a numeric name." => same(Code::EnumMemberNumericName, message),
+        "Computed property names are not allowed in enums." => {
+            same(Code::EnumComputedName, message)
+        }
+        "A rest element must be last in a destructuring pattern" => same(
+            Code::RestElementNotLast,
+            "A rest element must be last in a destructuring pattern.",
+        ),
+        "An index signature must have a type annotation." => {
+            same(Code::IndexSignatureNeedsType, message)
+        }
+        "An index signature parameter cannot have a question mark." => {
+            same(Code::IndexSignatureOptionalParameter, message)
         }
         "Type parameter list cannot be empty." => same(Code::EmptyTypeParameterList, message),
         "Type argument list cannot be empty." => same(Code::EmptyTypeArgumentList, message),
