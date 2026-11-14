@@ -100,3 +100,32 @@ fn a_read_of_an_unassigned_variable_typed_by_a_qualified_name_is_reported() {
     let source = "namespace lav { export class X { m(): this { return this; } } export interface J { a: number } export type Al = string | undefined; export namespace deep { export enum E { A } } }\nnamespace a.b { export class C { x = 1; } }\ndeclare namespace amb { class K {} }\nfunction f() {\n  var x: lav.X; x;\n  var j: lav.J; j;\n  var e: lav.deep.E; e;\n  var c: a.b.C; c;\n  var k: amb.K; k;\n  var al: lav.Al; al;\n  var nx: lav.Nope; nx;\n}\n";
     assert_eq!(unassigned_lines(source), vec![5, 6, 7, 8, 9]);
 }
+
+// A function with an unannotated parameter has that parameter as `any` in tsc, and its body is
+// checked like any other. The checker used to give up on the whole signature, so nothing
+// inside such a body was checked and nothing declared in it had a type to read back.
+#[test]
+fn the_body_of_a_function_with_an_untyped_parameter_is_checked() {
+    let source = "declare function g(a: number): void;\nfunction f(x) {\n  g(1, 2);\n}\n";
+    let found = errors(source);
+    assert!(
+        found
+            .iter()
+            .any(|(line, message)| *line == 3 && message.contains("Expected 1 arguments")),
+        "{found:?}"
+    );
+}
+
+// A body that reads `this` is a constructor function in tsc's eyes, which this checker does not
+// model, so it stays unchecked rather than reporting each `this.p` as a missing property.
+#[test]
+fn a_constructor_function_with_an_untyped_parameter_is_left_alone() {
+    let source = "function C(x) {\n  this.p = x;\n  this.q = this.p;\n}\n";
+    let found = errors(source);
+    assert!(
+        !found
+            .iter()
+            .any(|(_, message)| message.contains("does not exist")),
+        "{found:?}"
+    );
+}
