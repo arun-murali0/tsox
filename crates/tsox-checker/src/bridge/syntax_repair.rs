@@ -22,6 +22,9 @@ struct Segment {
     orig_start: usize,
     orig_end: usize,
     replaced: bool,
+    // A stretch of the replacement that copies the original verbatim: (offset in the replacement,
+    // offset in the original from the segment's start, length). Offsets inside it map exactly.
+    copy: Option<(usize, usize, usize)>,
 }
 
 /// Offsets of a patched copy back to the original source.
@@ -35,6 +38,12 @@ impl OffsetMap {
         let offset = offset as usize;
         for segment in &self.segments {
             if offset < segment.cur_end || (offset == segment.cur_end && !segment.replaced) {
+                if let Some((repl, orig, len)) = segment.copy {
+                    let inner = offset.wrapping_sub(segment.cur_start + repl);
+                    if offset >= segment.cur_start + repl && inner <= len {
+                        return (segment.orig_start + orig + inner) as u32;
+                    }
+                }
                 if segment.replaced {
                     return if is_end {
                         segment.orig_end
@@ -53,6 +62,7 @@ struct Edit {
     start: usize,
     end: usize,
     with: String,
+    copy: Option<(usize, usize, usize)>,
 }
 
 struct Note {
@@ -73,6 +83,7 @@ struct Rule {
     start: usize,
     end: usize,
     with: String,
+    copy: Option<(usize, usize, usize)>,
     note: Note,
 }
 
@@ -110,6 +121,7 @@ impl<'s> Repairs<'s> {
                     orig_start: at,
                     orig_end: edit.start,
                     replaced: false,
+                    copy: None,
                 });
                 self.text.push_str(&self.original[at..edit.start]);
             }
@@ -119,6 +131,7 @@ impl<'s> Repairs<'s> {
                 orig_start: edit.start,
                 orig_end: edit.end,
                 replaced: true,
+                copy: edit.copy,
             });
             self.text.push_str(&edit.with);
             at = edit.end;
@@ -130,6 +143,7 @@ impl<'s> Repairs<'s> {
                 orig_start: at,
                 orig_end: self.original.len(),
                 replaced: false,
+                copy: None,
             });
             self.text.push_str(&self.original[at..]);
         }
@@ -167,6 +181,7 @@ impl<'s> Repairs<'s> {
             start: orig_start,
             end: orig_end,
             with: rule.with,
+            copy: rule.copy,
         });
         self.notes.push(note);
         self.rebuild();
@@ -294,6 +309,7 @@ fn element_without_argument(text: &str, start: usize, end: usize) -> Option<Rule
         start: from,
         end,
         with: format!("({chain} as any)"),
+        copy: Some((1, at - from, chain.len())),
         note: Note {
             message: messages::syntax(
                 Code::ElementAccessNeedsArgument,
@@ -317,6 +333,7 @@ fn index_signature_without_type(text: &str, start: usize, end: usize) -> Option<
         start: end,
         end,
         with: ": any".to_string(),
+        copy: None,
         note: Note {
             message: messages::syntax(
                 Code::IndexSignatureNeedsType,
@@ -348,6 +365,7 @@ fn enum_numeric_name(text: &str, start: usize, end: usize) -> Option<Rule> {
         start,
         end,
         with: format!("\"{name}\""),
+        copy: None,
         note: Note {
             message: messages::syntax(
                 Code::EnumMemberNumericName,
@@ -383,6 +401,7 @@ fn enum_computed_name(text: &str, start: usize, end: usize) -> Option<Rule> {
         start: from,
         end: to,
         with: format!("\"__computed_{from}\""),
+        copy: None,
         note: Note {
             message: messages::syntax(
                 Code::EnumComputedName,
@@ -419,6 +438,7 @@ fn rest_parameter_not_last(text: &str, start: usize) -> Option<Rule> {
         start,
         end,
         with,
+        copy: None,
         note: Note {
             message: messages::syntax(
                 Code::RestParameterNotLast,
@@ -482,6 +502,7 @@ fn assignment_target(text: &str, start: usize, end: usize) -> Option<Rule> {
         start,
         end,
         with: format!("({left} as any).__tsox_repair"),
+        copy: Some((1, 0, left.len())),
         note: Note {
             message: messages::syntax(
                 Code::AssignmentTargetInvalid,
@@ -501,6 +522,7 @@ fn member_marker(start: usize, end: usize, code: Code, text: &str) -> Option<Rul
         start,
         end,
         with: String::new(),
+        copy: None,
         note: Note {
             message: messages::syntax(code, text.to_string()),
             start,
@@ -516,6 +538,7 @@ fn enum_member_separator(start: usize, end: usize) -> Option<Rule> {
         start,
         end,
         with: ",".to_string(),
+        copy: None,
         note: Note {
             message: messages::syntax(
                 Code::EnumMemberSeparator,
@@ -573,6 +596,7 @@ fn catch_initializer(text: &str, start: usize) -> Option<Rule> {
         start,
         end: close,
         with: String::new(),
+        copy: None,
         note: Note {
             message: messages::syntax(
                 Code::CatchVariableInitializer,
@@ -606,6 +630,7 @@ fn index_signature_initializer(text: &str, start: usize) -> Option<Rule> {
         start: before.trim_end().len(),
         end: close,
         with: String::new(),
+        copy: None,
         note: Note {
             message: messages::syntax(
                 Code::IndexSignatureParameterInitializer,

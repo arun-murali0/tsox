@@ -19,6 +19,7 @@ pub mod namespace;
 #[allow(dead_code)]
 pub mod portable;
 pub mod prelude;
+pub mod script_target_features;
 pub mod semantic;
 #[allow(dead_code)]
 pub mod stable_walk;

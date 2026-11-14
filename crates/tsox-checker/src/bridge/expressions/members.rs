@@ -82,6 +82,20 @@ pub fn infer_member_access_type(
             found
         }
         None => {
+            // tsc looks for a newer `lib` before it offers a spelling: a member that a later
+            // library declares is TS2550, not "did you mean".
+            if let Some(lib) = global_type_name(&ctx.arena, effective_type).and_then(|name| {
+                tsox_types::script_target_features::suggested_lib_for_property(&name, property_name)
+            }) {
+                let message = crate::diagnostic_messages::messages::property_needs_newer_lib(
+                    &ctx.arena,
+                    property_name,
+                    effective_type,
+                    lib,
+                );
+                ctx.error(message, span);
+                return ctx.arena.error();
+            }
             let names = super::spelling::member_names(&ctx.arena, effective_type);
             let suggestion =
                 super::spelling::suggest(property_name, names.iter().map(String::as_str));
@@ -1011,4 +1025,33 @@ pub(super) fn infer_chain_element_type(
             ctx.arena.error()
         }
     }
+}
+
+// The name of the global type a value's members come from, as tsc's `getApparentType(..).symbol`
+// names it: `Array` for `number[]`, `Map` for `Map<string, number>`, `SymbolConstructor` for the
+// `Symbol` value, `Intl` for the namespace. A union or an anonymous type has none.
+fn global_type_name(arena: &crate::arena::TypeArena, type_id: TypeId) -> Option<String> {
+    let shown = crate::type_display::display_type(arena, type_id);
+    if shown.contains(" | ") || shown.contains(" & ") || shown.starts_with('{') {
+        return None;
+    }
+    if shown.ends_with("[]") {
+        return Some("Array".to_string());
+    }
+    if shown.starts_with('"') {
+        return Some("String".to_string());
+    }
+    let shown = shown.strip_prefix("typeof ").unwrap_or(&shown);
+    let name = shown.split('<').next().unwrap_or(shown);
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    Some(match name {
+        "string" => "String".to_string(),
+        "number" => "Number".to_string(),
+        "boolean" => "Boolean".to_string(),
+        "bigint" => "BigInt".to_string(),
+        "symbol" => "Symbol".to_string(),
+        _ => name.to_string(),
+    })
 }

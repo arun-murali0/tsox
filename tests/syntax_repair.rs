@@ -334,3 +334,51 @@ fn grammar_repairs_alone_are_all_reported() {
         "{found:?}"
     );
 }
+
+// tsc lists a file's diagnostics by position. The `[]` of `number[]` comes after `number`, so
+// TS2693 (on `number`) comes before TS1011 (on the `]`), though the parser finds TS1011 first.
+#[test]
+fn diagnostics_are_listed_by_position_as_tsc_lists_them() {
+    let result = TypeChecker::new()
+        .check_source("var results = number[];\n", "case.ts")
+        .expect("should be checked");
+    let starts: Vec<u32> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.start)
+        .collect();
+    let mut sorted = starts.clone();
+    sorted.sort();
+    assert_eq!(starts, sorted, "{starts:?}");
+    assert!(starts.len() >= 2, "{starts:?}");
+}
+
+// Compared with tsc 6.0.3: `foo` inside the repaired left side is reported at its own column, and
+// TS2364 covers the parenthesized left side from its first `(`.
+#[test]
+fn a_name_inside_a_repaired_assignment_target_keeps_its_position() {
+    let source = "(foo()) = bar;\n";
+    let result = TypeChecker::new()
+        .check_source(source, "case.ts")
+        .expect("should be checked");
+    let at = |needle: &str| source.find(needle).unwrap() as u32;
+    let foo = result
+        .diagnostics
+        .iter()
+        .find(|d| d.message == "Cannot find name 'foo'.")
+        .expect("foo is reported");
+    assert_eq!((foo.start, foo.end), (at("foo"), at("foo") + 3));
+    let target = result
+        .diagnostics
+        .iter()
+        .find(|d| d.message == TS2364)
+        .expect("TS2364 is reported");
+    assert_eq!(target.start, 0);
+    let order: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(order[0], TS2364, "{order:?}");
+}

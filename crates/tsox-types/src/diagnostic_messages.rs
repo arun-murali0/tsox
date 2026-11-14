@@ -725,36 +725,15 @@ pub mod messages {
 
     // tsc points a few well-known global names at the package that declares them.
     pub fn unresolved_identifier_hint(name: &str) -> Option<DiagnosticMessage> {
+        // The names tsc hints for (checked against it: `exports`, `path`, `assert` and the module
+        // names are plain "Cannot find name").
         const NODE: &[&str] = &[
             "require",
             "module",
-            "exports",
             "process",
             "Buffer",
             "__filename",
             "__dirname",
-            "fs",
-            "path",
-            "url",
-            "events",
-            "http",
-            "https",
-            "os",
-            "util",
-            "crypto",
-            "stream",
-            "child_process",
-            "assert",
-            "zlib",
-            "net",
-            "readline",
-            "cluster",
-            "dns",
-            "vm",
-            "querystring",
-            "buffer",
-            "tty",
-            "worker_threads",
         ];
         let node_scheme = name.starts_with("node:");
         if NODE.contains(&name) || node_scheme {
@@ -880,6 +859,21 @@ pub mod messages {
             DiagnosticCode::PropertyDoesNotExist,
             format!(
                 "Property '{property_name}' does not exist on type '{}'.",
+                display_type(arena, object_type)
+            ),
+        )
+    }
+
+    pub fn property_needs_newer_lib(
+        arena: &TypeArena,
+        property_name: &str,
+        object_type: TypeId,
+        lib: &str,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PropertyNeedsNewerLib,
+            format!(
+                "Property '{property_name}' does not exist on type '{}'. Do you need to change your target library? Try changing the 'lib' compiler option to '{lib}' or later.",
                 display_type(arena, object_type)
             ),
         )

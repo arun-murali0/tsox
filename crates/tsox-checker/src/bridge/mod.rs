@@ -220,6 +220,20 @@ pub fn check_file(
         }),
     );
 
+    // tsc lists a file's diagnostics by position, then length, then code, and reports one that
+    // two passes found only once (`sortAndDeduplicateDiagnostics`). The passes here run in their
+    // own order, so the list is put in tsc's.
+    diagnostics.sort_by_key(|d| {
+        (
+            d.start,
+            d.end.saturating_sub(d.start),
+            d.code.tsc_code().unwrap_or(0),
+        )
+    });
+    diagnostics.dedup_by(|b, a| {
+        a.start == b.start && a.end == b.end && a.code == b.code && a.message == b.message
+    });
+
     *arena = ctx.arena;
     Ok(Some((diagnostics, metrics, exports)))
 }
