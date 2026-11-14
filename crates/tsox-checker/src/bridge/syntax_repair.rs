@@ -248,6 +248,9 @@ fn rule_for(text: &str, start: usize, end: usize, message: &str) -> Option<Rule>
         }
         "Expected `)` but found `=`" => catch_initializer(text, start),
         "Expected `,` or `]` but found `=`" => index_signature_initializer(text, start),
+        "A rest element must be last in a destructuring pattern" => {
+            rest_element_not_last(text, start)
+        }
         "A rest parameter must be last in a parameter list" => rest_parameter_not_last(text, start),
         "Cannot assign to this expression" => assignment_target(text, start, end),
         "An enum member cannot have a numeric name." => enum_numeric_name(text, start, end),
@@ -474,10 +477,17 @@ fn assignment_target(text: &str, start: usize, end: usize) -> Option<Rule> {
         return None;
     }
     let before = text.get(..start)?.trim_end();
-    if before.ends_with("++") || before.ends_with("--") {
-        return None;
-    }
     let after = text.get(end..)?.trim_start();
+    if before.ends_with("++")
+        || before.ends_with("--")
+        || after.starts_with("++")
+        || after.starts_with("--")
+    {
+        return update_operand(left, start, end);
+    }
+    if let Some(rule) = for_head(text, left, start, end) {
+        return Some(rule);
+    }
     const OPERATORS: [&str; 16] = [
         ">>>=", "**=", "<<=", ">>=", "&&=", "||=", "??=", "+=", "-=", "*=", "/=", "%=", "&=", "|=",
         "^=", "=",
@@ -638,6 +648,135 @@ fn index_signature_initializer(text: &str, start: usize) -> Option<Rule> {
             ),
             start: name_start,
             end: name_start + name_text.len(),
+        },
+    })
+}
+
+fn as_any_target(left: &str) -> String {
+    format!("({left} as any).__tsox_repair")
+}
+
+// `1 ++`, `--1`, `++(2)`: tsc reports TS2357 for a number, which is the right type for the
+// operator, and TS2356 (never TS2357) for a boolean or string, whose type is wrong. Any other
+// operand's type is not known from the text, so it is left alone.
+fn update_operand(left: &str, start: usize, end: usize) -> Option<Rule> {
+    let operand = left.trim_matches(|c| c == '(' || c == ')' || c == ' ');
+    let quoted = operand.len() >= 2
+        && matches!(operand.as_bytes()[0], b'"' | b'\'')
+        && operand.ends_with(operand.chars().next()?);
+    let (code, text) = if !operand.is_empty()
+        && operand.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+    {
+        (
+            Code::IncrementOperandNotReference,
+            "The operand of an increment or decrement operator must be a variable or a property access.",
+        )
+    } else if quoted || operand == "true" || operand == "false" {
+        (
+            Code::IncrementOperandNotNumeric,
+            "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.",
+        )
+    } else {
+        return None;
+    };
+    Some(Rule {
+        start,
+        end,
+        with: as_any_target(left),
+        copy: Some((1, 0, left.len())),
+        note: Note {
+            message: messages::syntax(code, text.to_string()),
+            start,
+            end,
+        },
+    })
+}
+
+// `for (f() in x)`, `for (new C() of x)`: tsc reports TS2406 or TS2487 on the head, which here is a
+// call or `new` expression. Other heads (`this`, `a = 1`) get codes that depend on types.
+fn for_head(text: &str, left: &str, start: usize, end: usize) -> Option<Rule> {
+    let before = text.get(..start)?.trim_end().strip_suffix('(')?;
+    let before = before.trim_end();
+    let before = before.strip_suffix("await").map_or(before, str::trim_end);
+    before.strip_suffix("for")?;
+    let after = text.get(end..)?.trim_start();
+    let (code, text) = if after.starts_with("in ") || after.starts_with("in(") {
+        (
+            Code::ForInTargetInvalid,
+            "The left-hand side of a 'for...in' statement must be a variable or a property access.",
+        )
+    } else if after.starts_with("of ") || after.starts_with("of(") {
+        (
+            Code::ForOfTargetInvalid,
+            "The left-hand side of a 'for...of' statement must be a variable or a property access.",
+        )
+    } else {
+        return None;
+    };
+    if !(left.ends_with(')') || left.starts_with("new ")) {
+        return None;
+    }
+    Some(Rule {
+        start,
+        end,
+        with: as_any_target(left),
+        copy: Some((1, 0, left.len())),
+        note: Note {
+            message: messages::syntax(code, text.to_string()),
+            start,
+            end,
+        },
+    })
+}
+
+// `let [...a, b] = x`, `let {...a, b} = x`: tsc reports TS2462 on the rest name and binds the rest
+// to what is left over after the other elements, so the rest element moves to the end.
+fn rest_element_not_last(text: &str, start: usize) -> Option<Rule> {
+    let rest = text.get(start..)?.strip_prefix("...")?;
+    let name_len = rest.bytes().take_while(|b| is_ident_byte(*b)).count();
+    if name_len == 0 || rest.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let name = &rest[..name_len];
+    let after_name = start + 3 + name_len;
+    let tail = text.get(after_name..)?;
+    let comma = tail.find(',')?;
+    if !tail[..comma].trim().is_empty() {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut close = None;
+    for (offset, byte) in text.bytes().enumerate().skip(after_name + comma + 1) {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' if depth == 0 => {
+                close = Some(offset);
+                break;
+            }
+            b')' | b']' | b'}' => depth -= 1,
+            _ => {}
+        }
+    }
+    let close = close?;
+    let others = text[after_name + comma + 1..close]
+        .trim()
+        .trim_end_matches(',')
+        .trim();
+    if others.is_empty() || others.contains("...") {
+        return None;
+    }
+    Some(Rule {
+        start,
+        end: close,
+        with: format!("{others}, ...{name}"),
+        copy: None,
+        note: Note {
+            message: messages::syntax(
+                Code::RestElementNotLast,
+                "A rest element must be last in a destructuring pattern.".to_string(),
+            ),
+            start: start + 3,
+            end: after_name,
         },
     })
 }

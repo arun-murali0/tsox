@@ -382,3 +382,81 @@ fn a_name_inside_a_repaired_assignment_target_keeps_its_position() {
         .collect();
     assert_eq!(order[0], TS2364, "{order:?}");
 }
+
+// Update expressions, `for` heads and rest elements, compared with tsc 6.0.3.
+
+const TS2357: &str =
+    "The operand of an increment or decrement operator must be a variable or a property access.";
+const TS2356: &str =
+    "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.";
+
+#[test]
+fn incrementing_a_number_literal_is_ts2357_and_the_file_is_still_checked() {
+    let found = error_lines(&with_tail("1 ++;\nvar a = --1;\nvar b = ++(2);\n"));
+    assert!(has(&found, 1, TS2357), "{found:?}");
+    assert!(has(&found, 2, TS2357), "{found:?}");
+    assert!(has(&found, 3, TS2357), "{found:?}");
+    assert!(has(&found, 4, TS2322), "{found:?}");
+}
+
+#[test]
+fn incrementing_a_boolean_or_string_is_ts2356_and_never_ts2357() {
+    let found = error_lines(&with_tail("var a = --true;\nvar b = ++\"\";\n"));
+    assert!(has(&found, 1, TS2356), "{found:?}");
+    assert!(has(&found, 2, TS2356), "{found:?}");
+    assert!(
+        !found.iter().any(|(_, m)| m == TS2357),
+        "tsc reports only TS2356 for these: {found:?}"
+    );
+}
+
+#[test]
+fn an_increment_of_an_operand_with_an_unknown_type_is_left_alone() {
+    // `--f()` is TS2356 or TS2357 depending on what `f` returns, which the text does not say.
+    if let Ok(result) =
+        TypeChecker::new().check_source("declare function f(): any;\nvar a = --f();\n", "case.ts")
+    {
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .all(|d| d.message != TS2357 && d.message != TS2356),
+            "no rule for an operand of unknown type"
+        );
+    }
+}
+
+#[test]
+fn a_call_as_a_for_head_is_ts2406_or_ts2487() {
+    let found = error_lines(&with_tail(
+        "declare function foo(): any;\ndeclare var b: any;\nfor (foo() in b) { }\nfor (foo() of b) { }\n",
+    ));
+    assert!(
+        has(
+            &found,
+            3,
+            "The left-hand side of a 'for...in' statement must be a variable or a property access."
+        ),
+        "{found:?}"
+    );
+    assert!(
+        has(
+            &found,
+            4,
+            "The left-hand side of a 'for...of' statement must be a variable or a property access."
+        ),
+        "{found:?}"
+    );
+    assert!(has(&found, 5, TS2322), "{found:?}");
+}
+
+#[test]
+fn a_rest_element_that_is_not_last_is_ts2462_and_the_file_is_still_checked() {
+    let found = error_lines(&with_tail(
+        "let [...a, b] = [1, 2];\nlet {...c, d} = {d: 1, e: 2};\n",
+    ));
+    let message = "A rest element must be last in a destructuring pattern.";
+    assert!(has(&found, 1, message), "{found:?}");
+    assert!(has(&found, 2, message), "{found:?}");
+    assert!(has(&found, 3, TS2322), "{found:?}");
+}
