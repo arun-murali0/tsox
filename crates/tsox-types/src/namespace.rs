@@ -156,6 +156,11 @@ pub struct TypeNamespace<'a> {
     // them in the callee's type (calling a parameter typed `(x: T) => U` inside
     // `map<T, U>`), and they must stay as they are there instead of being inferred as
     // if the callee had declared them. See is_type_param_in_scope.
+    // Inside the true branch of `C extends X ? ... : ...`: C is known to be X there, so a type
+    // argument that is C satisfies any bound X satisfies (tsc's substitution type, `C & X`).
+    narrowed_by_conditional: Vec<(TypeId, TypeId)>,
+    // Spans of type arguments a conditional's true branch showed to satisfy their bound.
+    satisfied_by_conditional: Vec<u32>,
     active_type_params: Vec<TypeParameterId>,
 
     // Keyed by TypeParameterId (file and source position, see that type in types.rs)
@@ -462,6 +467,8 @@ impl<'a> TypeNamespace<'a> {
             unmodelled_generics: std::collections::HashMap::new(),
             const_globals: std::collections::HashSet::new(),
             scope: Vec::new(),
+            narrowed_by_conditional: Vec::new(),
+            satisfied_by_conditional: Vec::new(),
             active_type_params: Vec::new(),
             merged_interface_parts: FxHashMap::default(),
             class_interface_parts: FxHashMap::default(),
@@ -1067,6 +1074,30 @@ impl<'a> TypeNamespace<'a> {
         }
     }
 
+    pub fn enter_conditional_true(&mut self, checked: TypeId, extends: TypeId) {
+        self.narrowed_by_conditional.push((checked, extends));
+    }
+
+    pub fn leave_conditional_true(&mut self) {
+        self.narrowed_by_conditional.pop();
+    }
+
+    // What the enclosing conditional types say `argument` is: the `extends` types of those whose
+    // checked type is `argument`.
+    pub fn narrowed_to(&self, arena: &TypeArena, argument: TypeId) -> Vec<TypeId> {
+        self.narrowed_by_conditional
+            .iter()
+            .filter(|(checked, _)| {
+                *checked == argument || arena.get(*checked) == arena.get(argument)
+            })
+            .map(|(_, extends)| *extends)
+            .collect()
+    }
+
+    pub fn note_satisfied_by_conditional(&mut self, span: Span) {
+        self.satisfied_by_conditional.push(span.start);
+    }
+
     pub fn note_constraint_violation(
         &mut self,
         parameter_name: &str,
@@ -1086,7 +1117,10 @@ impl<'a> TypeNamespace<'a> {
     }
 
     pub fn take_constraint_violations(&mut self) -> Vec<(String, TypeId, TypeId, Span)> {
-        std::mem::take(&mut self.constraint_violations)
+        let satisfied = std::mem::take(&mut self.satisfied_by_conditional);
+        let mut violations = std::mem::take(&mut self.constraint_violations);
+        violations.retain(|(_, _, _, span)| !satisfied.contains(&span.start));
+        violations
     }
 
     pub fn take_type_argument_issues(&mut self) -> Vec<TypeArgumentIssue> {

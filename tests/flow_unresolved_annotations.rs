@@ -281,3 +281,22 @@ fn a_number_is_assignable_to_a_mixed_enum_and_to_a_union_with_an_enum() {
         "{found:?}"
     );
 }
+
+// In the true branch of `C extends X ? ... : ...`, `C` is also an `X`, so it satisfies a bound that
+// `X` satisfies: `Parameters<V>` there is fine, whether `C` is a type parameter or `T[K]`. In the
+// false branch, or when `X` does not satisfy the bound, it is still TS2344. Compared with tsc 6.0.3:
+// lines 4, 5 and 6 are reported (4 is the false branch); line 1 declares `Parameters` as the
+// library does.
+#[test]
+fn a_conditional_true_branch_satisfies_a_bound_its_check_type_was_tested_against() {
+    let source = "type Parameters<T extends (...args: any) => any> = T extends (...args: infer P) => any ? P : never;\ntype A<V> = V extends (...a: any[]) => any ? Parameters<V> : never;\ntype B<T> = { [K in keyof T]: T[K] extends (...a: any[]) => void ? (...a: Parameters<T[K]>) => void : void };\ntype C<V> = V extends string ? never : Parameters<V>;\ntype D<V> = V extends string ? Parameters<V> : never;\ntype E<V> = V extends (() => any) ? Parameters<V[]> : never;\ntype U = [A<() => void>, B<{ f: () => void }>, C<number>, D<number>, E<() => void>];\n";
+    let ctx = UnitContext::new(FileId::ROOT, "t.ts", source).with_options(CheckOptions::default());
+    let outcome = Worker::new().check_unit(&ctx).expect("the unit checks");
+    let lines: Vec<usize> = outcome
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::TypeArgumentConstraintViolation)
+        .map(|d| source[..d.start as usize].matches('\n').count() + 1)
+        .collect();
+    assert_eq!(lines, vec![4, 5, 6], "{:?}", outcome.diagnostics);
+}
