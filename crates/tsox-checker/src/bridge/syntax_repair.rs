@@ -213,6 +213,26 @@ fn rule_for(text: &str, start: usize, end: usize, message: &str) -> Option<Rule>
         "An index signature must have a type annotation." => {
             index_signature_without_type(text, start, end)
         }
+        "Expected `,` or `}` but found `?`" if text.get(start..end) == Some("?") => member_marker(
+            start,
+            end,
+            Code::ObjectMemberOptional,
+            "An object member cannot be declared optional.",
+        ),
+        "Expected `,` or `}` but found `!`" if text.get(start..end) == Some("!") => member_marker(
+            start,
+            end,
+            Code::DefiniteAssignmentNotPermitted,
+            "A definite assignment assertion '!' is not permitted in this context.",
+        ),
+        "Expected `,` or `}` but found `:`" | "Expected `,` or `}` but found `;`"
+            if matches!(text.get(start..end), Some(":" | ";"))
+                && super::syntax_errors::inside_enum(text, start) =>
+        {
+            enum_member_separator(start, end)
+        }
+        "Expected `)` but found `=`" => catch_initializer(text, start),
+        "Expected `,` or `]` but found `=`" => index_signature_initializer(text, start),
         "A rest parameter must be last in a parameter list" => rest_parameter_not_last(text, start),
         "Cannot assign to this expression" => assignment_target(text, start, end),
         "An enum member cannot have a numeric name." => enum_numeric_name(text, start, end),
@@ -233,7 +253,12 @@ fn element_without_argument(text: &str, start: usize, end: usize) -> Option<Rule
         return None;
     }
     at -= 1;
+    // The expression and its `[` are on one line: `a: B` then `[]` on the next line is a type
+    // followed by an index signature, which tsc reports as TS1096.
     while at > 0 && bytes[at - 1].is_ascii_whitespace() {
+        if bytes[at - 1] == b'\n' {
+            return None;
+        }
         at -= 1;
     }
     let chain_end = at;
@@ -241,6 +266,13 @@ fn element_without_argument(text: &str, start: usize, end: usize) -> Option<Rule
         at -= 1;
     }
     let chain = text.get(at..chain_end)?;
+    let mut annotated = at;
+    while annotated > 0 && matches!(bytes[annotated - 1], b' ' | b'\t') {
+        annotated -= 1;
+    }
+    if annotated > 0 && bytes[annotated - 1] == b':' {
+        return None;
+    }
     if chain.is_empty()
         || chain.starts_with(|c: char| c.is_ascii_digit() || c == '.')
         || chain.ends_with('.')
@@ -434,6 +466,18 @@ fn assignment_target(text: &str, start: usize, end: usize) -> Option<Rule> {
     if *operator == "=" && (after.starts_with("==") || after.starts_with("=>")) {
         return None;
     }
+    // `await using [a] = x` is a declaration, not an assignment.
+    if before.ends_with("using") {
+        return None;
+    }
+    // tsc checks an arithmetic compound assignment's left operand before its target: `this *= 1`
+    // is TS2362, not TS2364. Only a number literal is known to pass that check from the text.
+    let number = left.trim_matches(|c| c == '(' || c == ')' || c == ' ');
+    if *operator != "="
+        && !(!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit() || b == b'.'))
+    {
+        return None;
+    }
     Some(Rule {
         start,
         end,
@@ -446,6 +490,129 @@ fn assignment_target(text: &str, start: usize, end: usize) -> Option<Rule> {
             ),
             start,
             end,
+        },
+    })
+}
+
+// `{ a?: 1 }`, `{ f?() {} }`, `{ a? }`, `{ a! }`: tsc reports the marker (TS1162, TS1255) and keeps
+// the member without it, so the marker goes.
+fn member_marker(start: usize, end: usize, code: Code, text: &str) -> Option<Rule> {
+    Some(Rule {
+        start,
+        end,
+        with: String::new(),
+        note: Note {
+            message: messages::syntax(code, text.to_string()),
+            start,
+            end,
+        },
+    })
+}
+
+// `enum E { a: 1 }`: tsc reports TS1357 on the `:` and goes on as if it were a `,`, so `1` is
+// the next member (and TS2452 reports its numeric name).
+fn enum_member_separator(start: usize, end: usize) -> Option<Rule> {
+    Some(Rule {
+        start,
+        end,
+        with: ",".to_string(),
+        note: Note {
+            message: messages::syntax(
+                Code::EnumMemberSeparator,
+                "An enum member name must be followed by a ',', '=', or '}'.".to_string(),
+            ),
+            start,
+            end,
+        },
+    })
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
+}
+
+// `catch (e = 1) {}`: tsc reports TS1197 on the initializer and drops it.
+fn catch_initializer(text: &str, start: usize) -> Option<Rule> {
+    if text.get(start..start + 1)? != "=" {
+        return None;
+    }
+    let before = text.get(..start)?.trim_end();
+    let name_start = before
+        .bytes()
+        .rposition(|b| !is_ident_byte(b))
+        .map_or(0, |i| i + 1);
+    if name_start == before.len() {
+        return None;
+    }
+    let head = before[..name_start].trim_end().strip_suffix('(')?;
+    head.trim_end().strip_suffix("catch")?;
+    let mut depth = 0usize;
+    let mut close = None;
+    for (offset, byte) in text.bytes().enumerate().skip(start + 1) {
+        match byte {
+            b'(' => depth += 1,
+            b')' if depth == 0 => {
+                close = Some(offset);
+                break;
+            }
+            b')' => depth -= 1,
+            _ => {}
+        }
+    }
+    let close = close?;
+    let initializer = &text[start + 1..close];
+    let lead = initializer.len() - initializer.trim_start().len();
+    let (from, to) = (
+        start + 1 + lead,
+        start + 1 + lead + initializer.trim().len(),
+    );
+    if from == to {
+        return None;
+    }
+    Some(Rule {
+        start,
+        end: close,
+        with: String::new(),
+        note: Note {
+            message: messages::syntax(
+                Code::CatchVariableInitializer,
+                "Catch clause variable cannot have an initializer.".to_string(),
+            ),
+            start: from,
+            end: to,
+        },
+    })
+}
+
+// `[a: number = 1]: number`: tsc reports TS1020 on the parameter name and drops the initializer.
+fn index_signature_initializer(text: &str, start: usize) -> Option<Rule> {
+    if text.get(start..start + 1)? != "=" {
+        return None;
+    }
+    let before = text.get(..start)?;
+    let open = before.rfind('[')?;
+    let inside = &before[open + 1..];
+    let (name, key_type) = inside.split_once(':')?;
+    if inside.contains(']') || !matches!(key_type.trim(), "string" | "number" | "symbol") {
+        return None;
+    }
+    let name_text = name.trim();
+    if name_text.is_empty() || !name_text.bytes().all(is_ident_byte) {
+        return None;
+    }
+    let close = start + text[start..].find(']')?;
+    let name_start = open + 1 + (name.len() - name.trim_start().len());
+    Some(Rule {
+        start: before.trim_end().len(),
+        end: close,
+        with: String::new(),
+        note: Note {
+            message: messages::syntax(
+                Code::IndexSignatureParameterInitializer,
+                "An index signature parameter cannot have an initializer.".to_string(),
+            ),
+            start: name_start,
+            end: name_start + name_text.len(),
         },
     })
 }

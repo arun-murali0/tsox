@@ -168,7 +168,17 @@ pub fn resolve_identifier_type(
 pub(in crate::bridge) fn is_library_type_only(name: &str) -> bool {
     matches!(
         name,
-        "Iterator"
+        // The type keywords are not values, so `new number[]` is TS2693, not an unknown name.
+        "string"
+            | "number"
+            | "boolean"
+            | "symbol"
+            | "bigint"
+            | "object"
+            | "any"
+            | "unknown"
+            | "never"
+            | "Iterator"
             | "Iterable"
             | "IterableIterator"
             | "AsyncIterator"

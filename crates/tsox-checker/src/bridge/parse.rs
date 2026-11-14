@@ -145,7 +145,16 @@ pub fn parse_with_syntax_errors<'a>(
     if attempt.gave_up {
         // Nothing is left to check, but the syntax errors tsc would report are still the
         // file's diagnostics.
+        // An error left over that tsox has no translation for is, more often than not, one tsc's
+        // parser reports, and that silences the grammar errors found so far.
+        let structural = attempt
+            .messages
+            .iter()
+            .filter(|m| m.starts_with("Unexpected") || m.starts_with("Expected"))
+            .count();
+        let unknown = structural > super::syntax_errors::parse_level_count(&attempt.syntax);
         let (mut syntax, offsets) = repairs.finish(attempt.syntax);
+        super::syntax_errors::silence_grammar_errors(&mut syntax, unknown);
         if !syntax.is_empty() {
             syntax.sort_by_key(|found| found.span.start);
             return Ok(Parsed {
@@ -172,6 +181,7 @@ pub fn parse_with_syntax_errors<'a>(
         "parsed successfully"
     );
     let (mut syntax, offsets) = repairs.finish(attempt.syntax);
+    super::syntax_errors::silence_grammar_errors(&mut syntax, false);
     syntax.sort_by_key(|found| found.span.start);
     Ok(Parsed {
         program: attempt.program,

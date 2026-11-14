@@ -37,12 +37,7 @@ pub fn translate(source: &str, message: &str, span: Span) -> Option<SyntaxDiagno
     {
         return None;
     }
-    // oxc says "must have a type annotation" for every index signature with none, but tsc checks
-    // the key first: a key that is optional (`[k?: string];`) is TS1019, and a key type that is
-    // not string, number or symbol (`[k: any];`) is TS1268. Only a plain valid key is TS1021.
-    if message == "An index signature must have a type annotation."
-        && !plain_index_key(source, span)
-    {
+    if message.starts_with("Expected `") && tsc_says_something_else(source, message, span) {
         return None;
     }
     Some(SyntaxDiagnostic {
@@ -51,22 +46,72 @@ pub fn translate(source: &str, message: &str, span: Span) -> Option<SyntaxDiagno
     })
 }
 
-/// Whether the index signature at `span` is `[name: string | number | symbol]`, the one shape
-/// where a missing value type is tsc's TS1021 and not a complaint about the key.
-pub(super) fn plain_index_key(source: &str, span: Span) -> bool {
-    let Some(text) = source.get(span.start as usize..) else {
+// Where oxc's "Expected X but found Y" is not tsc's TS1005. Each case was compared with tsc: an
+// optional (`?`) or definite (`!`) object member is TS1162 or TS1255, an enum member followed by
+// something other than `,`, `=` or `}` is TS1357, an empty or broken heritage clause is
+// TS1097 or TS1009, a function with no name is TS1003, and a comma in a computed name is TS1171.
+fn tsc_says_something_else(source: &str, message: &str, span: Span) -> bool {
+    let at = span.start as usize;
+    if message.ends_with("but found `?`") || message.ends_with("but found `!`") {
+        return true;
+    }
+    if message.starts_with("Expected `,`")
+        && (message.ends_with("but found `:`") || message.ends_with("but found `;`"))
+    {
+        return inside_enum(source, at);
+    }
+    if message.starts_with("Expected `{`") {
+        // A class header with a broken heritage clause: `class C extends {`, `class C extends A, {`.
+        if let Some(header) = source.get(..at).and_then(|before| {
+            let class = before.rfind("class")?;
+            Some(&before[class..])
+        }) {
+            let first_brace = header.find('{').unwrap_or(header.len());
+            let before_brace = header[..first_brace].trim_end();
+            let broken_end = first_brace == header.len()
+                || ["extends", "implements", ","]
+                    .iter()
+                    .any(|end| before_brace.ends_with(end));
+            return broken_end && (header.contains("extends") || header.contains("implements"));
+        }
+    }
+    if message.starts_with("Expected `(`") {
+        return source
+            .get(..at)
+            .is_some_and(|before| before.trim_end().ends_with("function"));
+    }
+    message.starts_with("Expected `]`") && message.ends_with("but found `,`")
+}
+
+/// Whether the innermost `{` open before `at` is the body of an `enum`. Braces in strings and
+/// comments are counted like any other, so a stray one can make this answer wrongly; the caller
+/// only uses it to decline a translation.
+pub(super) fn inside_enum(source: &str, at: usize) -> bool {
+    let Some(before) = source.get(..at) else {
         return false;
     };
-    let Some(rest) = text.strip_prefix('[') else {
-        return false;
-    };
-    let Some(close) = rest.find(']') else {
-        return false;
-    };
-    let Some((name, key_type)) = rest[..close].split_once(':') else {
-        return false;
-    };
-    !name.contains('?') && matches!(key_type.trim(), "string" | "number" | "symbol")
+    let mut depth = 0usize;
+    for (index, byte) in before.bytes().enumerate().rev() {
+        match byte {
+            b'}' => depth += 1,
+            b'{' if depth == 0 => {
+                let head = before[..index].trim_end();
+                let name_start = head
+                    .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+                    .map_or(0, |i| i + 1);
+                let keyword = head[..name_start].trim_end();
+                return !head[name_start..].is_empty()
+                    && keyword.ends_with("enum")
+                    && keyword[..keyword.len() - 4]
+                        .chars()
+                        .next_back()
+                        .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '$'));
+            }
+            b'{' => depth -= 1,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn translate_message(message: &str) -> Option<DiagnosticMessage> {
@@ -162,9 +207,6 @@ fn translate_message(message: &str) -> Option<DiagnosticMessage> {
             Code::RestElementNotLast,
             "A rest element must be last in a destructuring pattern.",
         ),
-        "An index signature must have a type annotation." => {
-            same(Code::IndexSignatureNeedsType, message)
-        }
         "An index signature parameter cannot have a question mark." => {
             same(Code::IndexSignatureOptionalParameter, message)
         }
@@ -185,4 +227,43 @@ fn translate_message(message: &str) -> Option<DiagnosticMessage> {
         }
         _ => None,
     }
+}
+
+// tsc reports its grammar errors (the checker's modifier, parameter, member and statement rules)
+// only for a file whose parser reported nothing: one parse error anywhere in the file silences all
+// of them. These are the tsc codes the parser itself reports.
+const PARSE_LEVEL: [u32; 7] = [1003, 1005, 1011, 1109, 1128, 1200, 1357];
+// And these are the grammar errors that go quiet. Errors tsc reports from its ordinary checks
+// (TS2364, TS2452, TS2462, TS2356, TS2357, TS2406, TS2487) are not silenced.
+const GRAMMAR_LEVEL: [u32; 36] = [
+    1014, 1015, 1019, 1020, 1021, 1028, 1029, 1030, 1031, 1034, 1038, 1042, 1070, 1071, 1089, 1098,
+    1099, 1103, 1108, 1147, 1155, 1162, 1163, 1164, 1182, 1187, 1197, 1242, 1243, 1255, 1308, 1319,
+    17006, 1100, 1101, 1102,
+];
+
+/// Drops the grammar errors tsc would not report: where the file has a parse error tsc reports
+/// (one among `syntax`, or `unknown_parse_error` for one tsox cannot translate).
+pub fn silence_grammar_errors(syntax: &mut Vec<SyntaxDiagnostic>, unknown_parse_error: bool) {
+    let code = |found: &SyntaxDiagnostic| found.message.code.tsc_code();
+    let parse_error = unknown_parse_error
+        || syntax
+            .iter()
+            .any(|found| code(found).is_some_and(|c| PARSE_LEVEL.contains(&c)));
+    if parse_error {
+        syntax.retain(|found| !code(found).is_some_and(|c| GRAMMAR_LEVEL.contains(&c)));
+    }
+}
+
+/// How many of `syntax` are errors tsc's parser reports.
+pub fn parse_level_count(syntax: &[SyntaxDiagnostic]) -> usize {
+    syntax
+        .iter()
+        .filter(|found| {
+            found
+                .message
+                .code
+                .tsc_code()
+                .is_some_and(|c| PARSE_LEVEL.contains(&c))
+        })
+        .count()
 }

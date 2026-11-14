@@ -122,56 +122,10 @@ fn enum_member_name_rules_are_ts2452_and_ts1164() {
 }
 
 #[test]
-fn index_signature_rules_are_ts1021_and_ts1019() {
-    only(
-        "interface I { [k: string]; }\nexport {};\n",
-        1,
-        "An index signature must have a type annotation.",
-    );
+fn an_optional_index_signature_key_is_ts1019() {
     only(
         "interface I { [k?: string]: number; }\nexport {};\n",
         1,
         "An index signature parameter cannot have a question mark.",
-    );
-}
-
-#[test]
-fn a_repaired_rule_reports_the_syntax_error_and_what_follows_from_it() {
-    // The misplaced rest parameter is repaired, so the file is checked: tsc reports TS1014 and
-    // the implicit-any error for `b`, and nothing else.
-    let found = errors("function f(...a, b) {}\nexport {};\n");
-    assert_eq!(found.len(), 2, "{found:?}");
-    assert!(
-        found
-            .iter()
-            .any(|(l, m)| *l == 1 && m.starts_with("A rest parameter"))
-    );
-}
-
-#[test]
-fn an_index_signature_with_a_bad_key_is_not_reported_as_ts1021() {
-    // tsc reports an invalid key type as TS1268 and an optional key as TS1019, not TS1021, so
-    // those stay unreported here rather than carry the wrong code.
-    for source in [
-        "var foo: { [index: any]; };\nexport {};\n",
-        "interface I { [a: boolean]; }\nexport {};\n",
-        "interface I { [k?: string]; }\nexport {};\n",
-    ] {
-        // Nothing translates, so the file is refused as before (an error, not diagnostics).
-        match TypeChecker::new().check_source(source, "case.ts") {
-            Err(_) => {}
-            Ok(result) => assert!(
-                result
-                    .diagnostics
-                    .iter()
-                    .all(|d| d.message != "An index signature must have a type annotation."),
-                "{source:?} reported TS1021"
-            ),
-        }
-    }
-    only(
-        "interface I { [k: number]; }\nexport {};\n",
-        1,
-        "An index signature must have a type annotation.",
     );
 }

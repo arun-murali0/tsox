@@ -182,6 +182,128 @@ fn an_increment_of_a_non_reference_is_left_alone() {
     }
 }
 
+// More repairs, each compared with tsc 6.0.3 for code, text and line, with the rest of the file
+// still checked (the `let z: number = "s"` line).
+
+const TAIL: &str = "let z: number = \"s\";\n";
+
+fn with_tail(source: &str) -> String {
+    format!("{source}{TAIL}")
+}
+
+#[test]
+fn an_optional_object_member_is_ts1162_and_the_file_is_still_checked() {
+    let found = error_lines(&with_tail("var v = { foo?() { } };\nvar w = { x ?: 1 };\n"));
+    let optional = "An object member cannot be declared optional.";
+    assert!(has(&found, 1, optional), "{found:?}");
+    assert!(has(&found, 2, optional), "{found:?}");
+    assert!(has(&found, 3, TS2322), "{found:?}");
+}
+
+#[test]
+fn a_definite_assertion_on_an_object_member_is_ts1255() {
+    let found = error_lines(&with_tail("let a = 1;\nconst foo = { a! };\n"));
+    assert!(
+        has(
+            &found,
+            2,
+            "A definite assignment assertion '!' is not permitted in this context."
+        ),
+        "{found:?}"
+    );
+    assert!(has(&found, 3, TS2322), "{found:?}");
+}
+
+#[test]
+fn an_enum_member_followed_by_a_colon_is_ts1357_and_its_value_is_the_next_member() {
+    let found = error_lines(&with_tail("enum E3 { a: 1, b }\n"));
+    assert!(
+        has(
+            &found,
+            1,
+            "An enum member name must be followed by a ',', '=', or '}'."
+        ),
+        "{found:?}"
+    );
+    assert!(
+        has(&found, 1, "An enum member cannot have a numeric name."),
+        "{found:?}"
+    );
+    assert!(has(&found, 2, TS2322), "{found:?}");
+}
+
+#[test]
+fn a_catch_clause_initializer_is_ts1197_and_is_dropped() {
+    let found = error_lines(&with_tail("try {} catch (e = 1) { }\n"));
+    assert!(
+        has(
+            &found,
+            1,
+            "Catch clause variable cannot have an initializer."
+        ),
+        "{found:?}"
+    );
+    assert!(has(&found, 2, TS2322), "{found:?}");
+}
+
+#[test]
+fn an_index_signature_parameter_initializer_is_ts1020() {
+    let found = error_lines(&with_tail("interface I { [a: number = 1]: number; }\n"));
+    assert!(
+        has(
+            &found,
+            1,
+            "An index signature parameter cannot have an initializer."
+        ),
+        "{found:?}"
+    );
+    assert!(has(&found, 2, TS2322), "{found:?}");
+}
+
+#[test]
+fn a_compound_assignment_to_a_non_number_is_left_for_the_arithmetic_rule() {
+    // tsc reports `this *= 1` as TS2362 (the left side of an arithmetic operation), never TS2364,
+    // so this repair only takes `=` and number literals.
+    for source in ["this *= 1;\n", "true **= 1;\n"] {
+        if let Ok(result) = TypeChecker::new().check_source(source, "case.ts") {
+            assert!(
+                result.diagnostics.iter().all(|d| d.message != TS2364),
+                "{source:?} reported TS2364"
+            );
+        }
+    }
+    let found = error_lines("1 >>= 2;\n");
+    assert!(has(&found, 1, TS2364), "{found:?}");
+}
+
+#[test]
+fn grammar_errors_are_silenced_in_a_file_with_a_parse_error() {
+    // tsc reports its grammar errors (TS1014 here) only for a file its parser found nothing in. This
+    // file has a missing `)` as well, which is a parse error, so TS1014 is not reported.
+    // The file is refused outright (nothing translates), which is also "not reported".
+    if let Ok(result) =
+        TypeChecker::new().check_source("function f(...a, b) {}\nvar x = (1 + ;\n", "case.ts")
+    {
+        assert!(
+            result.diagnostics.iter().all(|d| d.message != TS1014),
+            "TS1014 should be silenced"
+        );
+    }
+}
+
+#[test]
+fn a_type_keyword_used_as_a_value_is_ts2693() {
+    let found = error_lines("var results = number[];\n");
+    assert!(
+        has(
+            &found,
+            1,
+            "'number' only refers to a type, but is being used as a value here."
+        ),
+        "{found:?}"
+    );
+}
+
 #[test]
 fn repairs_of_different_kinds_in_one_file_each_report_at_their_own_line() {
     // Compared with tsc 6.0.3: the parser's TS1011 on line 2 hides the checker's grammar error
