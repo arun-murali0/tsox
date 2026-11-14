@@ -205,3 +205,15 @@ fn a_property_typed_by_this_or_named_by_a_computed_key_is_reported() {
         "{found:?}"
     );
 }
+
+// A `var` with an initializer is tracked: a path that skips the declaration reaches a later read
+// with the variable unassigned, and tsc reports it against the inferred type. Not reported, as in
+// tsc: a conditional or literal-typed initializer on every path, `null` (an evolving type), a
+// read inside the variable's own initializer, a variable whose first declaration is ambient, and
+// a `for (var i in ...)` head over a variable declared again by a later `for (var i = 0; ...)`.
+// Compared with tsc 6.0.3: lines 2, 3 and 7.
+#[test]
+fn a_var_with_an_initializer_is_reported_when_a_path_skips_the_declaration() {
+    let source = "declare function use(a: any): void;\nfunction a1(x) { for (let y = 0; y < 1; ++y) { var v = y; } use(v); }\nfunction a2(c: boolean) { if (c) { var o = { a: 1 }; } use(o); }\nfunction a3(c: boolean) { var u = c ? 1 : 2; use(u); }\nfunction a4(c: boolean) { if (c) { var z = null; } use(z); }\nfunction a5() { var a = { f: a }; }\nfunction a6(c: boolean) { use(h); var h = 1; }\ndeclare var t1: [number];\nvar t1 = t1;\nfunction a7(chars: number[]) { for (var i in chars) { use(i); } for (var i = 0; i < 1; i++) { } }\n";
+    assert_eq!(unassigned_lines(source), vec![2, 3, 7]);
+}

@@ -467,6 +467,11 @@ struct Analyzer<'s> {
     in_for_head: bool,
     // For each enclosing `for (let x in a)`: the symbol of `x` and of `a`. See `visit_computed_member_expression`.
     for_in_keys: Vec<(SymbolId, SymbolId)>,
+    // Variables whose initializer is being visited: a read there is of a type still being resolved.
+    initializing: Vec<SymbolId>,
+    // Variables with an ambient (`declare var`) declaration: tsc judges a variable by its first
+    // declaration, so a later one in the same file does not make it a candidate.
+    ambient_vars: HashSet<SymbolId>,
     in_export: bool,
     // The variables something assigns with a plain `x = ...`, a logical assignment, a destructuring
     // or a loop head: tsc's "definite" assignment, as opposed to `x += 1` and `x++`. Learned in
@@ -519,6 +524,8 @@ impl<'s> Analyzer<'s> {
             declaration: None,
             in_for_head: false,
             for_in_keys: Vec::new(),
+            initializing: Vec::new(),
+            ambient_vars: HashSet::new(),
             in_export: false,
             definite,
             frames: Vec::new(),
@@ -1372,6 +1379,11 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
         let Some(symbol) = reference.symbol_id() else {
             return;
         };
+        // `var a = { f: a }`: reading a variable inside its own initializer. Its type is circular,
+        // which tsc resolves to `any` (and reports as TS7022), so there is nothing unassigned.
+        if self.initializing.contains(&symbol) {
+            return;
+        }
         let Some(tracked) = self.tracked.get(&symbol).copied() else {
             return;
         };
@@ -1404,25 +1416,53 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
     // assigned until something assigns it, and a declaration met again (in a loop body) starts it
     // over.
     fn visit_variable_declarator(&mut self, declarator: &oxc_ast::ast::VariableDeclarator<'a>) {
+        let binding_symbol = match &declarator.id {
+            BindingPattern::BindingIdentifier(binding) => binding.symbol_id.get(),
+            _ => None,
+        };
         if let Some(init) = &declarator.init {
+            self.initializing.extend(binding_symbol);
             self.visit_expression(init);
+            if binding_symbol.is_some() {
+                self.initializing.pop();
+            }
         }
         self.visit_binding_pattern(&declarator.id);
         let Some((kind, declare)) = self.declaration else {
             return;
         };
-        let trackable = declarator.init.is_none()
-            && !declarator.definite
+        if let Some(symbol) = binding_symbol {
+            if declare {
+                self.ambient_vars.insert(symbol);
+            } else if self.ambient_vars.contains(&symbol) {
+                return;
+            }
+        }
+        // A `var` with an initializer is tracked too: the declaration assigns it, but a path that
+        // skips the declaration (a loop that may run zero times, an untaken branch) reaches a
+        // later read with it unassigned, and tsc reports that against the inferred type.
+        let trackable = !declarator.definite
             && !declare
             && !self.in_for_head
-            && matches!(
-                kind,
-                VariableDeclarationKind::Let | VariableDeclarationKind::Var
-            )
-            && declarator.type_annotation.is_some();
+            && match kind {
+                VariableDeclarationKind::Let => {
+                    declarator.init.is_none() && declarator.type_annotation.is_some()
+                }
+                // `var x = null` has an evolving type in tsc, not the type `null`, and is not
+                // reported.
+                VariableDeclarationKind::Var => {
+                    declarator.type_annotation.is_some()
+                        || declarator
+                            .init
+                            .as_ref()
+                            .is_some_and(|init| !matches!(init, Expression::NullLiteral(_)))
+                }
+                _ => false,
+            };
         if !trackable {
             // `var m: T; var m = value;` declares `m` twice: the second declaration assigns it.
-            if declarator.init.is_some()
+            // So does the head of a `for (var m in ...)` over a variable declared elsewhere.
+            if (declarator.init.is_some() || self.in_for_head)
                 && let BindingPattern::BindingIdentifier(binding) = &declarator.id
                 && let Some(symbol) = binding.symbol_id.get()
                 && let Some(tracked) = self.tracked.get(&symbol).copied()
@@ -1451,15 +1491,21 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
             declaration_start: declarator.span.start,
             function: self.function,
             mutable_local,
-            allows_unassigned: declarator.type_annotation.as_ref().and_then(|annotation| {
-                annotation_allows_unassigned(
+            allows_unassigned: match (&declarator.type_annotation, &declarator.init) {
+                (Some(annotation), _) => annotation_allows_unassigned(
                     &annotation.type_annotation,
                     self.scoping,
                     &self.namespaces,
-                )
-            }),
+                ),
+                (None, Some(init)) => initializer_excludes_undefined(init).then_some(false),
+                (None, None) => None,
+            },
         });
-        self.st.assigned.clear(tracked.index);
+        if declarator.init.is_some() {
+            self.st.assigned.set(tracked.index);
+        } else {
+            self.st.assigned.clear(tracked.index);
+        }
     }
 
     // The one hook every statement list goes through. Walks the list in order and groups the
@@ -1971,6 +2017,29 @@ fn qualified_name_is_non_nullable(
         }
     }
     None
+}
+
+// An initializer whose value is never `undefined`, so a variable declared by it has a type that
+// does not allow `undefined` even where the checker has no type for it: a literal, an object,
+// an array, a function, a class, a `new`. Anything else (a name, a call) says nothing here.
+fn initializer_excludes_undefined(init: &Expression<'_>) -> bool {
+    match init {
+        Expression::ParenthesizedExpression(inner) => {
+            initializer_excludes_undefined(&inner.expression)
+        }
+        Expression::NumericLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::BigIntLiteral(_)
+        | Expression::TemplateLiteral(_)
+        | Expression::ObjectExpression(_)
+        | Expression::ArrayExpression(_)
+        | Expression::FunctionExpression(_)
+        | Expression::ArrowFunctionExpression(_)
+        | Expression::ClassExpression(_)
+        | Expression::NewExpression(_) => true,
+        _ => false,
+    }
 }
 
 // The statements tsc extends the position of an assignment over: its `extendAssignmentPosition`.
