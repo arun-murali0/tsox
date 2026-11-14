@@ -1248,8 +1248,13 @@ fn declare_enum(decl: &oxc_ast::ast::TSEnumDeclaration, ctx: &mut CheckContext<'
     // a value position, it means an object whose properties are its members. Both
     // are built from the same resolved member list. Ambient enum declarations can
     // merge when their members do not collide, so preserve both halves.
+    // Only an enum of the same scope merges: a top-level `enum A` is not the previous block of
+    // `A` inside `namespace N`.
     let previous_enum = match ctx.namespace.resolve(&decl.id.name, &mut ctx.arena) {
-        crate::namespace::Resolution::Resolved(existing) if ctx.arena.is_enum(existing) => {
+        crate::namespace::Resolution::Resolved(existing)
+            if ctx.arena.is_enum(existing)
+                && ctx.namespace.is_declared_in_current_scope(&decl.id.name) =>
+        {
             Some(existing)
         }
         _ => None,

@@ -318,3 +318,34 @@ fn typeof_narrows_a_type_parameter_to_an_intersection_with_the_primitive() {
         "{found:?}"
     );
 }
+
+// Two different enums are related by name and members, as tsc's `enumRelatedTo` has it: the same
+// name (`E` in two namespaces) with every member of the source in the target at the same value.
+// `Abcd.E` has a member `d` the target lacks, `Cd.E` has `c` at a different value, `Nope` has
+// another name, and a string enum is not another string enum. Compared with tsc 6.0.3: lines 10,
+// 12, 13 and 17.
+#[test]
+fn two_enums_are_related_by_name_and_members() {
+    let source = "namespace First { export enum E { a, b, c } }\nnamespace Abc { export enum E { a, b, c } export enum Nope { a, b, c } }\nnamespace Abcd { export enum E { a, b, c, d } }\nnamespace Ab { export enum E { a, b } }\nnamespace Cd { export enum E { c, d } }\ndeclare var f: First.E; declare var abc: Abc.E; declare var abcd: Abcd.E;\ndeclare var ab: Ab.E; declare var cd: Cd.E; declare var nope: Abc.Nope;\nf = abc;\nabc = f;\nf = abcd;\nf = ab;\nf = cd;\nf = nope;\nf = f;\nenum S1 { X = \"x\" } enum S2 { X = \"x\" }\ndeclare var s1: S1; declare var s2: S2;\ns1 = s2;\n";
+    let found = errors(source);
+    assert_eq!(
+        lines_of(&found, "is not assignable to type"),
+        vec![10, 12, 13, 17],
+        "{found:?}"
+    );
+}
+
+// An enum declared in a namespace has a type: `N.E` was registered as `N.N.E`, never found, and
+// read as an error type, which silences every check on it. An enum of the same name at the top
+// level is not an earlier block of it, so they stay two enums. Compared with tsc 6.0.3: lines 3,
+// 6, 8 and 9.
+#[test]
+fn an_enum_in_a_namespace_is_typed_and_does_not_merge_with_a_top_level_one() {
+    let source = "enum A { x, y } enum B { x, y }\ndeclare var a: A; declare var b: B;\na = b;\nnamespace N { export enum A { x, y } export enum C { x, y } }\ndeclare var na: N.A; declare var nc: N.C;\nna = nc;\na = na;\nnamespace M { enum Q { x } enum R { x } declare var q: Q; declare var r: R; q = r; }\ndeclare var s: string; var t: string = na;\n";
+    let found = errors(source);
+    assert_eq!(
+        lines_of(&found, "is not assignable to type"),
+        vec![3, 6, 8, 9],
+        "{found:?}"
+    );
+}

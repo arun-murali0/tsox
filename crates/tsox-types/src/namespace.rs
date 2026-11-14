@@ -1336,11 +1336,18 @@ impl<'a> TypeNamespace<'a> {
     // An enum is registered already resolved, since its member types are built
     // eagerly. Unlike insert_resolved it is a user-written declaration, so it takes
     // part in duplicate detection.
+    // Whether `name` is already declared in the scope being filled, not in an enclosing one:
+    // a declaration merges only with another of the same scope.
+    pub fn is_declared_in_current_scope(&self, name: &str) -> bool {
+        self.entries.contains_key(&self.qualify(name))
+    }
+
     pub fn insert_enum(&mut self, name: &str, type_id: TypeId, span: Span) {
         let qualified = self.qualify(name);
-        let name = qualified.as_str();
-        self.note_collision(name, NewKind::Enum, span);
-        self.remember_declaration(name, span);
+        self.note_collision(&qualified, NewKind::Enum, span);
+        self.remember_declaration(&qualified, span);
+        // `insert_resolved` qualifies the name itself: given the qualified one, an enum in a
+        // namespace was registered as `N.N.E`, `N.E` was never found, and it read as an error type.
         self.insert_resolved(name, type_id);
     }
 

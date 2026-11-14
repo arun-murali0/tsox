@@ -284,6 +284,8 @@ pub struct TypeArena {
     // literals like an alias of one does, but tsc treats it as a primitive and does not
     // elaborate a mismatch below it, so the two have to be told apart.
     enum_types: Vec<TypeId>,
+    // Each enum type by name and members, for the relation between two enums (`enum_related`).
+    enum_members: FxHashMap<TypeId, (String, Vec<(String, TypeId)>)>,
 
     // What a Ref reads as while its declaration has no body. Kept here so get() can hand
     // out a reference to it instead of building one per call.
@@ -321,6 +323,7 @@ impl TypeArena {
             variance_active: RefCell::new(Vec::new()),
             enum_name_slots: Vec::new(),
             enum_types: Vec::new(),
+            enum_members: FxHashMap::default(),
             empty_object: Type::Object(ObjectType::new(Vec::new())),
         };
 
@@ -1238,6 +1241,8 @@ impl TypeArena {
         self.enum_name_slots.push(type_name);
         let type_position = self.alloc_named(type_name, union);
         self.mark_enum(type_position);
+        self.enum_members
+            .insert(type_position, (name.to_string(), members.clone()));
 
         // A member read off the enum (`Color.Red`) prints as `Color` in a message, the way
         // tsc widens an enum literal when it is the source of a mismatch, so each member's
@@ -1269,6 +1274,42 @@ impl TypeArena {
 
     pub fn is_enum(&self, type_id: TypeId) -> bool {
         self.enum_types.contains(&type_id)
+    }
+
+    // The relation between two different enum types, tsc's `enumRelatedTo`: the same name (`E` in
+    // two namespaces) and every member of the source in the target with the same value. `None`
+    // when either is not an enum, for the caller to relate them as it relates any two types.
+    pub fn enum_related(&self, source: TypeId, target: TypeId) -> Option<bool> {
+        let (source_name, source_members) = self.enum_entry(source)?;
+        let (target_name, target_members) = self.enum_entry(target)?;
+        if source_name != target_name {
+            return Some(false);
+        }
+        Some(source_members.iter().all(|(name, value)| {
+            target_members
+                .iter()
+                .any(|(other, other_value)| other == name && other_value == value)
+        }))
+    }
+
+    // The enum a type stands for, looking through the name it may be wrapped in: an enum in a
+    // namespace is read as `First.E`, a wrapper around the enum's own type.
+    fn enum_entry(&self, type_id: TypeId) -> Option<&(String, Vec<(String, TypeId)>)> {
+        let mut current = type_id;
+        for _ in 0..8 {
+            if let Some(entry) = self.enum_members.get(&current) {
+                return Some(entry);
+            }
+            match &self.types[current.0 as usize] {
+                Type::Named(_, body) => current = *body,
+                Type::Ref(slot) => match self.decls[slot.0 as usize].state {
+                    DeclState::Resolved(body) => current = body,
+                    _ => return None,
+                },
+                _ => return None,
+            }
+        }
+        None
     }
 
     // Whether a `number` may be assigned to `target` because of an enum: the target is an enum with
@@ -1609,6 +1650,7 @@ impl TypeArena {
         self.variance_cache.get_mut().clear();
         self.variance_active.get_mut().clear();
         self.enum_types.clear();
+        self.enum_members.clear();
         self.builtin_slots.clear();
         self.interned.clear();
         self.collided.clear();
