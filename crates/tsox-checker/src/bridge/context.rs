@@ -54,6 +54,8 @@ pub struct CheckContext<'ast, 'src> {
     pub symbols: SymbolTypeMap,
     pub diagnostics: Vec<Diagnostic>,
     pub file_name: &'src str,
+    // The source text of the unit being checked, for a message that quotes it (empty until set).
+    pub source_text: &'src str,
     // The compiler options this unit is checked under (see check_options.rs).
     pub options: crate::check_options::CheckOptions,
 
@@ -511,6 +513,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             symbols: SymbolTypeMap::new(),
             diagnostics: Vec::new(),
             file_name,
+            source_text: "",
             options: crate::check_options::CheckOptions::default(),
             narrow: NarrowState::new(),
             flow: crate::reachability::Reachability::default(),

@@ -352,7 +352,9 @@ fn report_uninitialized_properties(
         return;
     }
 
-    let assigned_names = super::super::declare::find_constructor_body(class)
+    let constructor_body = super::super::declare::find_constructor_body(class);
+    let has_constructor_body = constructor_body.is_some();
+    let assigned_names = constructor_body
         .map(|body| definitely_assigned_names(&body.statements))
         .unwrap_or_default();
 
@@ -375,8 +377,23 @@ fn report_uninitialized_properties(
         // `#name` is reported like a plain name, with the `#` in it, and assigned the same
         // way (`this.#name = ...`).
         let (key_name, key_span) = match &prop.key {
-            PropertyKey::StaticIdentifier(key) => (key.name.to_string(), key.span),
+            PropertyKey::StaticIdentifier(key) if !prop.computed => {
+                (key.name.to_string(), key.span)
+            }
             PropertyKey::PrivateIdentifier(key) => (format!("#{}", key.name), key.span),
+            // A computed name is quoted as written, brackets included: `Property '[s]'`. A
+            // constructor could assign it as `this[s] = ...`, which is not followed here, so a
+            // class with a constructor body is left alone.
+            key if prop.computed && !has_constructor_body => {
+                let span = key.span();
+                let Some(text) = ctx.source_text.get(span.start as usize..span.end as usize) else {
+                    continue;
+                };
+                (
+                    format!("[{text}]"),
+                    oxc_span::Span::new(span.start.saturating_sub(1), span.end + 1),
+                )
+            }
             _ => continue,
         };
         let Some(annotation) = &prop.type_annotation else {
@@ -388,6 +405,14 @@ fn report_uninitialized_properties(
         let Some(declared) =
             resolve_type_annotation(annotation, &mut ctx.namespace, &mut ctx.arena)
         else {
+            // The checker cannot model the type, but some types never include `undefined`
+            // whatever they are made of: `this`, an array, a tuple, a function type.
+            if annotation_never_includes_undefined(&annotation.type_annotation) {
+                ctx.error(
+                    crate::diagnostic_messages::messages::property_not_initialized(&key_name),
+                    key_span,
+                );
+            }
             continue;
         };
 
@@ -399,6 +424,21 @@ fn report_uninitialized_properties(
             crate::diagnostic_messages::messages::property_not_initialized(&key_name),
             key_span,
         );
+    }
+}
+
+// An annotation that cannot be `undefined` however its parts resolve.
+fn annotation_never_includes_undefined(annotation: &oxc_ast::ast::TSType<'_>) -> bool {
+    use oxc_ast::ast::TSType;
+    match annotation {
+        TSType::TSThisType(_)
+        | TSType::TSArrayType(_)
+        | TSType::TSTupleType(_)
+        | TSType::TSFunctionType(_) => true,
+        TSType::TSParenthesizedType(inner) => {
+            annotation_never_includes_undefined(&inner.type_annotation)
+        }
+        _ => false,
     }
 }
 

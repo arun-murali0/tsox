@@ -136,6 +136,7 @@ pub fn check_file(
 
     let reusable_arena = std::mem::take(arena);
     let mut ctx = CheckContext::with_arena_and_file_id(file_name, file_id, reusable_arena);
+    ctx.source_text = source;
     ctx.cancel = cancel.cloned();
     ctx.imports = imports;
     ctx.options = options;

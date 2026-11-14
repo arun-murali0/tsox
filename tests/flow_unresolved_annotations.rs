@@ -184,3 +184,24 @@ fn a_redeclared_variable_is_assigned_and_a_for_in_key_read_is_not_reported() {
     let source = "declare function use(a: any): void;\nvar m: typeof Math;\nvar m = Math;\nuse(m.PI);\nlet a: Date[];\nfor (let x in a) { a[x]; }\nfor (var s in a) { a[s]; }\nlet i: string;\nfor (i in a) { a[i]; }\n";
     assert_eq!(unassigned_lines(source), vec![6, 7, 9, 9]);
 }
+
+// A property whose type the checker cannot model is still reported when the type is one that
+// cannot be `undefined` whatever its parts are: `this`, an array, a tuple, a function type. A
+// computed name is quoted as written. A class with a constructor body is left alone for a
+// computed name, since `this[s] = ...` is not followed. Compared with tsc 6.0.3: lines 3 to 9.
+#[test]
+fn a_property_typed_by_this_or_named_by_a_computed_key_is_reported() {
+    let source = "declare var s: string;\nclass C {\n  x: this;\n  a: this[];\n  b: [this, this];\n  f: () => void;\n  [s]: number;\n  [+s]: string;\n  [0]: number;\n  ok: this | undefined;\n  \"str\": number;\n}\nclass D { [s]: number; constructor() { } }\n";
+    let found = errors(source);
+    assert_eq!(
+        lines_of(&found, "has no initializer"),
+        vec![3, 4, 5, 6, 7, 8, 9],
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|(_, message)| message.contains("Property '[+s]'")),
+        "{found:?}"
+    );
+}
