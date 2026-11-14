@@ -232,7 +232,7 @@ fn translate_message(message: &str) -> Option<DiagnosticMessage> {
 // tsc reports its grammar errors (the checker's modifier, parameter, member and statement rules)
 // only for a file whose parser reported nothing: one parse error anywhere in the file silences all
 // of them. These are the tsc codes the parser itself reports.
-const PARSE_LEVEL: [u32; 7] = [1003, 1005, 1011, 1109, 1128, 1200, 1357];
+const PARSE_LEVEL: [u32; 8] = [1003, 1005, 1011, 1109, 1123, 1128, 1200, 1357];
 // And these are the grammar errors that go quiet. Errors tsc reports from its ordinary checks
 // (TS2364, TS2452, TS2462, TS2356, TS2357, TS2406, TS2487) are not silenced.
 const GRAMMAR_LEVEL: [u32; 36] = [

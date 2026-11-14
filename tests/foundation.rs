@@ -109,7 +109,8 @@ fn unsupported_statement_degrades_honestly_not_silently() {
 fn malformed_source_reports_a_parse_error_instead_of_panicking() {
     init_tracing();
     let checker = TypeChecker::new();
-    let result = checker.check_source("const x = ;", "broken.ts");
+    // `const x = ;` is not used here: tsc recovers from it (TS1109), and so does the syntax repair.
+    let result = checker.check_source("const 1x = ;", "broken.ts");
 
     assert!(result.is_err(), "expected a parse error, got: {result:?}");
 }

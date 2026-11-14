@@ -248,6 +248,9 @@ fn rule_for(text: &str, start: usize, end: usize, message: &str) -> Option<Rule>
         }
         "Expected `)` but found `=`" => catch_initializer(text, start),
         "Expected `,` or `]` but found `=`" => index_signature_initializer(text, start),
+        "Unexpected token" => {
+            empty_declaration_list(text, start).or_else(|| expression_expected(text, start))
+        }
         "A rest element must be last in a destructuring pattern" => {
             rest_element_not_last(text, start)
         }
@@ -777,6 +780,78 @@ fn rest_element_not_last(text: &str, start: usize) -> Option<Rule> {
             ),
             start: start + 3,
             end: after_name,
+        },
+    })
+}
+
+// `var f = () => ;`, `var a = 1 + ;`, `(2 * )`: an operator or arrow with no operand before a token that
+// ends the expression. tsc reports TS1109 on that token and goes on with a missing operand, so
+// one is supplied here: `(0 as any)` has type any, which checks without any error of its own.
+fn expression_expected(text: &str, start: usize) -> Option<Rule> {
+    let next = text.get(start..)?.chars().next()?;
+    if !matches!(next, ';' | ')' | ']' | '}') {
+        return None;
+    }
+    let before = text.get(..start)?.trim_end();
+    if before.ends_with("++") || before.ends_with("--") || before.ends_with("*/") {
+        return None;
+    }
+    const OPERAND_EXPECTED: [&str; 12] =
+        ["=>", "=", "+", "-", "*", "/", "%", "&", "|", "^", "!", "~"];
+    if !OPERAND_EXPECTED.iter().any(|op| before.ends_with(op)) {
+        return None;
+    }
+    // A `*` opening a member (`{ * }`, `static *`) is a generator with no name, which tsc reports
+    // as TS1003, not a multiplication missing its right side.
+    if let Some(rest) = before.strip_suffix('*') {
+        let rest = rest.trim_end();
+        if rest.is_empty()
+            || rest.ends_with(['{', '}', ';', ','])
+            || rest.ends_with("static")
+            || rest.ends_with("async")
+        {
+            return None;
+        }
+    }
+    Some(Rule {
+        copy: None,
+        start,
+        end: start,
+        with: "(0 as any)".to_string(),
+        note: Note {
+            message: messages::syntax(Code::ExpressionExpected, "Expression expected.".to_string()),
+            start,
+            end: start + next.len_utf8(),
+        },
+    })
+}
+
+// `var ;`, `const` at the end of a file: tsc reports TS1123 where the first declarator should be and
+// carries on, so one is supplied: a uniquely named `any` constant that checks without errors.
+fn empty_declaration_list(text: &str, start: usize) -> Option<Rule> {
+    let next = text.get(start..)?.chars().next();
+    if !matches!(next, None | Some(';' | '}')) {
+        return None;
+    }
+    let before = text.get(..start)?.trim_end();
+    let keyword = ["var", "const"].into_iter().find(|k| before.ends_with(k))?;
+    let head = &before[..before.len() - keyword.len()];
+    if head.bytes().next_back().is_some_and(is_ident_byte) {
+        return None;
+    }
+    Some(Rule {
+        copy: None,
+        start,
+        end: start,
+        with: format!(" _tsox_missing_{start} = 0 as any"),
+        note: Note {
+            message: messages::syntax(
+                Code::VariableDeclarationListEmpty,
+                "Variable declaration list cannot be empty.".to_string(),
+            ),
+            // tsc reports it with no width, straight after the keyword.
+            start: before.len(),
+            end: before.len(),
         },
     })
 }

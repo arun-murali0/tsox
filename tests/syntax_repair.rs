@@ -460,3 +460,44 @@ fn a_rest_element_that_is_not_last_is_ts2462_and_the_file_is_still_checked() {
     assert!(has(&found, 2, message), "{found:?}");
     assert!(has(&found, 3, TS2322), "{found:?}");
 }
+
+// Missing operands and empty declaration lists, compared with tsc 6.0.3.
+
+#[test]
+fn an_operator_with_no_operand_is_ts1109_and_the_file_is_still_checked() {
+    let found = error_lines(&with_tail(
+        "var f = () => ;\nvar a = 1 + ;\nvar b = (2 * );\n",
+    ));
+    for line in 1..=3 {
+        assert!(has(&found, line, "Expression expected."), "{found:?}");
+    }
+    assert!(has(&found, 4, TS2322), "{found:?}");
+}
+
+#[test]
+fn a_generator_marker_with_no_name_is_not_a_missing_operand() {
+    // tsc reports `class C { * }` as TS1003; a `*` after `{`, `,`, `;`, `static` or `async` is not
+    // a multiplication, so no TS1109 is invented.
+    for source in ["class C {\n *\n}\n", "var v = { * }\n"] {
+        if let Ok(result) = TypeChecker::new().check_source(source, "case.ts") {
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .all(|d| d.message != "Expression expected."),
+                "{source:?} reported TS1109"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_declaration_keyword_with_no_declarator_is_ts1123() {
+    let found = error_lines("var ;\nlet z: number = \"s\";\n");
+    let message = "Variable declaration list cannot be empty.";
+    assert!(has(&found, 1, message), "{found:?}");
+    assert!(has(&found, 2, TS2322), "{found:?}");
+    let found = error_lines("let z: number = \"s\";\nconst");
+    assert!(has(&found, 1, TS2322), "{found:?}");
+    assert!(has(&found, 2, message), "{found:?}");
+}
