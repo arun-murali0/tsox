@@ -62,6 +62,23 @@ pub fn resolve_identifier_type(
         {
             return ctx.arena.any();
         }
+        // Problem: `namespace A.B { export function f() {} }` then `namespace A { function g() {
+        // B.f(); } }`: oxc keeps one scope per block, so `B` (declared in the other block of
+        // `A`) has no symbol here, and tsc finds it as a member of the merged namespace.
+        // Picked: inside a namespace block, a name that some declaration in the file binds is
+        // read as `any`. Only a name declared directly in a namespace block counts: an enum
+        // member or a type parameter of the same spelling is not in reach from another block.
+        // Cost: the member's real type is not known here, so nothing is checked through it.
+        if !ctx.namespace.scope_prefixes().is_empty()
+            && scoping.symbol_ids().any(|symbol| {
+                scoping.symbol_name(symbol) == ident.name.as_str()
+                    && scoping
+                        .scope_flags(scoping.symbol_scope_id(symbol))
+                        .contains(oxc_semantic::ScopeFlags::TsModuleBlock)
+            })
+        {
+            return ctx.arena.any();
+        }
         // Problem: `Iterator` or a user's own `interface I {}` used as a value read as "Cannot
         // find name", where tsc says the name only refers to a type (TS2693).
         // Picked: a name this checker knows as a type, or one of the library types that have

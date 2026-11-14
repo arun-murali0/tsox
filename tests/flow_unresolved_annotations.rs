@@ -139,3 +139,38 @@ fn a_computed_key_of_a_method_or_accessor_does_not_report_an_unassigned_read() {
     let source = "var s: string;\nvar n: number;\nvar v = { [s]() { }, [n]: 1, get [s + s]() { return 1; }, [s]: 2 };\nclass K { [s]() { } static [n]: number = 1; get [s + n]() { return 1; } }\nlet after: string; after;\n";
     assert_eq!(unassigned_lines(source), vec![3, 3, 5]);
 }
+
+// A namespace declared in one block of a merged namespace is in reach of the other blocks, and
+// with the body of a function with an untyped parameter now checked, `foo` here must not be
+// reported. Compared with tsc 6.0.3: no error. A name no block declares still is.
+#[test]
+fn a_member_of_another_block_of_a_merged_namespace_is_not_reported_as_missing() {
+    let source = "namespace my.data.foo {\n  export function buz() { }\n}\nnamespace my.data {\n  function data(my) {\n    foo.buz();\n    nope.buz();\n  }\n}\n";
+    let found = errors(source);
+    assert!(
+        !found
+            .iter()
+            .any(|(line, message)| *line == 6 && message.contains("Cannot find name")),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|(line, message)| *line == 7 && message.contains("Cannot find name 'nope'")),
+        "{found:?}"
+    );
+}
+
+// Only a name declared in a namespace block reaches the other blocks. An enum member or a class
+// type parameter of the same spelling does not (compared with tsc 6.0.3: TS2304 on both).
+#[test]
+fn an_enum_member_or_type_parameter_is_not_a_namespace_member() {
+    let source = "enum Foo { b }\nnamespace Foo {\n  export var x = b;\n}\nclass C<T> { }\nnamespace C {\n  export var y: T;\n  export var z = T;\n}\n";
+    let found = errors(source);
+    assert!(
+        found
+            .iter()
+            .any(|(line, message)| *line == 3 && message.contains("Cannot find name 'b'")),
+        "{found:?}"
+    );
+}
