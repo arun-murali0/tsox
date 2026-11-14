@@ -300,3 +300,21 @@ fn a_conditional_true_branch_satisfies_a_bound_its_check_type_was_tested_against
         .collect();
     assert_eq!(lines, vec![4, 5, 6], "{:?}", outcome.diagnostics);
 }
+
+// `typeof x === "number"` on a value of a type parameter narrows it to `T & number`, which is a
+// number, and the false side stays `T`. A parameter bounded by the primitive stays as it is.
+// Compared with tsc 6.0.3: only line 18 (`T & number` is not a string) is reported.
+#[test]
+fn typeof_narrows_a_type_parameter_to_an_intersection_with_the_primitive() {
+    let source = "declare function assertNumber(x: number): void;\nfunction g1<T>(x: T): number {\n    if (typeof x === \"number\") { assertNumber(x); return x.toFixed().length + x; }\n    return 0;\n}\nfunction g2<T>(x: T) {\n    switch (typeof x) {\n        case \"number\": assertNumber(x); return;\n    }\n    const t: T = x;\n    return t;\n}\nfunction g3<T extends string>(x: T) {\n    if (typeof x === \"string\") { const s: T = x; return s; }\n    return x;\n}\nfunction g4<T>(x: T) {\n    if (typeof x === \"number\") { const bad: string = x; }\n}\n";
+    let found = errors(source);
+    assert_eq!(
+        lines_of(&found, "is not assignable to"),
+        vec![18],
+        "{found:?}"
+    );
+    assert!(
+        found.iter().any(|(_, m)| m.contains("'T & number'")),
+        "{found:?}"
+    );
+}

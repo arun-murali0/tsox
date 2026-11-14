@@ -1549,6 +1549,20 @@ fn narrow_by_typeof(arena: &mut TypeArena, id: TypeId, tag: &str, want_match: bo
     let members = union_members(arena, id).unwrap_or_else(|| vec![id]);
     let mut kept = Vec::with_capacity(members.len());
     for member in members {
+        // A type parameter that `typeof x === "number"` matched is a `T & number` (tsc), unless its
+        // bound already is a number. Excluded, it stays `T`.
+        if want_match
+            && let Type::GenericParameter(_, _, constraint) = *arena.get(member)
+            && let Some(primitive) = primitive_for_tag(arena, tag)
+        {
+            let already = constraint
+                .is_some_and(|bound| crate::subtyping::is_subtype(arena, bound, primitive));
+            match (already, arena.alloc_intersection(vec![member, primitive])) {
+                (false, Ok(narrowed)) => kept.push(narrowed),
+                _ => kept.push(member),
+            }
+            continue;
+        }
         let opaque = matches!(
             arena.get(member),
             Type::Any | Type::Error | Type::GenericParameter(..)
