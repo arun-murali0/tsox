@@ -217,3 +217,40 @@ fn a_var_with_an_initializer_is_reported_when_a_path_skips_the_declaration() {
     let source = "declare function use(a: any): void;\nfunction a1(x) { for (let y = 0; y < 1; ++y) { var v = y; } use(v); }\nfunction a2(c: boolean) { if (c) { var o = { a: 1 }; } use(o); }\nfunction a3(c: boolean) { var u = c ? 1 : 2; use(u); }\nfunction a4(c: boolean) { if (c) { var z = null; } use(z); }\nfunction a5() { var a = { f: a }; }\nfunction a6(c: boolean) { use(h); var h = 1; }\ndeclare var t1: [number];\nvar t1 = t1;\nfunction a7(chars: number[]) { for (var i in chars) { use(i); } for (var i = 0; i < 1; i++) { } }\n";
     assert_eq!(unassigned_lines(source), vec![2, 3, 7]);
 }
+
+fn unassigned_lines_in(source: &str, module_detection_force: bool) -> Vec<usize> {
+    let options = CheckOptions {
+        strict: true,
+        strict_null_checks: true,
+        module_detection_force,
+        ..CheckOptions::default()
+    };
+    let mut worker = Worker::new();
+    let ctx = UnitContext::new(FileId::ROOT, "t.ts", source).with_options(options);
+    let outcome = worker.check_unit(&ctx).expect("the unit checks");
+    let mut found: Vec<usize> = outcome
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::UsedBeforeAssigned)
+        .map(|d| source[..d.start as usize].matches('\n').count() + 1)
+        .collect();
+    found.sort_unstable();
+    found
+}
+
+// A `let` at the top of a file with no import or export is a global in a script, and nothing is
+// reported when a function reads it. With `moduleDetection: "force"` the file is a module, the
+// `let` is local to it, and a function that reads it, unassigned, is reported once per
+// narrowing: not the second `cond` in `while (cond) { if (cond) {} }`, nor the one inside
+// `if (cond) { cond; }`. Compared with tsc 6.0.3 in both modes.
+const OUTER_LET: &str = "let cond: boolean;\nfunction f() {\n    while (cond) {\n        if (cond) { }\n    }\n}\nfunction g() {\n    if (cond) { cond; }\n    cond;\n}\nfunction h() { const k = () => cond; return k; }\n";
+
+#[test]
+fn an_outer_let_read_in_a_function_is_not_reported_in_a_script() {
+    assert_eq!(unassigned_lines_in(OUTER_LET, false), Vec::<usize>::new());
+}
+
+#[test]
+fn an_outer_let_read_in_a_function_is_reported_once_per_narrowing_in_a_module() {
+    assert_eq!(unassigned_lines_in(OUTER_LET, true), vec![3, 8, 9, 11]);
+}

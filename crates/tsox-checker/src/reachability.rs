@@ -206,11 +206,17 @@ impl Reachability {
 /// Runs the flow over a file. `scoping` resolves identifiers to variables; it is the same
 /// scope analysis the checker already has.
 pub fn analyze(program: &Program<'_>, scoping: &Scoping) -> Reachability {
+    analyze_as(program, scoping, false)
+}
+
+// `forced_module` is `moduleDetection: "force"`: a file with no import or export is still a module,
+// so a `let` at its top is local to it, not a global.
+pub fn analyze_as(program: &Program<'_>, scoping: &Scoping, forced_module: bool) -> Reachability {
     // Two walks. The first only learns which variables are tracked and which function each
     // lives in, so that a read that comes before its declaration (a hoisted `var`) is known to
     // be of a tracked variable. Its other results are thrown away.
     let mut discover = Analyzer::new(scoping, HashMap::new(), HashMap::new(), HashSet::new());
-    discover.is_script = program.source_type.is_script();
+    discover.is_script = program.source_type.is_script() && !forced_module;
     let predicates = predicate_functions(program);
     discover.predicates = predicates.clone();
     let mut namespaces = NamespaceMembers::new();
@@ -223,7 +229,7 @@ pub fn analyze(program: &Program<'_>, scoping: &Scoping) -> Reachability {
         discover.last_assignment,
         discover.definite,
     );
-    analyzer.is_script = program.source_type.is_script();
+    analyzer.is_script = program.source_type.is_script() && !forced_module;
     analyzer.predicates = predicates;
     analyzer.namespaces = namespaces;
     analyzer.discovering = false;
@@ -759,7 +765,7 @@ impl<'s> Analyzer<'s> {
                 self.collect_removes_undefined(&unary.argument, !when_true, out)
             }
             // `x` is truthy, so not `undefined`.
-            Expression::Identifier(id) if when_true => out.extend(self.tracked_index(id)),
+            Expression::Identifier(id) if when_true => out.extend(self.narrowed_index(id)),
             // `isC(x)`: a call to a predicate function narrows its arguments on the true edge.
             Expression::CallExpression(call) if when_true => {
                 if let Expression::Identifier(callee) = skip_parens(&call.callee)
@@ -770,7 +776,7 @@ impl<'s> Analyzer<'s> {
                         if let Some(Expression::Identifier(id)) =
                             argument.as_expression().map(skip_parens)
                         {
-                            out.extend(self.tracked_index(id));
+                            out.extend(self.narrowed_index(id));
                         }
                     }
                 }
@@ -786,7 +792,7 @@ impl<'s> Analyzer<'s> {
                         _ => None,
                     };
                     if let Some(Expression::Identifier(id)) = operand {
-                        out.extend(self.tracked_index(id));
+                        out.extend(self.narrowed_index(id));
                     }
                 }
                 let (equal, strict) = match binary.operator {
@@ -803,7 +809,7 @@ impl<'s> Analyzer<'s> {
                     let this = skip_parens(this);
                     let other = skip_parens(other);
                     if let Expression::Identifier(id) = this {
-                        if let Some(index) = self.tracked_index(id) {
+                        if let Some(index) = self.narrowed_index(id) {
                             let compares_undefined = is_undefined(other)
                                 || (!strict && matches!(other, Expression::NullLiteral(_)));
                             if compares_undefined {
@@ -828,7 +834,7 @@ impl<'s> Analyzer<'s> {
                         && (strict || member.property.name == "constructor")
                         && (member.property.name == "constructor" || is_literal(other))
                     {
-                        out.extend(self.tracked_index(id));
+                        out.extend(self.narrowed_index(id));
                     }
                     // `typeof x === "string"` and `typeof x !== "undefined"`.
                     if let Expression::UnaryExpression(unary) = this {
@@ -836,7 +842,7 @@ impl<'s> Analyzer<'s> {
                             if let (Expression::Identifier(id), Expression::StringLiteral(name)) =
                                 (skip_parens(&unary.argument), other)
                             {
-                                if let Some(index) = self.tracked_index(id) {
+                                if let Some(index) = self.narrowed_index(id) {
                                     let names_undefined = name.value == "undefined";
                                     // The true edge of `=== "string"` and the false edge of
                                     // `=== "undefined"` both rule `undefined` out.
@@ -858,6 +864,14 @@ impl<'s> Analyzer<'s> {
     fn tracked_index(&self, id: &IdentifierReference<'_>) -> Option<usize> {
         let tracked = self.tracked.get(&self.symbol_of(id)?)?;
         (tracked.container == self.container).then_some(tracked.index)
+    }
+
+    // The index of a tracked variable for narrowing, whichever function declares it: a truthiness
+    // test narrows an outer variable inside a closure as it does one of the function's own.
+    fn narrowed_index(&self, id: &IdentifierReference<'_>) -> Option<usize> {
+        self.tracked
+            .get(&self.symbol_of(id)?)
+            .map(|tracked| tracked.index)
     }
 
     fn symbol_of(&self, id: &IdentifierReference<'_>) -> Option<SymbolId> {
@@ -1392,7 +1406,9 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
         } else {
             // From inside another function tsc assumes the variable is assigned, unless it is a
             // `let` that nothing assigns with a plain `=`.
+            // Narrowed inside this function (`while (cond) { cond; }`): `undefined` is gone.
             self.closure_read_is_unassigned(symbol, tracked, id.span)
+                && !self.st.assigned.has(tracked.index)
         };
         if unassigned {
             self.out.unassigned.push(UnassignedRead {
