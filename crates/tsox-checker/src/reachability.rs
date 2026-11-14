@@ -444,6 +444,8 @@ struct Analyzer<'s> {
     in_place_function: Option<Span>,
     // The name (or start) of the class method being entered and whether it is a constructor.
     method: Option<(Span, bool)>,
+    // The next property key visited belongs to a method or accessor: see `visit_property_key`.
+    member_key: bool,
     fn_state: FnState,
     arrivals: Vec<Option<Bits>>,
     // How many label statements sit directly around the statement being entered, so a loop can
@@ -502,6 +504,7 @@ impl<'s> Analyzer<'s> {
             iife_pending: false,
             in_place_function: None,
             method: None,
+            member_key: false,
             fn_state: FnState::default(),
             arrivals: Vec::new(),
             pending_labels: 0,
@@ -1116,13 +1119,36 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
         self.function = outer_function;
     }
 
+    // tsc takes the computed key of a method or accessor, in a class or an object literal, to
+    // belong to that member: its flow container is the member, so a variable of the enclosing
+    // function or file read there counts as an outer variable and is assumed assigned. Only the
+    // key is affected, not the decorators or the body.
+    fn visit_property_key(&mut self, key: &oxc_ast::ast::PropertyKey<'a>) {
+        if std::mem::take(&mut self.member_key) {
+            self.container(false, true, Kind::OWN_FLOW, |this| {
+                walk::walk_property_key(this, key)
+            });
+        } else {
+            walk::walk_property_key(self, key);
+        }
+    }
+
+    fn visit_object_property(&mut self, property: &oxc_ast::ast::ObjectProperty<'a>) {
+        self.member_key = property.computed
+            && (property.method || property.kind != oxc_ast::ast::PropertyKind::Init);
+        walk::walk_object_property(self, property);
+        self.member_key = false;
+    }
+
     fn visit_method_definition(&mut self, method: &oxc_ast::ast::MethodDefinition<'a>) {
+        self.member_key = method.computed;
         let saved = self.in_place_function.replace(method.value.span);
         let saved_method = self.method.replace((
             method.key.span(),
             method.kind == oxc_ast::ast::MethodDefinitionKind::Constructor,
         ));
         walk::walk_method_definition(self, method);
+        self.member_key = false;
         self.method = saved_method;
         self.in_place_function = saved;
     }

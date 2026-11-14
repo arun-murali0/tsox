@@ -129,3 +129,13 @@ fn a_constructor_function_with_an_untyped_parameter_is_left_alone() {
         "{found:?}"
     );
 }
+
+// tsc takes the computed key of a method or accessor, in a class or an object literal, to belong
+// to that member, so a variable of the enclosing scope read there is an outer variable and is
+// assumed assigned. A computed key of a plain property is read in place and still reports.
+// Compared with tsc 6.0.3: it reports the two property keys on line 3 and the read on line 5.
+#[test]
+fn a_computed_key_of_a_method_or_accessor_does_not_report_an_unassigned_read() {
+    let source = "var s: string;\nvar n: number;\nvar v = { [s]() { }, [n]: 1, get [s + s]() { return 1; }, [s]: 2 };\nclass K { [s]() { } static [n]: number = 1; get [s + n]() { return 1; } }\nlet after: string; after;\n";
+    assert_eq!(unassigned_lines(source), vec![3, 3, 5]);
+}
