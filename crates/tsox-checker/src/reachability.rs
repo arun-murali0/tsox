@@ -465,6 +465,8 @@ struct Analyzer<'s> {
     // a `for...in` / `for...of`, whose variable is assigned by the loop.
     declaration: Option<(VariableDeclarationKind, bool)>,
     in_for_head: bool,
+    // For each enclosing `for (let x in a)`: the symbol of `x` and of `a`. See `visit_computed_member_expression`.
+    for_in_keys: Vec<(SymbolId, SymbolId)>,
     in_export: bool,
     // The variables something assigns with a plain `x = ...`, a logical assignment, a destructuring
     // or a loop head: tsc's "definite" assignment, as opposed to `x += 1` and `x++`. Learned in
@@ -516,6 +518,7 @@ impl<'s> Analyzer<'s> {
             tracked,
             declaration: None,
             in_for_head: false,
+            for_in_keys: Vec::new(),
             in_export: false,
             definite,
             frames: Vec::new(),
@@ -1123,6 +1126,35 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
     // belong to that member: its flow container is the member, so a variable of the enclosing
     // function or file read there counts as an outer variable and is assumed assigned. Only the
     // key is affected, not the decorators or the body.
+    // `a[x]` inside `for (let x in a)`, where `x` is the variable that loop declares: tsc does not
+    // report `a` there, though it reports the read in the loop head and any other `a[y]`.
+    fn visit_computed_member_expression(
+        &mut self,
+        member: &oxc_ast::ast::ComputedMemberExpression<'a>,
+    ) {
+        let symbol_of = |this: &Self, expression: &Expression<'a>| {
+            let mut expression = expression;
+            while let Expression::ParenthesizedExpression(inner) = expression {
+                expression = &inner.expression;
+            }
+            let Expression::Identifier(id) = expression else {
+                return None;
+            };
+            this.scoping
+                .get_reference(id.reference_id.get()?)
+                .symbol_id()
+        };
+        if let (Some(object), Some(key)) = (
+            symbol_of(self, &member.object),
+            symbol_of(self, &member.expression),
+        ) && self.for_in_keys.contains(&(key, object))
+        {
+            self.visit_expression(&member.expression);
+            return;
+        }
+        walk::walk_computed_member_expression(self, member);
+    }
+
     fn visit_property_key(&mut self, key: &oxc_ast::ast::PropertyKey<'a>) {
         if std::mem::take(&mut self.member_key) {
             self.container(false, true, Kind::OWN_FLOW, |this| {
@@ -1389,6 +1421,15 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
             )
             && declarator.type_annotation.is_some();
         if !trackable {
+            // `var m: T; var m = value;` declares `m` twice: the second declaration assigns it.
+            if declarator.init.is_some()
+                && let BindingPattern::BindingIdentifier(binding) = &declarator.id
+                && let Some(symbol) = binding.symbol_id.get()
+                && let Some(tracked) = self.tracked.get(&symbol).copied()
+                && tracked.container == self.container
+            {
+                self.st.assigned.set(tracked.index);
+            }
             return;
         }
         let BindingPattern::BindingIdentifier(binding) = &declarator.id else {
@@ -1553,7 +1594,12 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
             }
             Statement::ForInStatement(statement) => {
                 self.visit_expression(&statement.right);
+                let key = self.for_in_key(statement);
+                self.for_in_keys.extend(key);
                 self.for_in_or_of(&statement.left, pending, &statement.body);
+                if key.is_some() {
+                    self.for_in_keys.pop();
+                }
             }
             Statement::ForOfStatement(statement) => {
                 self.visit_expression(&statement.right);
@@ -1576,6 +1622,34 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
 }
 
 impl<'a, 's> Analyzer<'s> {
+    // `for (let x in a)` or `for (var x in a)`: the symbols of `x` and of `a`.
+    fn for_in_key(
+        &self,
+        statement: &oxc_ast::ast::ForInStatement<'a>,
+    ) -> Option<(SymbolId, SymbolId)> {
+        let ForStatementLeft::VariableDeclaration(declaration) = &statement.left else {
+            return None;
+        };
+        let [declarator] = declaration.declarations.as_slice() else {
+            return None;
+        };
+        let BindingPattern::BindingIdentifier(binding) = &declarator.id else {
+            return None;
+        };
+        let mut right = &statement.right;
+        while let Expression::ParenthesizedExpression(inner) = right {
+            right = &inner.expression;
+        }
+        let Expression::Identifier(object) = right else {
+            return None;
+        };
+        let object = self
+            .scoping
+            .get_reference(object.reference_id.get()?)
+            .symbol_id()?;
+        Some((binding.symbol_id.get()?, object))
+    }
+
     // After a `for...in` or `for...of` the flow is reachable whenever the loop was entered: the
     // loop label feeds the exit directly, whatever the body does. The loop assigns its variable
     // at the top of every pass, but not on the way out.

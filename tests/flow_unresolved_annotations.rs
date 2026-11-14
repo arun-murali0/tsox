@@ -174,3 +174,13 @@ fn an_enum_member_or_type_parameter_is_not_a_namespace_member() {
         "{found:?}"
     );
 }
+
+// `var m: T; var m = value;` declares `m` twice and the second declaration assigns it. In
+// `for (let x in a)` tsc reports the read of `a` in the head but not `a[x]` in the body, where
+// `x` is the variable that loop declares; `a[i]` with an outer `i` still reports, as does the
+// head. Compared with tsc 6.0.3: lines 6, 7, and twice on line 9.
+#[test]
+fn a_redeclared_variable_is_assigned_and_a_for_in_key_read_is_not_reported() {
+    let source = "declare function use(a: any): void;\nvar m: typeof Math;\nvar m = Math;\nuse(m.PI);\nlet a: Date[];\nfor (let x in a) { a[x]; }\nfor (var s in a) { a[s]; }\nlet i: string;\nfor (i in a) { a[i]; }\n";
+    assert_eq!(unassigned_lines(source), vec![6, 7, 9, 9]);
+}
