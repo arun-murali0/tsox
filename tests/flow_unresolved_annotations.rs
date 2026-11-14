@@ -254,3 +254,30 @@ fn an_outer_let_read_in_a_function_is_not_reported_in_a_script() {
 fn an_outer_let_read_in_a_function_is_reported_once_per_narrowing_in_a_module() {
     assert_eq!(unassigned_lines_in(OUTER_LET, true), vec![3, 8, 9, 11]);
 }
+
+// A `number` is assignable to a numeric enum, any number and not only a member; a literal that is
+// not a member, a string, and a string enum fed a `string` are not. Compared with tsc 6.0.3:
+// lines 8, 9 and 11 are the only ones reported.
+#[test]
+fn a_number_is_assignable_to_a_numeric_enum() {
+    let source = "enum E { A, B }\nenum S { X = \"x\" }\ndeclare var n: number;\ndeclare var e: E;\ndeclare var s: string;\ndeclare var es: S;\ne = n;\ne = 5;\nes = s;\ns = es;\ne = \"a\";\n";
+    let found = errors(source);
+    assert_eq!(
+        lines_of(&found, "is not assignable to type"),
+        vec![8, 9, 11],
+        "{found:?}"
+    );
+}
+
+// A `number` is also assignable to a mixed enum (one number member) and to a union that holds an
+// enum (`E | string`). Compared with tsc 6.0.3: only line 10 is reported.
+#[test]
+fn a_number_is_assignable_to_a_mixed_enum_and_to_a_union_with_an_enum() {
+    let source = "enum E { A, B }\nenum M { A = 1, B = \"b\" }\ndeclare var n: number;\ndeclare var m: M;\ndeclare var u: E | string;\ndeclare var w: M | boolean;\nm = n;\nu = n;\nw = n;\nconst r: string = n;\n";
+    let found = errors(source);
+    assert_eq!(
+        lines_of(&found, "is not assignable to type"),
+        vec![10],
+        "{found:?}"
+    );
+}

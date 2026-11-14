@@ -1271,6 +1271,32 @@ impl TypeArena {
         self.enum_types.contains(&type_id)
     }
 
+    // Whether a `number` may be assigned to `target` because of an enum: the target is an enum with
+    // a number member (`enum E { A, B }`, or a mixed `enum M { A = 1, B = "b" }`), or a union that
+    // holds all the members of such an enum (`E | string`, which the union flattens to its members).
+    pub fn accepts_number_as_enum(&self, target: TypeId) -> bool {
+        let has_number_member = |enum_type: TypeId| match self.get(enum_type) {
+            Type::Union(members) => members
+                .iter()
+                .any(|member| matches!(self.get(*member), Type::NumberLiteral(_))),
+            Type::NumberLiteral(_) => true,
+            _ => false,
+        };
+        if self.is_enum(target) {
+            return has_number_member(target);
+        }
+        let Type::Union(held) = self.get(target) else {
+            return false;
+        };
+        self.enum_types.iter().any(|&enum_type| {
+            has_number_member(enum_type)
+                && match self.get(enum_type) {
+                    Type::Union(members) => members.iter().all(|member| held.contains(member)),
+                    _ => held.contains(&enum_type),
+                }
+        })
+    }
+
     // Whether `id` prints under a name and not as its structure.
     pub fn is_named(&self, type_id: TypeId) -> bool {
         self.display_name(type_id).is_some() || self.app_parts(type_id).is_some()
