@@ -397,3 +397,14 @@ fn a_const_holding_a_condition_narrows_like_the_condition() {
         "{found:?}"
     );
 }
+
+// Variadic tuples: an array literal passed for `[...T]`, `[...t, ...u]` returned as `[...T, ...U]`,
+// a spread parameter related through its bound, and a key of an array-bounded parameter. Each was
+// compared with tsc 6.0.3, which reports nothing for them.
+#[test]
+fn variadic_tuple_shapes_draw_no_errors() {
+    let found = errors(
+        "function concat<T extends unknown[], U extends unknown[]>(t: [...T], u: [...U]): [...T, ...U] {\n  return [...t, ...u];\n}\nconst c = concat(['a'], [1]);\nfunction f<T extends string[], U extends T>(x: [string, ...unknown[]], y: [string, ...T], z: [string, ...U]) {\n  x = y;\n  x = z;\n}\nfunction g<T extends string[]>(k: keyof T) {\n  k = 'length';\n}\nfunction h<T extends unknown[]>(t: [string, ...T]) {\n  let [a, ...rest] = t;\n}\n",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}
