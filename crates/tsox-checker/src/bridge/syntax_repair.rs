@@ -221,6 +221,13 @@ fn is_name_byte(byte: u8) -> bool {
 }
 
 fn rule_for(text: &str, start: usize, end: usize, message: &str) -> Option<Rule> {
+    // A class member modifier where a statement belongs is TS1128, which no semicolon is supplied
+    // for, so this is tried before any rule for the same message.
+    if message.starts_with("Expected a semicolon or an implicit semicolon") {
+        if let Some(rule) = member_modifier_statement(text, start) {
+            return Some(rule);
+        }
+    }
     match message {
         "Unexpected token" if text.get(start..end) == Some("]") => {
             element_without_argument(text, start, end)
@@ -248,9 +255,9 @@ fn rule_for(text: &str, start: usize, end: usize, message: &str) -> Option<Rule>
         }
         "Expected `)` but found `=`" => catch_initializer(text, start),
         "Expected `,` or `]` but found `=`" => index_signature_initializer(text, start),
-        "Unexpected token" => {
-            empty_declaration_list(text, start).or_else(|| expression_expected(text, start))
-        }
+        "Unexpected token" => stray_closing_brace(text, start, end)
+            .or_else(|| empty_declaration_list(text, start))
+            .or_else(|| expression_expected(text, start)),
         "A rest element must be last in a destructuring pattern" => {
             rest_element_not_last(text, start)
         }
@@ -651,6 +658,111 @@ fn index_signature_initializer(text: &str, start: usize) -> Option<Rule> {
             ),
             start: name_start,
             end: name_start + name_text.len(),
+        },
+    })
+}
+
+// `function f() { static x = 1; }`, `{ private y = 1; }`: a class member modifier where a statement
+// belongs. tsc reports TS1128 on the modifier and reads what follows as a statement, so the
+// modifier goes.
+fn member_modifier_statement(text: &str, start: usize) -> Option<Rule> {
+    let before = text.get(..start)?.trim_end();
+    const MODIFIERS: [&str; 5] = ["static", "public", "private", "protected", "readonly"];
+    let modifier = MODIFIERS.into_iter().find(|m| before.ends_with(m))?;
+    let head = &before[..before.len() - modifier.len()];
+    if head.bytes().next_back().is_some_and(is_ident_byte) {
+        return None;
+    }
+    let statement_start = head.trim_end().bytes().next_back();
+    if !matches!(statement_start, None | Some(b'{' | b';' | b'}')) {
+        return None;
+    }
+    let from = head.len();
+    let to = before.len();
+    let note = |start, end| Note {
+        message: messages::syntax(
+            Code::DeclarationOrStatementExpected,
+            "Declaration or statement expected.".to_string(),
+        ),
+        start,
+        end,
+    };
+    // Inside a method or constructor tsc ends the body at the modifier and the modifier starts a
+    // class member, so the body's own closing brace is left over (see `stray_closing_brace`). Any
+    // other block inside a class reads the modifier as a statement, which is not repaired here.
+    let headers = open_block_headers(head);
+    if headers.iter().any(|header| has_word(header, "class")) {
+        let member_body = headers.len() >= 2
+            && has_word(&headers[headers.len() - 2], "class")
+            && !has_word(&headers[headers.len() - 1], "class");
+        if !member_body {
+            return None;
+        }
+        return Some(Rule {
+            start: from,
+            end: from,
+            with: "} ".to_string(),
+            copy: None,
+            note: note(from, to),
+        });
+    }
+    Some(Rule {
+        start: from,
+        end: to,
+        with: String::new(),
+        copy: None,
+        note: note(from, to),
+    })
+}
+
+// The header (the text since the previous `{`, `}` or `;`) of every block still open at the end of
+// `before`, outermost first. Strings and comments are not skipped, which is enough for the
+// statement-level shapes this is asked about.
+fn open_block_headers(before: &str) -> Vec<&str> {
+    let mut open = Vec::new();
+    let mut header_start = 0;
+    for (index, byte) in before.bytes().enumerate() {
+        match byte {
+            b'{' => {
+                open.push(&before[header_start..index]);
+                header_start = index + 1;
+            }
+            b'}' => {
+                open.pop();
+                header_start = index + 1;
+            }
+            b';' => header_start = index + 1,
+            _ => {}
+        }
+    }
+    open
+}
+
+fn has_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(at, _)| {
+        let before = text[..at].bytes().next_back();
+        let after = text.as_bytes().get(at + word.len()).copied();
+        !before.is_some_and(is_ident_byte) && !after.is_some_and(is_ident_byte)
+    })
+}
+
+// A `}` that closes nothing: tsc reports TS1128 on it and carries on without it.
+fn stray_closing_brace(text: &str, start: usize, end: usize) -> Option<Rule> {
+    if text.get(start..end) != Some("}") || !open_block_headers(text.get(..start)?).is_empty() {
+        return None;
+    }
+    Some(Rule {
+        start,
+        end,
+        with: String::new(),
+        copy: None,
+        note: Note {
+            message: messages::syntax(
+                Code::DeclarationOrStatementExpected,
+                "Declaration or statement expected.".to_string(),
+            ),
+            start,
+            end,
         },
     })
 }

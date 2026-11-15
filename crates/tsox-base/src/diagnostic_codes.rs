@@ -200,6 +200,7 @@ pub enum DiagnosticCode {
     IndexSignatureNeedsType,
     ExpressionExpected,
     VariableDeclarationListEmpty,
+    DeclarationOrStatementExpected,
 
     // 1900s: expression grammar and conditions (each maps to the tsc code the
     // syntactic check matches; update/assignment-target grammar codes are not
@@ -409,6 +410,7 @@ impl DiagnosticCode {
             IndexSignatureNeedsType => "TSR3041",
             ExpressionExpected => "TSR3060",
             VariableDeclarationListEmpty => "TSR3061",
+            DeclarationOrStatementExpected => "TSR3090",
 
             CommaLeftNoSideEffect => "TSR1951",
             VoidTruthiness => "TSR1952",
@@ -585,6 +587,7 @@ impl DiagnosticCode {
             IndexSignatureNeedsType => 1021,
             ExpressionExpected => 1109,
             VariableDeclarationListEmpty => 1123,
+            DeclarationOrStatementExpected => 1128,
 
             ImplicitAnyParameter => 7006,
             ImplicitAnyRestParameter => 7019,
