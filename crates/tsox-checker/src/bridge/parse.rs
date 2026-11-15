@@ -39,13 +39,15 @@ pub struct Parsed<'a> {
     pub offsets: Option<super::syntax_repair::OffsetMap>,
 }
 
-// One parse of one text. `first_error` is where the parser stopped, when it gave up.
+// One parse of one text.
 struct Attempt<'a> {
     program: Program<'a>,
     syntax: Vec<super::syntax_errors::SyntaxDiagnostic>,
     messages: Vec<String>,
     gave_up: bool,
-    first_error: Option<(usize, usize, String)>,
+    // Every error with a position, in the order the parser reported them: the one that made it
+    // give up is usually not the first, and a repair rule can be for any of them.
+    candidates: Vec<(usize, usize, String)>,
 }
 
 fn parse_attempt<'a>(
@@ -56,7 +58,7 @@ fn parse_attempt<'a>(
     let result = Parser::new(allocator, source, source_type).parse();
     let mut syntax = Vec::new();
     let mut messages = Vec::new();
-    let mut first_error = None;
+    let mut candidates = Vec::new();
     if result.diagnostics.has_errors() {
         for error in result.diagnostics.errors() {
             let Some(label) = error.labels.first() else {
@@ -64,13 +66,12 @@ fn parse_attempt<'a>(
             };
             let span =
                 oxc_span::Span::new(label.offset() as u32, (label.offset() + label.len()) as u32);
-            if first_error.is_none() {
-                first_error = Some((
-                    label.offset() as usize,
-                    (label.offset() + label.len()) as usize,
-                    error.message.to_string(),
-                ));
-            }
+            let found_error = (
+                label.offset() as usize,
+                (label.offset() + label.len()) as usize,
+                error.message.to_string(),
+            );
+            candidates.push(found_error);
             if let Some(found) = super::syntax_errors::translate(source, &error.message, span) {
                 syntax.push(found);
             }
@@ -96,7 +97,7 @@ fn parse_attempt<'a>(
         syntax,
         messages,
         gave_up,
-        first_error,
+        candidates,
     }
 }
 
@@ -132,10 +133,11 @@ pub fn parse_with_syntax_errors<'a>(
     let mut attempt = parse_attempt(allocator, source, source_type);
     let mut repairs = super::syntax_repair::Repairs::new(source);
     while attempt.gave_up && repairs.len() < super::syntax_repair::MAX_REPAIRS {
-        let Some((start, end, message)) = attempt.first_error.clone() else {
-            break;
-        };
-        if !repairs.apply(start, end, &message) {
+        let repaired = attempt
+            .candidates
+            .iter()
+            .any(|(start, end, message)| repairs.apply(*start, *end, message));
+        if !repaired {
             break;
         }
         let patched: &'a str = allocator.alloc_str(repairs.text());

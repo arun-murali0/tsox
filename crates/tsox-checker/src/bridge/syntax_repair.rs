@@ -254,6 +254,7 @@ fn rule_for(text: &str, start: usize, end: usize, message: &str) -> Option<Rule>
             enum_member_separator(start, end)
         }
         "Expected `)` but found `=`" => catch_initializer(text, start),
+        "Expected `,` or `)` but found `=`" => rest_parameter_initializer(text, start),
         "Expected `,` or `]` but found `=`" => index_signature_initializer(text, start),
         "Unexpected token" => stray_closing_brace(text, start, end)
             .or_else(|| empty_declaration_list(text, start))
@@ -484,6 +485,10 @@ fn assignment_target(text: &str, start: usize, end: usize) -> Option<Rule> {
     }
     let left = text.get(start..end)?;
     if left.is_empty() || left.starts_with("++") || left.starts_with("--") {
+        return None;
+    }
+    // `await using [a] = x` and `using [a] = x` are declarations that oxc read as an index.
+    if left.starts_with("using") || left.starts_with("await using") {
         return None;
     }
     let before = text.get(..start)?.trim_end();
@@ -763,6 +768,68 @@ fn stray_closing_brace(text: &str, start: usize, end: usize) -> Option<Rule> {
             ),
             start,
             end,
+        },
+    })
+}
+
+// `(...arg: number[] = []) => 1`: tsc reports TS1048 on the rest parameter's name and drops the
+// initializer.
+fn rest_parameter_initializer(text: &str, start: usize) -> Option<Rule> {
+    if text.get(start..start + 1)? != "=" {
+        return None;
+    }
+    let before = text.get(..start)?;
+    let mut depth = 0usize;
+    let mut param_start = None;
+    for (index, byte) in before.bytes().enumerate().rev() {
+        match byte {
+            b')' | b']' | b'}' | b'>' => depth += 1,
+            b'(' | b'[' | b'{' | b'<' if depth > 0 => depth -= 1,
+            b'(' | b',' if depth == 0 => {
+                param_start = Some(index + 1);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let param = &before[param_start?..];
+    let dots = param.trim_start();
+    let rest = dots.strip_prefix("...")?;
+    let name = rest.trim_start();
+    let name_len = name.bytes().take_while(|b| is_ident_byte(*b)).count();
+    if name_len == 0 {
+        return None;
+    }
+    let name_start = before.len() - name.len();
+    let mut depth = 0usize;
+    let mut init_end = None;
+    for (offset, byte) in text.bytes().enumerate().skip(start + 1) {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b',' if depth == 0 => {
+                init_end = Some(offset);
+                break;
+            }
+            b')' | b']' | b'}' => depth = depth.checked_sub(1)?,
+            _ => {}
+        }
+    }
+    let init_end = init_end?;
+    if text[start + 1..init_end].trim().is_empty() {
+        return None;
+    }
+    Some(Rule {
+        start: before.trim_end().len(),
+        end: init_end,
+        with: String::new(),
+        copy: None,
+        note: Note {
+            message: messages::syntax(
+                Code::RestParameterInitializer,
+                "A rest parameter cannot have an initializer.".to_string(),
+            ),
+            start: name_start,
+            end: name_start + name_len,
         },
     })
 }

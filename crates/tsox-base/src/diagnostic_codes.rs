@@ -201,6 +201,7 @@ pub enum DiagnosticCode {
     ExpressionExpected,
     VariableDeclarationListEmpty,
     DeclarationOrStatementExpected,
+    RestParameterInitializer,
 
     // 1900s: expression grammar and conditions (each maps to the tsc code the
     // syntactic check matches; update/assignment-target grammar codes are not
@@ -411,6 +412,7 @@ impl DiagnosticCode {
             ExpressionExpected => "TSR3060",
             VariableDeclarationListEmpty => "TSR3061",
             DeclarationOrStatementExpected => "TSR3090",
+            RestParameterInitializer => "TSR3091",
 
             CommaLeftNoSideEffect => "TSR1951",
             VoidTruthiness => "TSR1952",
@@ -588,6 +590,7 @@ impl DiagnosticCode {
             ExpressionExpected => 1109,
             VariableDeclarationListEmpty => 1123,
             DeclarationOrStatementExpected => 1128,
+            RestParameterInitializer => 1048,
 
             ImplicitAnyParameter => 7006,
             ImplicitAnyRestParameter => 7019,

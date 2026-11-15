@@ -76,3 +76,30 @@ fn a_member_modifier_in_a_method_ends_the_body_and_leaves_a_stray_brace() {
         );
     }
 }
+
+#[test]
+fn a_rest_parameter_initializer_is_ts1048_and_dropped() {
+    let found = error_lines("let f = (...arg: number[] = []) => 1;\nlet z: number = \"s\";\n");
+    assert!(
+        has(&found, 1, "A rest parameter cannot have an initializer."),
+        "{found:?}"
+    );
+    assert!(has(&found, 2, TS2322), "{found:?}");
+}
+
+#[test]
+fn a_using_declaration_is_not_an_invalid_assignment_target() {
+    // `await using [a] = x` is a declaration oxc reads as an index expression; tsc's errors for it
+    // are different, so no TS2364 is reported.
+    if let Ok(result) = TypeChecker::new().check_source(
+        "async function f() {\n  await using [a] = null;\n}\n",
+        "case.ts",
+    ) {
+        assert!(
+            result.diagnostics.iter().all(|d| !d
+                .message
+                .starts_with("The left-hand side of an assignment expression")),
+            "reported TS2364"
+        );
+    }
+}
