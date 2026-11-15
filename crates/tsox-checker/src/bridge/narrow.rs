@@ -37,6 +37,10 @@ impl NarrowState {
         Self(Vec::new(), Vec::new())
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty() && self.1.is_empty()
+    }
+
     /// A state holding just one variable at one type.
     pub fn single(symbol_id: SymbolId, type_id: TypeId) -> Self {
         Self::from_single(symbol_id, type_id)
@@ -70,6 +74,12 @@ impl NarrowState {
         } else {
             self.0.push((symbol_id, type_id));
         }
+    }
+
+    // Keeps the symbol entries `keep` accepts and drops every path entry.
+    fn retain_symbols(&mut self, mut keep: impl FnMut(SymbolId) -> bool) {
+        self.0.retain(|&(symbol_id, _)| keep(symbol_id));
+        self.1.clear();
     }
 
     pub fn extend(&mut self, other: NarrowState) {
@@ -352,6 +362,27 @@ pub fn assigned_narrowed_type(
     }
 }
 
+// `const isString = typeof x === "string"`: remembers what the condition narrows on each edge. Only
+// variables nothing assigns again take part (a `const`, a parameter never assigned), as in tsc.
+pub fn register_aliased_condition(
+    alias: SymbolId,
+    init: &Expression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) {
+    let (mut on_true, mut on_false) = narrow_condition(init, scoping, ctx);
+    let stable = |symbol_id: SymbolId| {
+        let flags = scoping.symbol_flags(symbol_id);
+        let reassignable = flags.is_block_scoped() && !flags.is_const_variable();
+        !reassignable && !scoping.symbol_is_mutated(symbol_id)
+    };
+    on_true.retain_symbols(stable);
+    on_false.retain_symbols(stable);
+    if !on_true.is_empty() || !on_false.is_empty() {
+        ctx.aliased_conditions.insert(alias, (on_true, on_false));
+    }
+}
+
 pub fn narrow_condition(
     test: &Expression,
     scoping: &Scoping,
@@ -384,6 +415,14 @@ fn narrow_condition_by_symbol(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> (NarrowState, NarrowState) {
+    // A `const` that holds a condition (`const isString = typeof x === "string"`) stands for it.
+    if let Expression::Identifier(id) = test
+        && let Some(reference) = id.reference_id.get()
+        && let Some(symbol_id) = scoping.get_reference(reference).symbol_id()
+        && let Some(pair) = ctx.aliased_conditions.get(&symbol_id)
+    {
+        return pair.clone();
+    }
     match test {
         // oxc keeps parentheses as their own node instead of discarding them, so
         // `!(typeof x === "number")`'s inner expression is a ParenthesizedExpression
@@ -1252,8 +1291,13 @@ fn narrow_by_in(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> (NarrowState, NarrowState) {
-    let Expression::StringLiteral(key) = &bin.left else {
-        return empty_pair();
+    // A string or numeric literal key: `"a" in x`, `1 in x` (the property `1`).
+    let property = match &bin.left {
+        Expression::StringLiteral(key) => key.value.to_string(),
+        Expression::NumericLiteral(key) if key.value.fract() == 0.0 && key.value.abs() < 1e15 => {
+            format!("{}", key.value as i64)
+        }
+        _ => return empty_pair(),
     };
     let Expression::Identifier(ident) = &bin.right else {
         return empty_pair();
@@ -1261,7 +1305,6 @@ fn narrow_by_in(
     let Some(symbol_id) = resolve_symbol_id(ident, scoping) else {
         return empty_pair();
     };
-    let property = key.value.to_string();
     by_symbol(ctx, symbol_id, move |arena, current, want_present| {
         narrow_by_property_presence(arena, current, &property, want_present)
     })
@@ -1282,11 +1325,33 @@ enum Presence {
 // (its keys come from K, not from a concrete property list while K is generic), read as
 // Unknown, so neither branch drops them.
 fn property_presence(arena: &TypeArena, member: TypeId, property: &str) -> Presence {
+    // An intersection has the property when any part has it.
+    if let Type::Intersection(parts) = arena.get(member) {
+        let parts: Vec<Presence> = parts
+            .iter()
+            .map(|&part| property_presence(arena, part, property))
+            .collect();
+        return if parts.iter().any(|p| matches!(p, Presence::Required)) {
+            Presence::Required
+        } else if parts.iter().any(|p| matches!(p, Presence::Optional)) {
+            Presence::Optional
+        } else if parts.iter().all(|p| matches!(p, Presence::Absent)) {
+            Presence::Absent
+        } else {
+            Presence::Unknown
+        };
+    }
     let Type::Object(object) = arena.get(member) else {
         return Presence::Unknown;
     };
     if arena.record_value_type(member).is_some() {
         return Presence::Unknown;
+    }
+    // An index signature may hold the property (a numeric key only with a numeric one).
+    if object.string_index.is_some()
+        || (object.number_index.is_some() && property.parse::<f64>().is_ok())
+    {
+        return Presence::Optional;
     }
     match object
         .properties
@@ -1311,15 +1376,42 @@ fn narrow_by_property_presence(
     property: &str,
     want_present: bool,
 ) -> TypeId {
-    let Some(members) = union_members(arena, id) else {
-        return id;
-    };
+    let members = union_members(arena, id).unwrap_or_else(|| vec![id]);
     let presences: Vec<Presence> = members
         .iter()
         .map(|&member| property_presence(arena, member, property))
         .collect();
 
-    if want_present && presences.iter().all(|p| matches!(p, Presence::Absent)) {
+    // No member could have the property (the check is for one the type does not declare): tsc
+    // intersects the type with `Record<"name", unknown>`, so `x.name` reads as `unknown` after the
+    // test. A Record with a generic key domain may have it, so that case is left alone.
+    if want_present
+        && presences
+            .iter()
+            .all(|p| matches!(p, Presence::Absent | Presence::Unknown))
+        && !members.iter().any(|&member| {
+            matches!(arena.get(member), Type::Object(_))
+                && arena.record_value_type(member).is_some()
+        })
+        && !matches!(arena.get(id), Type::Any | Type::Error)
+    {
+        let unknown = arena.unknown();
+        let record = arena.alloc(Type::Object(crate::types::ObjectType::new(vec![
+            crate::types::PropertyEntry {
+                name: property.into(),
+                type_id: unknown,
+                optional: false,
+                is_method: false,
+                modifiers: Default::default(),
+            },
+        ])));
+        return arena.alloc_intersection(vec![id, record]).unwrap_or(id);
+    }
+    if union_members(arena, id).is_none() {
+        // A lone object that requires the property cannot lack it.
+        if !want_present && matches!(presences[0], Presence::Required) {
+            return arena.never();
+        }
         return id;
     }
 

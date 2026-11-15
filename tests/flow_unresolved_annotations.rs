@@ -349,3 +349,51 @@ fn an_enum_in_a_namespace_is_typed_and_does_not_merge_with_a_top_level_one() {
         "{found:?}"
     );
 }
+
+// `"a" in x` where the type does not declare `a` intersects it with `Record<"a", unknown>`, so
+// `x.a` is allowed after the test: on `unknown`, `object`, a type parameter and a lone object. A lone
+// object that requires the property is `never` when the test fails. Compared with tsc 6.0.3: nothing
+// is reported.
+#[test]
+fn in_narrows_a_type_that_does_not_declare_the_property() {
+    let source = "function f1(x: unknown) { if (x && typeof x === \"object\" && \"a\" in x) { x.a; } }\nfunction f2(x: object) { if (\"a\" in x) { const v: unknown = x.a; } }\nfunction f3<T>(x: T) { if (x && typeof x === \"object\" && \"a\" in x) { x.a; } }\nfunction f4(x: { a: string }) { if (\"b\" in x) { x.b; x.a; } }\nfunction f6(x: { kind: string }) { if (\"kind\" in x) { const k: string = x.kind; } else { const n: never = x; } }\n";
+    let found = errors(source);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+// `in` also narrows by a numeric key, sees the property of an intersection, and and a
+// union with `unknown` is `unknown`, and `T & X | T` is `T`. Compared with tsc 6.0.3: no errors.
+#[test]
+fn in_narrowing_handles_numeric_keys_intersections_and_unions_that_absorb() {
+    let source = "function a(x: object) { if (\"a\" in x && 1 in x) { x.a; x[1]; } }\nfunction b(x: { a: string } & { b: string }) { if (\"a\" in x) { const s: string = x.a; } else { const n: never = x; } }\nfunction d(x: unknown) { if (x && typeof x === \"object\" && \"a\" in x) { x.a; } if (x && typeof x === \"object\" && \"a\" in x) { x.a; } }\nfunction e<T>(x: T) { if (x && typeof x === \"object\" && \"a\" in x) { x.a; } if (x && typeof x === \"object\" && \"a\" in x) { x.a; } }\n";
+    let found = errors(source);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+// Bindings destructured from a union depend on each other: after `kind === "A"` the `payload` of
+// the same destructuring is the `A` member's. That holds for a `const` and for a parameter, not for
+// a `let`. Compared with tsc 6.0.3: lines 8 (the `let`) and 10 (the wrong member).
+#[test]
+fn destructured_bindings_of_a_union_are_narrowed_together() {
+    let source = "type Action = { kind: 'A', payload: number } | { kind: 'B', payload: string };\nfunction f1({ kind, payload }: Action) {\n    if (kind === 'A') { payload.toFixed(); }\n    switch (kind) { case 'B': payload.toUpperCase(); break; }\n}\nfunction f2(action: Action) {\n    let { kind, payload } = action;\n    if (kind === 'A') { payload.toFixed(); }\n    const { kind: k2, payload: p2 } = action;\n    if (k2 === 'A') { p2.toUpperCase(); }\n}\n";
+    let found = errors(source);
+    assert_eq!(
+        lines_of(&found, "does not exist on type"),
+        vec![8, 10],
+        "{found:?}"
+    );
+}
+
+// A `const` that holds a condition stands for it in a later `if` (control flow analysis of aliased
+// conditions): `typeof`, `!==`, a discriminant, `&&`/`||` of aliases and `!alias`. The narrowed
+// variable must not be assigned again. Compared with tsc 6.0.3: only line 16 (`x = 1` came first, so the alias no longer applies).
+#[test]
+fn a_const_holding_a_condition_narrows_like_the_condition() {
+    let source = "function f1(x: string | number) {\n    const isString = typeof x === \"string\";\n    const isNumber = typeof x === \"number\";\n    if (isString) { x.length; }\n    if (isNumber) { x.toFixed(); }\n    if (!isString) { x.toFixed(); }\n}\ntype Shape = { kind: \"c\", r: number } | { kind: \"s\", side: number };\nfunction f2(s: Shape) {\n    const isCircle = s.kind === \"c\";\n    if (isCircle) { s.r; } else { s.side; }\n}\nfunction f3(x: string | number) {\n    const isString = typeof x === \"string\";\n    x = 1;\n    if (isString) { x.length; }\n}\n";
+    let found = errors(source);
+    assert_eq!(
+        lines_of(&found, "does not exist on type"),
+        vec![16],
+        "{found:?}"
+    );
+}

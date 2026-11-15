@@ -90,6 +90,7 @@ fn bind_object_pattern(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) {
+    register_destructured_group(object, type_id, scoping, ctx);
     for property in &object.properties {
         let PropertyKey::StaticIdentifier(key) = &property.key else {
             ctx.warning(
@@ -115,6 +116,53 @@ fn bind_object_pattern(
         );
         bind_pattern(&rest.argument, ctx.arena.error(), scoping, ctx);
     }
+}
+
+// `const { kind, payload } = action` and `function f({ kind, payload }: Action)` with a union
+// source: the bindings depend on each other, so narrowing one (`kind === "A"`) narrows the others
+// (see `propagate_destructured`). Only bindings that are never assigned again take part, as in tsc.
+fn register_destructured_group(
+    object: &ObjectPattern,
+    type_id: TypeId,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) {
+    let is_union = matches!(ctx.arena.get(type_id), Type::Union(members) if members.len() > 1);
+    if !is_union {
+        return;
+    }
+    let mut members = Vec::new();
+    for property in &object.properties {
+        let PropertyKey::StaticIdentifier(key) = &property.key else {
+            continue;
+        };
+        let BindingPattern::BindingIdentifier(id) = &property.value else {
+            continue;
+        };
+        let Some(symbol_id) = id.symbol_id.get() else {
+            continue;
+        };
+        // A `let` is not followed even when nothing assigns it; a `const` and a parameter are.
+        let flags = scoping.symbol_flags(symbol_id);
+        let reassignable = flags.is_block_scoped() && !flags.is_const_variable();
+        // A `const` declaration is registered by variables.rs; this covers parameters.
+        if !reassignable && !flags.is_const_variable() && !scoping.symbol_is_mutated(symbol_id) {
+            members.push((symbol_id, key.name.to_string()));
+        }
+    }
+    if members.len() < 2 {
+        return;
+    }
+    let group = ctx.destructured_groups.len();
+    for (symbol_id, name) in &members {
+        ctx.destructured_index
+            .insert(*symbol_id, (group, name.clone()));
+    }
+    ctx.destructured_groups
+        .push(crate::bridge::context::DestructuredGroup {
+            source: type_id,
+            members,
+        });
 }
 
 // Destructuring a tuple. A hole (`const [, b] = t`) still takes up a position. An element
@@ -200,6 +248,9 @@ fn bind_array_pattern(
     let (element_type, is_real_array) = match ctx.arena.get(type_id) {
         Type::Array(element) => (*element, true),
         Type::Any | Type::Error => (type_id, false),
+        // A tuple with a generic spread (`[string, ...T]`) is iterable; its elements past the
+        // fixed ones are `T[number]`, which this checker does not model, so they read as `any`.
+        Type::Variadic(_) => (ctx.arena.any(), false),
         // Problem: `const [, a] = x || []` with `x: any` reported TS2488 on `never[] | any`.
         // tsc folds any union that has an `any` member into `any`, and destructuring it is
         // fine; this checker keeps the members apart.

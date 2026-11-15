@@ -65,6 +65,15 @@ fn check_identifier_declarator(
         }
     };
 
+    // `const isString = typeof x === "string"` stands for its condition in a later `if (isString)`.
+    if decl_kind == VariableDeclarationKind::Const
+        && declarator.type_annotation.is_none()
+        && let Some(symbol_id) = id.symbol_id.get()
+        && let Some(init) = &declarator.init
+    {
+        crate::bridge::narrow::register_aliased_condition(symbol_id, init, scoping, ctx);
+    }
+
     // With no annotation on the variable there is no contextual type for the
     // function on the right, so any untyped parameter of it is a genuine
     // implicit any. Reported before the body is inferred so the diagnostics come

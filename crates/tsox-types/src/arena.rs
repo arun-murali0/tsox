@@ -596,8 +596,14 @@ impl TypeArena {
         // is pushed reversed for the same reason so it unfolds in place.
         let mut queue = members;
         queue.reverse();
+        let mut saw_unknown = false;
         while let Some(id) = queue.pop() {
             match self.get(id) {
+                // `unknown` absorbs everything but `any`: `unknown | { a: string }` is `unknown`.
+                Type::Unknown => {
+                    saw_unknown = true;
+                    continue;
+                }
                 Type::Union(nested) => {
                     queue.extend(nested.iter().rev().copied());
                     continue;
@@ -622,6 +628,24 @@ impl TypeArena {
             }
         }
 
+        if saw_unknown {
+            return self.unknown();
+        }
+        // `T & X | T` is `T`: an intersection is a subtype of each of its parts, so it adds nothing
+        // to a union that already holds one of them.
+        if flat.len() > 1 {
+            let absorbed: Vec<bool> = flat
+                .iter()
+                .map(|&member| match self.get(member) {
+                    Type::Intersection(parts) => parts.iter().any(|part| flat.contains(part)),
+                    _ => false,
+                })
+                .collect();
+            if absorbed.iter().any(|&a| a) {
+                let mut keep = absorbed.iter();
+                flat.retain(|_| !*keep.next().unwrap_or(&false));
+            }
+        }
         match flat.len() {
             0 => self.never(),
             1 => flat[0],
