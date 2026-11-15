@@ -103,3 +103,25 @@ fn a_using_declaration_is_not_an_invalid_assignment_target() {
         );
     }
 }
+
+#[test]
+fn a_return_outside_a_function_does_not_check_its_expression() {
+    // tsc leaves a top-level `return` statement unchecked, so the unknown name after it is not
+    // reported. Here the stray `}` is a parse error, so tsc reports no TS1108 either: only the
+    // TS1128 for the brace.
+    let found = error_lines("return foo;\n}\nlet z: number = \"s\";\n");
+    assert!(
+        has(&found, 2, "Declaration or statement expected."),
+        "{found:?}"
+    );
+    assert!(
+        !found.iter().any(|(_, m)| m.starts_with("Cannot find name")),
+        "{found:?}"
+    );
+    assert!(
+        !found
+            .iter()
+            .any(|(_, m)| m.starts_with("A 'return' statement can only")),
+        "{found:?}"
+    );
+}

@@ -253,12 +253,17 @@ fn rule_for(text: &str, start: usize, end: usize, message: &str) -> Option<Rule>
         {
             enum_member_separator(start, end)
         }
+        "A 'return' statement can only be used within a function body." => {
+            return_outside_function(text, start)
+        }
         "Expected `)` but found `=`" => catch_initializer(text, start),
         "Expected `,` or `)` but found `=`" => rest_parameter_initializer(text, start),
         "Expected `,` or `]` but found `=`" => index_signature_initializer(text, start),
-        "Unexpected token" => stray_closing_brace(text, start, end)
-            .or_else(|| empty_declaration_list(text, start))
-            .or_else(|| expression_expected(text, start)),
+        // A missing operand comes before a stray brace: `export = }` is TS1109 for the `}`, not a
+        // brace left over after a statement.
+        "Unexpected token" => empty_declaration_list(text, start)
+            .or_else(|| expression_expected(text, start))
+            .or_else(|| stray_closing_brace(text, start, end)),
         "A rest element must be last in a destructuring pattern" => {
             rest_element_not_last(text, start)
         }
@@ -756,6 +761,11 @@ fn stray_closing_brace(text: &str, start: usize, end: usize) -> Option<Rule> {
     if text.get(start..end) != Some("}") || !open_block_headers(text.get(..start)?).is_empty() {
         return None;
     }
+    // A `}` straight after an operand supplied for a missing one (`export = }`) is the same
+    // error tsc reported as TS1109; it does not report the brace again.
+    if text.get(..start)?.trim_end().ends_with("(0 as any)") {
+        return None;
+    }
     Some(Rule {
         start,
         end,
@@ -832,6 +842,54 @@ fn rest_parameter_initializer(text: &str, start: usize) -> Option<Rule> {
             end: name_start + name_len,
         },
     })
+}
+
+// `return foo;` outside any function: tsc reports TS1108 on `return` and returns from checking the
+// statement, so `foo` is never looked at. The expression goes, so it is not checked here either.
+fn return_outside_function(text: &str, start: usize) -> Option<Rule> {
+    let rest = text.get(start..)?.strip_prefix("return")?;
+    if rest.starts_with(is_ident_byte_char) {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut expr_end = rest.len();
+    for (offset, byte) in rest.bytes().enumerate() {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' if depth == 0 => {
+                expr_end = offset;
+                break;
+            }
+            b')' | b']' | b'}' => depth -= 1,
+            b';' | b'\n' if depth == 0 => {
+                expr_end = offset;
+                break;
+            }
+            _ => {}
+        }
+    }
+    if rest[..expr_end].trim().is_empty() {
+        return None;
+    }
+    let from = start + "return".len();
+    Some(Rule {
+        start: from,
+        end: from + expr_end,
+        with: String::new(),
+        copy: None,
+        note: Note {
+            message: messages::syntax(
+                Code::ReturnOutsideFunction,
+                "A 'return' statement can only be used within a function body.".to_string(),
+            ),
+            start,
+            end: from,
+        },
+    })
+}
+
+fn is_ident_byte_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '$'
 }
 
 fn as_any_target(left: &str) -> String {
