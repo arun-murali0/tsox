@@ -3296,6 +3296,14 @@ pub fn reduce_variadic(arena: &mut TypeArena, elements: Vec<crate::types::TupleE
         }
     }
     if unresolved {
+        // `[...T]` is `T`: a spread of a type parameter alone adds nothing around it.
+        if let [only] = flat.as_slice()
+            && only.rest
+            && !only.optional
+            && matches!(arena.get(only.type_id), Type::GenericParameter(..))
+        {
+            return only.type_id;
+        }
         return arena.alloc(Type::Variadic(flat));
     }
     let rest_count = flat.iter().filter(|e| e.rest).count();

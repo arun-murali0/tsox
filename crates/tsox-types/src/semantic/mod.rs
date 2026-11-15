@@ -5,7 +5,7 @@ mod solver;
 // Only the helpers still used outside this module. The call checker reaches the rest
 // through GenericSolver, which calls into generics.rs directly.
 pub use generics::{
-    contains_type_param, resolve_conditional_type, substitute_bound_type_params,
+    contains_type_param, reduce_variadic, resolve_conditional_type, substitute_bound_type_params,
     substitute_type_params,
 };
 pub use queries::SemanticQueries;
