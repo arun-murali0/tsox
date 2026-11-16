@@ -861,7 +861,17 @@ fn check_type_argument_constraint(
     if crate::semantic::contains_type_param(arena, constraint) {
         return;
     }
-    if !crate::subtyping::is_subtype(arena, argument, constraint) {
+    // In the true branch of `argument extends X ? ...`, the argument is also an X.
+    let narrowed = namespace
+        .narrowed_to(arena, argument)
+        .into_iter()
+        .any(|extends| crate::subtyping::is_subtype(arena, extends, constraint));
+    if narrowed {
+        // The same type reference may be resolved again outside the conditional; that pass
+        // must not report what this one found satisfied.
+        namespace.note_satisfied_by_conditional(span);
+    }
+    if !narrowed && !crate::subtyping::is_subtype(arena, argument, constraint) {
         namespace.note_constraint_violation(parameter_name, argument, constraint, span);
     }
 }
@@ -1564,8 +1574,10 @@ fn resolve_conditional_arm(
     constrainer.visit_ts_type(&conditional.extends_type);
     let resolved = (|| {
         let extends_type = resolve_ts_type(&conditional.extends_type, namespace, arena)?;
-        let true_type = resolve_ts_type(&conditional.true_type, namespace, arena)?;
-        Some((extends_type, true_type))
+        namespace.enter_conditional_true(check_type, extends_type);
+        let true_type = resolve_ts_type(&conditional.true_type, namespace, arena);
+        namespace.leave_conditional_true();
+        Some((extends_type, true_type?))
     })();
     namespace.pop_type_params(scope);
     let (extends_type, true_type) = resolved?;

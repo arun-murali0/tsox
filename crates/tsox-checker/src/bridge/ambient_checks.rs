@@ -10,11 +10,11 @@ use oxc_span::GetSpan;
 
 use super::context::CheckContext;
 use super::declare::{TopLevelItem, items_in, namespace_members};
-use super::exports::is_external_module;
+use super::exports::is_module_file;
 use crate::diagnostic_messages::messages;
 
 pub(super) fn check<'ast>(program: &'ast Program<'ast>, ctx: &mut CheckContext<'ast, '_>) {
-    let is_module = is_external_module(program);
+    let is_module = is_module_file(program, &ctx.options);
     for stmt in &program.body {
         match stmt {
             // TS2669: `declare global` augments the global scope from a module; in a script

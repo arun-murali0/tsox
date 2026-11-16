@@ -189,6 +189,10 @@ fn write_signature(
         if index > 0 {
             out.push_str(", ");
         }
+        // tsc writes a rest parameter as `...args: any[]`, the dots before the name.
+        if param.rest {
+            out.push_str("...");
+        }
         match &param.name {
             Some(name) => out.push_str(name),
             // Every resolved parameter has a name today (see Param's own doc comment);
@@ -200,9 +204,6 @@ fn write_signature(
             out.push('?');
         }
         out.push_str(": ");
-        if param.rest {
-            out.push_str("...");
-        }
         write_type(arena, param.type_id, out, depth);
     }
     out.push(')');
@@ -747,7 +748,7 @@ mod tests {
             type_params: Vec::new(),
             is_untyped: false,
         }));
-        assert_eq!(render(&arena, func), "(rest: ...number[]) => undefined");
+        assert_eq!(render(&arena, func), "(...rest: number[]) => undefined");
     }
 
     #[test]

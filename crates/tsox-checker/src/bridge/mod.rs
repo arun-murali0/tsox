@@ -14,6 +14,9 @@ mod narrow;
 mod parse;
 mod probe;
 mod statements;
+mod strict_mode_names;
+mod syntax_errors;
+mod syntax_repair;
 mod tuple_grammar;
 mod unreachable_code;
 mod unresolved_names;
@@ -119,7 +122,13 @@ pub fn check_file(
     }
 
     let allocator = Allocator::default();
-    let program = parse(&allocator, source, file_name)?;
+    let parsed = parse::parse_with_syntax_errors(&allocator, source, file_name)?;
+    let (program, syntax_errors, gave_up, offsets) = (
+        parsed.program,
+        parsed.syntax,
+        parsed.gave_up,
+        parsed.offsets,
+    );
     // semantic is kept for the whole check on purpose: it owns the Scoping borrowed
     // here, and it is where the control flow graph lives once flow analysis reads
     // it. Keeping only the Scoping would drop the graph along with the rest.
@@ -127,6 +136,7 @@ pub fn check_file(
 
     let reusable_arena = std::mem::take(arena);
     let mut ctx = CheckContext::with_arena_and_file_id(file_name, file_id, reusable_arena);
+    ctx.source_text = source;
     ctx.cancel = cancel.cloned();
     ctx.imports = imports;
     ctx.options = options;
@@ -162,6 +172,9 @@ pub fn check_file(
         Some(module) => exports::collect_exports(&program, semantic.scoping(), &mut ctx, module),
         None => ExportTable::default(),
     };
+    if gave_up {
+        exports.mark(IncompleteReason::SyntaxErrorNoTree);
+    }
     // Exported functions whose return type is inferred from imported functions: the project
     // looks for a circle among them, which no one file can see. A function that is not
     // exported cannot be the way back into this file, so it is not a node of such a circle.
@@ -185,7 +198,42 @@ pub fn check_file(
             })
         })
         .collect();
-    let (diagnostics, metrics) = publish(&mut ctx);
+    let (mut diagnostics, metrics) = publish(&mut ctx);
+    // A repaired copy of the source was checked: its offsets go back to the original's.
+    if let Some(map) = &offsets {
+        for diagnostic in &mut diagnostics {
+            diagnostic.start = map.to_original(diagnostic.start, false);
+            diagnostic.end = map.to_original(diagnostic.end, true);
+        }
+    }
+
+    // The parser's syntax errors come first, at the original source's offsets (the repairs
+    // already put them there, so they skip the mapping above).
+    diagnostics.splice(
+        0..0,
+        syntax_errors.into_iter().map(|found| Diagnostic {
+            severity: tsox_base::diagnostics::Severity::Error,
+            code: found.message.code,
+            message: found.message.text,
+            file_name: file_name.to_string(),
+            start: found.span.start,
+            end: found.span.end,
+        }),
+    );
+
+    // tsc lists a file's diagnostics by position, then length, then code, and reports one that
+    // two passes found only once (`sortAndDeduplicateDiagnostics`). The passes here run in their
+    // own order, so the list is put in tsc's.
+    diagnostics.sort_by_key(|d| {
+        (
+            d.start,
+            d.end.saturating_sub(d.start),
+            d.code.tsc_code().unwrap_or(0),
+        )
+    });
+    diagnostics.dedup_by(|b, a| {
+        a.start == b.start && a.end == b.end && a.code == b.code && a.message == b.message
+    });
 
     *arena = ctx.arena;
     Ok(Some((diagnostics, metrics, exports)))
@@ -269,6 +317,7 @@ fn bodies_phase<'ast>(
         return;
     }
     unresolved_names::report_unresolved_type_names(program, scoping, ctx);
+    strict_mode_names::report_strict_mode_names(program, ctx);
     implicit_any::report_implicit_any(program, ctx);
     duplicates::report_duplicate_declarations(program, ctx);
     class_implements::check_class_implements(program, ctx);

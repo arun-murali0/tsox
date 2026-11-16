@@ -34,6 +34,7 @@ impl ReasonKind {
     pub fn of(reason: IncompleteReason) -> Self {
         match reason {
             IncompleteReason::CheckerCrashed
+            | IncompleteReason::SyntaxErrorNoTree
             | IncompleteReason::UnsupportedDeclaration
             | IncompleteReason::EmptyBindingPattern
             | IncompleteReason::ShorthandAmbientModule

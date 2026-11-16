@@ -872,6 +872,34 @@ fn resolve_overload_params_lenient(
     Some(out)
 }
 
+// A JavaScript file is not given the TypeScript rule above: its constructor functions get their
+// properties from `this.x = ...` in the body, which this checker does not model, so checking a
+// body there would report every one of them as missing.
+// A body that reads `this` is left out as well: `function C(x) { this.p = x }` is a constructor
+// function in tsc's eyes, and the checker has no type for `this` there, so it would report each
+// property as missing. A nested non-arrow function has a `this` of its own and does not count.
+fn body_uses_this(func: &Function<'_>) -> bool {
+    use oxc_ast_visit::Visit;
+    struct Finder(bool);
+    impl<'a> Visit<'a> for Finder {
+        fn visit_this_expression(&mut self, _: &oxc_ast::ast::ThisExpression) {
+            self.0 = true;
+        }
+        fn visit_function(&mut self, _: &Function<'a>, _: oxc_semantic::ScopeFlags) {}
+    }
+    let mut finder = Finder(false);
+    if let Some(body) = &func.body {
+        finder.visit_function_body(body);
+    }
+    finder.0
+}
+
+fn is_javascript_file(file_name: &str) -> bool {
+    [".js", ".jsx", ".mjs", ".cjs"]
+        .iter()
+        .any(|extension| file_name.ends_with(extension))
+}
+
 fn resolve_function_signature(
     func: &Function<'_>,
     ctx: &mut CheckContext<'_, '_>,
@@ -879,8 +907,13 @@ fn resolve_function_signature(
 ) -> Option<crate::arena::TypeId> {
     let scope = ctx.namespace.push_type_params(&mut ctx.arena, func);
     let mut params = resolve_function_params(&func.params, &mut ctx.namespace, &mut ctx.arena);
-    if params.is_none() && func.body.is_none() {
-        // An overload signature may leave a parameter unannotated; tsc types it `any`.
+    if params.is_none()
+        && (func.body.is_none() || (!is_javascript_file(ctx.file_name) && !body_uses_this(func)))
+    {
+        // A parameter left unannotated is `any` in tsc (the implicit-any error is reported on
+        // its own), for an overload signature and for a function with a body alike. Without
+        // this a function with one untyped parameter had no signature, its body was never
+        // checked, and nothing declared inside it had a type to read back.
         params = resolve_overload_params_lenient(&func.params, ctx);
     }
     let return_type = match &func.return_type {
@@ -1169,6 +1202,23 @@ pub(super) fn find_constructor<'a>(
     })
 }
 
+// The constructor that has a body. With overloads, `find_constructor` finds the first signature,
+// which has none; the implementation, the one whose body assigns the fields, comes last.
+pub(super) fn find_constructor_body<'a>(
+    class: &'a oxc_ast::ast::Class<'a>,
+) -> Option<&'a oxc_ast::ast::FunctionBody<'a>> {
+    use oxc_ast::ast::{ClassElement, MethodDefinitionKind};
+    class.body.body.iter().find_map(|element| {
+        let ClassElement::MethodDefinition(method) = element else {
+            return None;
+        };
+        if method.kind != MethodDefinitionKind::Constructor {
+            return None;
+        }
+        method.value.body.as_deref()
+    })
+}
+
 fn declare_enum(decl: &oxc_ast::ast::TSEnumDeclaration, ctx: &mut CheckContext<'_, '_>) {
     let Some(symbol_id) = decl.id.symbol_id.get() else {
         return;
@@ -1198,8 +1248,13 @@ fn declare_enum(decl: &oxc_ast::ast::TSEnumDeclaration, ctx: &mut CheckContext<'
     // a value position, it means an object whose properties are its members. Both
     // are built from the same resolved member list. Ambient enum declarations can
     // merge when their members do not collide, so preserve both halves.
+    // Only an enum of the same scope merges: a top-level `enum A` is not the previous block of
+    // `A` inside `namespace N`.
     let previous_enum = match ctx.namespace.resolve(&decl.id.name, &mut ctx.arena) {
-        crate::namespace::Resolution::Resolved(existing) if ctx.arena.is_enum(existing) => {
+        crate::namespace::Resolution::Resolved(existing)
+            if ctx.arena.is_enum(existing)
+                && ctx.namespace.is_declared_in_current_scope(&decl.id.name) =>
+        {
             Some(existing)
         }
         _ => None,

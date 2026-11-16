@@ -725,36 +725,15 @@ pub mod messages {
 
     // tsc points a few well-known global names at the package that declares them.
     pub fn unresolved_identifier_hint(name: &str) -> Option<DiagnosticMessage> {
+        // The names tsc hints for (checked against it: `exports`, `path`, `assert` and the module
+        // names are plain "Cannot find name").
         const NODE: &[&str] = &[
             "require",
             "module",
-            "exports",
             "process",
             "Buffer",
             "__filename",
             "__dirname",
-            "fs",
-            "path",
-            "url",
-            "events",
-            "http",
-            "https",
-            "os",
-            "util",
-            "crypto",
-            "stream",
-            "child_process",
-            "assert",
-            "zlib",
-            "net",
-            "readline",
-            "cluster",
-            "dns",
-            "vm",
-            "querystring",
-            "buffer",
-            "tty",
-            "worker_threads",
         ];
         let node_scheme = name.starts_with("node:");
         if NODE.contains(&name) || node_scheme {
@@ -809,6 +788,54 @@ pub mod messages {
         )
     }
 
+    pub fn static_member_hint(name: &str, class: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::StaticMemberHint,
+            format!("Cannot find name '{name}'. Did you mean the static member '{class}.{name}'?"),
+        )
+    }
+
+    pub fn instance_member_hint(name: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::InstanceMemberHint,
+            format!("Cannot find name '{name}'. Did you mean the instance member 'this.{name}'?"),
+        )
+    }
+
+    pub fn arguments_in_initializer() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ArgumentsInInitializer,
+            "'arguments' cannot be referenced in property initializers or class static initialization blocks.".to_string(),
+        )
+    }
+
+    /// `eval` or `arguments` bound or assigned in strict mode. tsc words it by what makes the
+    /// code strict: inside a class, a module, or neither.
+    pub fn eval_or_arguments_in_strict_mode(
+        name: &str,
+        in_class: bool,
+        in_module: bool,
+    ) -> DiagnosticMessage {
+        if in_class {
+            DiagnosticMessage::new(
+                DiagnosticCode::EvalOrArgumentsInClass,
+                format!(
+                    "Code contained in a class is evaluated in JavaScript's strict mode which does not allow this use of '{name}'. For more information, see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Strict_mode."
+                ),
+            )
+        } else if in_module {
+            DiagnosticMessage::new(
+                DiagnosticCode::EvalOrArgumentsInModule,
+                format!("Invalid use of '{name}'. Modules are automatically in strict mode."),
+            )
+        } else {
+            DiagnosticMessage::new(
+                DiagnosticCode::EvalOrArgumentsInStrictMode,
+                format!("Invalid use of '{name}' in strict mode."),
+            )
+        }
+    }
+
     pub fn unresolved_namespace(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnresolvedNamespace,
@@ -832,6 +859,21 @@ pub mod messages {
             DiagnosticCode::PropertyDoesNotExist,
             format!(
                 "Property '{property_name}' does not exist on type '{}'.",
+                display_type(arena, object_type)
+            ),
+        )
+    }
+
+    pub fn property_needs_newer_lib(
+        arena: &TypeArena,
+        property_name: &str,
+        object_type: TypeId,
+        lib: &str,
+    ) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::PropertyNeedsNewerLib,
+            format!(
+                "Property '{property_name}' does not exist on type '{}'. Do you need to change your target library? Try changing the 'lib' compiler option to '{lib}' or later.",
                 display_type(arena, object_type)
             ),
         )
@@ -1107,6 +1149,11 @@ pub mod messages {
             DiagnosticCode::AmbientModuleRelativeName,
             "Ambient module declaration cannot specify relative module name.".to_string(),
         )
+    }
+
+    /// A syntax rule oxc reported, in tsc's code and wording (see `bridge::syntax_errors`).
+    pub fn syntax(code: DiagnosticCode, text: String) -> DiagnosticMessage {
+        DiagnosticMessage::new(code, text)
     }
 
     pub fn ambient_initializer() -> DiagnosticMessage {

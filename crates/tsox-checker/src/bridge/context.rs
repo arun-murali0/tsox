@@ -54,6 +54,8 @@ pub struct CheckContext<'ast, 'src> {
     pub symbols: SymbolTypeMap,
     pub diagnostics: Vec<Diagnostic>,
     pub file_name: &'src str,
+    // The source text of the unit being checked, for a message that quotes it (empty until set).
+    pub source_text: &'src str,
     // The compiler options this unit is checked under (see check_options.rs).
     pub options: crate::check_options::CheckOptions,
 
@@ -241,6 +243,15 @@ pub struct CheckContext<'ast, 'src> {
     pub type_predicates: std::collections::HashMap<oxc_semantic::SymbolId, TypePredicate>,
     // `const { kind, a } = x` where `x` is a union: narrowing `kind` narrows `a` too.
     pub destructured_groups: Vec<DestructuredGroup>,
+    // `const isString = typeof x === "string"`: what the condition narrows on each edge, for a later
+    // `if (isString)` (control flow analysis of aliased conditions).
+    pub aliased_conditions: std::collections::HashMap<
+        oxc_semantic::SymbolId,
+        (
+            crate::bridge::narrow::NarrowState,
+            crate::bridge::narrow::NarrowState,
+        ),
+    >,
     pub destructured_index: std::collections::HashMap<oxc_semantic::SymbolId, (usize, String)>,
     pub overload_signatures: std::collections::HashMap<oxc_semantic::SymbolId, Vec<TypeId>>,
     pub implementation_signatures: std::collections::HashMap<oxc_semantic::SymbolId, TypeId>,
@@ -511,6 +522,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             symbols: SymbolTypeMap::new(),
             diagnostics: Vec::new(),
             file_name,
+            source_text: "",
             options: crate::check_options::CheckOptions::default(),
             narrow: NarrowState::new(),
             flow: crate::reachability::Reachability::default(),
@@ -554,6 +566,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             class_instances: std::collections::HashSet::new(),
             type_predicates: std::collections::HashMap::new(),
             destructured_groups: Vec::new(),
+            aliased_conditions: Default::default(),
             destructured_index: std::collections::HashMap::new(),
             overload_signatures: std::collections::HashMap::new(),
             implementation_signatures: std::collections::HashMap::new(),

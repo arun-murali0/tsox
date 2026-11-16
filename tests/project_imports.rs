@@ -400,21 +400,32 @@ fn a_file_with_a_syntax_error_does_not_stop_its_importers() {
             ),
         ],
     );
-    assert!(project.report.failure_count() >= 1);
-    // The importer is still checked, and nothing is invented about the broken file.
-    assert!(matches!(
-        project
+    let outcome_of = |name: &str| {
+        &project
             .report
             .files
             .iter()
             .find(|r| {
                 let path = project.graph.files().path(r.file_id).unwrap();
-                path.file_name().unwrap() == "ok.ts"
+                path.file_name().unwrap() == name
             })
             .unwrap()
-            .outcome,
-        FileOutcome::Checked(_)
-    ));
+            .outcome
+    };
+    // The broken file reports its syntax error the way tsc words it.
+    let FileOutcome::Checked(bad) = outcome_of("bad.ts") else {
+        panic!("the broken file should report its syntax error");
+    };
+    assert!(bad.iter().any(|d| d.message == "'}' expected."), "{bad:?}");
+    // The importer is still checked, and nothing is invented about the broken file: its exports
+    // are unknown, so the import is not an error.
+    let FileOutcome::Checked(ok) = outcome_of("ok.ts") else {
+        panic!("the importer should still be checked");
+    };
+    assert!(
+        ok.iter().all(|d| d.severity != tsox::Severity::Error),
+        "{ok:?}"
+    );
 }
 
 // Step 7b: an exported declaration may name one that is not exported. The hidden one

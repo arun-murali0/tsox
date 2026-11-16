@@ -1,6 +1,7 @@
 use crate::arena::{TypeArena, TypeId};
 use crate::fxhash::FxHashMap;
 use crate::subtyping;
+use crate::types::Type;
 
 /// Semantic operations exposed to AST-facing checker code.
 ///
@@ -113,7 +114,19 @@ impl<'a> SemanticQueries<'a> {
     /// bridge code calls the concept it actually means, and so that a
     /// divergence can be added here without touching any call site.
     pub fn is_assignable(&mut self, source: TypeId, target: TypeId) -> bool {
-        self.is_subtype(source, target)
+        // Two different enums are related by name and members, not as unions of their literals:
+        // `enum Nope { a, b, c }` is not an `E { a, b, c }`.
+        if source != target
+            && let Some(related) = self.arena.enum_related(source, target)
+        {
+            return related;
+        }
+        if self.is_subtype(source, target) {
+            return true;
+        }
+        // A `number` is assignable to a numeric enum: any numeric value, not only the members.
+        // (A literal that is not a member is not: that is `subtype`'s answer too.)
+        matches!(self.arena.get(source), Type::Number) && self.arena.accepts_number_as_enum(target)
     }
 
     // Every result gets cached unconditionally, including a single point lookup

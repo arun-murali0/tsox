@@ -28,7 +28,9 @@ pub fn analyze_flow(program: &Program<'_>, scoping: &Scoping, ctx: &mut CheckCon
     if is_declaration_file(ctx.file_name) {
         return;
     }
-    ctx.flow = crate::reachability::analyze(program, scoping);
+    let forced_module =
+        ctx.options.module_detection_force && !program.source_type.is_typescript_definition();
+    ctx.flow = crate::reachability::analyze_as(program, scoping, forced_module);
 }
 
 pub fn check_unreachable_code(ctx: &mut CheckContext<'_, '_>) {

@@ -80,6 +80,8 @@ pub enum IncompleteReason {
     /// The file is in an import cycle that did not settle within its bound, so what it exports
     /// may still have been changing.
     CycleDidNotSettle,
+    /// The parser gave up on a syntax error and left no tree, so the file's exports are unknown.
+    SyntaxErrorNoTree,
 }
 
 impl IncompleteReason {
@@ -109,6 +111,7 @@ impl IncompleteReason {
                 "`export * as ns` from a module that is missing or not read"
             }
             Self::CycleDidNotSettle => "an import cycle that did not settle",
+            Self::SyntaxErrorNoTree => "a syntax error left the file without a tree",
         }
     }
 }
@@ -535,7 +538,7 @@ pub fn collect_exports<'ast>(
     module: ModuleKey,
 ) -> ExportTable {
     let definition = program.source_type.is_typescript_definition();
-    let is_module = is_external_module(program);
+    let is_module = is_module_file(program, &ctx.options);
     // A script's global declarations are built only when the project asks: most are never
     // used by another file, and a portable declaration for every top-level item of every
     // script is the cost. Without the ask the script lists its names and nothing else.
@@ -569,6 +572,16 @@ pub fn collect_exports<'ast>(
         .map(|name| name.to_string())
         .collect();
     table
+}
+
+// A module for the checker's purposes: it has `import` or `export` syntax, or the project asks for
+// `moduleDetection: "force"` and the file is not a declaration file (those stay scripts).
+pub(super) fn is_module_file(
+    program: &Program<'_>,
+    options: &crate::check_options::CheckOptions,
+) -> bool {
+    is_external_module(program)
+        || (options.module_detection_force && !program.source_type.is_typescript_definition())
 }
 
 // Whether the file has `import` or `export` syntax, which makes it a module and not a script.

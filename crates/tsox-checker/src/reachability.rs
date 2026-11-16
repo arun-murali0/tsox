@@ -206,13 +206,22 @@ impl Reachability {
 /// Runs the flow over a file. `scoping` resolves identifiers to variables; it is the same
 /// scope analysis the checker already has.
 pub fn analyze(program: &Program<'_>, scoping: &Scoping) -> Reachability {
+    analyze_as(program, scoping, false)
+}
+
+// `forced_module` is `moduleDetection: "force"`: a file with no import or export is still a module,
+// so a `let` at its top is local to it, not a global.
+pub fn analyze_as(program: &Program<'_>, scoping: &Scoping, forced_module: bool) -> Reachability {
     // Two walks. The first only learns which variables are tracked and which function each
     // lives in, so that a read that comes before its declaration (a hoisted `var`) is known to
     // be of a tracked variable. Its other results are thrown away.
     let mut discover = Analyzer::new(scoping, HashMap::new(), HashMap::new(), HashSet::new());
-    discover.is_script = program.source_type.is_script();
+    discover.is_script = program.source_type.is_script() && !forced_module;
     let predicates = predicate_functions(program);
     discover.predicates = predicates.clone();
+    let mut namespaces = NamespaceMembers::new();
+    collect_namespaces(&program.body, &mut namespaces);
+    discover.namespaces = namespaces.clone();
     discover.visit_program(program);
     let mut analyzer = Analyzer::new(
         scoping,
@@ -220,8 +229,9 @@ pub fn analyze(program: &Program<'_>, scoping: &Scoping) -> Reachability {
         discover.last_assignment,
         discover.definite,
     );
-    analyzer.is_script = program.source_type.is_script();
+    analyzer.is_script = program.source_type.is_script() && !forced_module;
     analyzer.predicates = predicates;
+    analyzer.namespaces = namespaces;
     analyzer.discovering = false;
     analyzer.visit_program(program);
     analyzer.out
@@ -440,6 +450,8 @@ struct Analyzer<'s> {
     in_place_function: Option<Span>,
     // The name (or start) of the class method being entered and whether it is a constructor.
     method: Option<(Span, bool)>,
+    // The next property key visited belongs to a method or accessor: see `visit_property_key`.
+    member_key: bool,
     fn_state: FnState,
     arrivals: Vec<Option<Bits>>,
     // How many label statements sit directly around the statement being entered, so a loop can
@@ -459,6 +471,13 @@ struct Analyzer<'s> {
     // a `for...in` / `for...of`, whose variable is assigned by the loop.
     declaration: Option<(VariableDeclarationKind, bool)>,
     in_for_head: bool,
+    // For each enclosing `for (let x in a)`: the symbol of `x` and of `a`. See `visit_computed_member_expression`.
+    for_in_keys: Vec<(SymbolId, SymbolId)>,
+    // Variables whose initializer is being visited: a read there is of a type still being resolved.
+    initializing: Vec<SymbolId>,
+    // Variables with an ambient (`declare var`) declaration: tsc judges a variable by its first
+    // declaration, so a later one in the same file does not make it a candidate.
+    ambient_vars: HashSet<SymbolId>,
     in_export: bool,
     // The variables something assigns with a plain `x = ...`, a logical assignment, a destructuring
     // or a loop head: tsc's "definite" assignment, as opposed to `x += 1` and `x++`. Learned in
@@ -476,6 +495,7 @@ struct Analyzer<'s> {
     // Functions declared with a type predicate (`x is T`) as their return type, which narrow
     // their argument where a call to one is a condition.
     predicates: HashSet<SymbolId>,
+    namespaces: NamespaceMembers,
     out: Reachability,
 }
 
@@ -489,6 +509,7 @@ impl<'s> Analyzer<'s> {
         Self {
             scoping,
             predicates: HashSet::new(),
+            namespaces: HashMap::new(),
             st: St::live(),
             within: false,
             jumps: Jumps::default(),
@@ -496,6 +517,7 @@ impl<'s> Analyzer<'s> {
             iife_pending: false,
             in_place_function: None,
             method: None,
+            member_key: false,
             fn_state: FnState::default(),
             arrivals: Vec::new(),
             pending_labels: 0,
@@ -507,6 +529,9 @@ impl<'s> Analyzer<'s> {
             tracked,
             declaration: None,
             in_for_head: false,
+            for_in_keys: Vec::new(),
+            initializing: Vec::new(),
+            ambient_vars: HashSet::new(),
             in_export: false,
             definite,
             frames: Vec::new(),
@@ -740,7 +765,7 @@ impl<'s> Analyzer<'s> {
                 self.collect_removes_undefined(&unary.argument, !when_true, out)
             }
             // `x` is truthy, so not `undefined`.
-            Expression::Identifier(id) if when_true => out.extend(self.tracked_index(id)),
+            Expression::Identifier(id) if when_true => out.extend(self.narrowed_index(id)),
             // `isC(x)`: a call to a predicate function narrows its arguments on the true edge.
             Expression::CallExpression(call) if when_true => {
                 if let Expression::Identifier(callee) = skip_parens(&call.callee)
@@ -751,7 +776,7 @@ impl<'s> Analyzer<'s> {
                         if let Some(Expression::Identifier(id)) =
                             argument.as_expression().map(skip_parens)
                         {
-                            out.extend(self.tracked_index(id));
+                            out.extend(self.narrowed_index(id));
                         }
                     }
                 }
@@ -767,7 +792,7 @@ impl<'s> Analyzer<'s> {
                         _ => None,
                     };
                     if let Some(Expression::Identifier(id)) = operand {
-                        out.extend(self.tracked_index(id));
+                        out.extend(self.narrowed_index(id));
                     }
                 }
                 let (equal, strict) = match binary.operator {
@@ -784,7 +809,7 @@ impl<'s> Analyzer<'s> {
                     let this = skip_parens(this);
                     let other = skip_parens(other);
                     if let Expression::Identifier(id) = this {
-                        if let Some(index) = self.tracked_index(id) {
+                        if let Some(index) = self.narrowed_index(id) {
                             let compares_undefined = is_undefined(other)
                                 || (!strict && matches!(other, Expression::NullLiteral(_)));
                             if compares_undefined {
@@ -809,7 +834,7 @@ impl<'s> Analyzer<'s> {
                         && (strict || member.property.name == "constructor")
                         && (member.property.name == "constructor" || is_literal(other))
                     {
-                        out.extend(self.tracked_index(id));
+                        out.extend(self.narrowed_index(id));
                     }
                     // `typeof x === "string"` and `typeof x !== "undefined"`.
                     if let Expression::UnaryExpression(unary) = this {
@@ -817,7 +842,7 @@ impl<'s> Analyzer<'s> {
                             if let (Expression::Identifier(id), Expression::StringLiteral(name)) =
                                 (skip_parens(&unary.argument), other)
                             {
-                                if let Some(index) = self.tracked_index(id) {
+                                if let Some(index) = self.narrowed_index(id) {
                                     let names_undefined = name.value == "undefined";
                                     // The true edge of `=== "string"` and the false edge of
                                     // `=== "undefined"` both rule `undefined` out.
@@ -839,6 +864,14 @@ impl<'s> Analyzer<'s> {
     fn tracked_index(&self, id: &IdentifierReference<'_>) -> Option<usize> {
         let tracked = self.tracked.get(&self.symbol_of(id)?)?;
         (tracked.container == self.container).then_some(tracked.index)
+    }
+
+    // The index of a tracked variable for narrowing, whichever function declares it: a truthiness
+    // test narrows an outer variable inside a closure as it does one of the function's own.
+    fn narrowed_index(&self, id: &IdentifierReference<'_>) -> Option<usize> {
+        self.tracked
+            .get(&self.symbol_of(id)?)
+            .map(|tracked| tracked.index)
     }
 
     fn symbol_of(&self, id: &IdentifierReference<'_>) -> Option<SymbolId> {
@@ -1110,13 +1143,65 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
         self.function = outer_function;
     }
 
+    // tsc takes the computed key of a method or accessor, in a class or an object literal, to
+    // belong to that member: its flow container is the member, so a variable of the enclosing
+    // function or file read there counts as an outer variable and is assumed assigned. Only the
+    // key is affected, not the decorators or the body.
+    // `a[x]` inside `for (let x in a)`, where `x` is the variable that loop declares: tsc does not
+    // report `a` there, though it reports the read in the loop head and any other `a[y]`.
+    fn visit_computed_member_expression(
+        &mut self,
+        member: &oxc_ast::ast::ComputedMemberExpression<'a>,
+    ) {
+        let symbol_of = |this: &Self, expression: &Expression<'a>| {
+            let mut expression = expression;
+            while let Expression::ParenthesizedExpression(inner) = expression {
+                expression = &inner.expression;
+            }
+            let Expression::Identifier(id) = expression else {
+                return None;
+            };
+            this.scoping
+                .get_reference(id.reference_id.get()?)
+                .symbol_id()
+        };
+        if let (Some(object), Some(key)) = (
+            symbol_of(self, &member.object),
+            symbol_of(self, &member.expression),
+        ) && self.for_in_keys.contains(&(key, object))
+        {
+            self.visit_expression(&member.expression);
+            return;
+        }
+        walk::walk_computed_member_expression(self, member);
+    }
+
+    fn visit_property_key(&mut self, key: &oxc_ast::ast::PropertyKey<'a>) {
+        if std::mem::take(&mut self.member_key) {
+            self.container(false, true, Kind::OWN_FLOW, |this| {
+                walk::walk_property_key(this, key)
+            });
+        } else {
+            walk::walk_property_key(self, key);
+        }
+    }
+
+    fn visit_object_property(&mut self, property: &oxc_ast::ast::ObjectProperty<'a>) {
+        self.member_key = property.computed
+            && (property.method || property.kind != oxc_ast::ast::PropertyKind::Init);
+        walk::walk_object_property(self, property);
+        self.member_key = false;
+    }
+
     fn visit_method_definition(&mut self, method: &oxc_ast::ast::MethodDefinition<'a>) {
+        self.member_key = method.computed;
         let saved = self.in_place_function.replace(method.value.span);
         let saved_method = self.method.replace((
             method.key.span(),
             method.kind == oxc_ast::ast::MethodDefinitionKind::Constructor,
         ));
         walk::walk_method_definition(self, method);
+        self.member_key = false;
         self.method = saved_method;
         self.in_place_function = saved;
     }
@@ -1308,6 +1393,11 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
         let Some(symbol) = reference.symbol_id() else {
             return;
         };
+        // `var a = { f: a }`: reading a variable inside its own initializer. Its type is circular,
+        // which tsc resolves to `any` (and reports as TS7022), so there is nothing unassigned.
+        if self.initializing.contains(&symbol) {
+            return;
+        }
         let Some(tracked) = self.tracked.get(&symbol).copied() else {
             return;
         };
@@ -1316,7 +1406,9 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
         } else {
             // From inside another function tsc assumes the variable is assigned, unless it is a
             // `let` that nothing assigns with a plain `=`.
+            // Narrowed inside this function (`while (cond) { cond; }`): `undefined` is gone.
             self.closure_read_is_unassigned(symbol, tracked, id.span)
+                && !self.st.assigned.has(tracked.index)
         };
         if unassigned {
             self.out.unassigned.push(UnassignedRead {
@@ -1340,23 +1432,60 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
     // assigned until something assigns it, and a declaration met again (in a loop body) starts it
     // over.
     fn visit_variable_declarator(&mut self, declarator: &oxc_ast::ast::VariableDeclarator<'a>) {
+        let binding_symbol = match &declarator.id {
+            BindingPattern::BindingIdentifier(binding) => binding.symbol_id.get(),
+            _ => None,
+        };
         if let Some(init) = &declarator.init {
+            self.initializing.extend(binding_symbol);
             self.visit_expression(init);
+            if binding_symbol.is_some() {
+                self.initializing.pop();
+            }
         }
         self.visit_binding_pattern(&declarator.id);
         let Some((kind, declare)) = self.declaration else {
             return;
         };
-        let trackable = declarator.init.is_none()
-            && !declarator.definite
+        if let Some(symbol) = binding_symbol {
+            if declare {
+                self.ambient_vars.insert(symbol);
+            } else if self.ambient_vars.contains(&symbol) {
+                return;
+            }
+        }
+        // A `var` with an initializer is tracked too: the declaration assigns it, but a path that
+        // skips the declaration (a loop that may run zero times, an untaken branch) reaches a
+        // later read with it unassigned, and tsc reports that against the inferred type.
+        let trackable = !declarator.definite
             && !declare
             && !self.in_for_head
-            && matches!(
-                kind,
-                VariableDeclarationKind::Let | VariableDeclarationKind::Var
-            )
-            && declarator.type_annotation.is_some();
+            && match kind {
+                VariableDeclarationKind::Let => {
+                    declarator.init.is_none() && declarator.type_annotation.is_some()
+                }
+                // `var x = null` has an evolving type in tsc, not the type `null`, and is not
+                // reported.
+                VariableDeclarationKind::Var => {
+                    declarator.type_annotation.is_some()
+                        || declarator
+                            .init
+                            .as_ref()
+                            .is_some_and(|init| !matches!(init, Expression::NullLiteral(_)))
+                }
+                _ => false,
+            };
         if !trackable {
+            // `var m: T; var m = value;` declares `m` twice: the second declaration assigns it.
+            // So does the head of a `for (var m in ...)` over a variable declared elsewhere.
+            if (declarator.init.is_some() || self.in_for_head)
+                && let BindingPattern::BindingIdentifier(binding) = &declarator.id
+                && let Some(symbol) = binding.symbol_id.get()
+                && let Some(tracked) = self.tracked.get(&symbol).copied()
+                && tracked.container == self.container
+            {
+                self.st.assigned.set(tracked.index);
+            }
             return;
         }
         let BindingPattern::BindingIdentifier(binding) = &declarator.id else {
@@ -1378,12 +1507,21 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
             declaration_start: declarator.span.start,
             function: self.function,
             mutable_local,
-            allows_unassigned: declarator
-                .type_annotation
-                .as_ref()
-                .and_then(|annotation| annotation_allows_unassigned(&annotation.type_annotation)),
+            allows_unassigned: match (&declarator.type_annotation, &declarator.init) {
+                (Some(annotation), _) => annotation_allows_unassigned(
+                    &annotation.type_annotation,
+                    self.scoping,
+                    &self.namespaces,
+                ),
+                (None, Some(init)) => initializer_excludes_undefined(init).then_some(false),
+                (None, None) => None,
+            },
         });
-        self.st.assigned.clear(tracked.index);
+        if declarator.init.is_some() {
+            self.st.assigned.set(tracked.index);
+        } else {
+            self.st.assigned.clear(tracked.index);
+        }
     }
 
     // The one hook every statement list goes through. Walks the list in order and groups the
@@ -1518,7 +1656,12 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
             }
             Statement::ForInStatement(statement) => {
                 self.visit_expression(&statement.right);
+                let key = self.for_in_key(statement);
+                self.for_in_keys.extend(key);
                 self.for_in_or_of(&statement.left, pending, &statement.body);
+                if key.is_some() {
+                    self.for_in_keys.pop();
+                }
             }
             Statement::ForOfStatement(statement) => {
                 self.visit_expression(&statement.right);
@@ -1541,6 +1684,34 @@ impl<'a, 's> Visit<'a> for Analyzer<'s> {
 }
 
 impl<'a, 's> Analyzer<'s> {
+    // `for (let x in a)` or `for (var x in a)`: the symbols of `x` and of `a`.
+    fn for_in_key(
+        &self,
+        statement: &oxc_ast::ast::ForInStatement<'a>,
+    ) -> Option<(SymbolId, SymbolId)> {
+        let ForStatementLeft::VariableDeclaration(declaration) = &statement.left else {
+            return None;
+        };
+        let [declarator] = declaration.declarations.as_slice() else {
+            return None;
+        };
+        let BindingPattern::BindingIdentifier(binding) = &declarator.id else {
+            return None;
+        };
+        let mut right = &statement.right;
+        while let Expression::ParenthesizedExpression(inner) = right {
+            right = &inner.expression;
+        }
+        let Expression::Identifier(object) = right else {
+            return None;
+        };
+        let object = self
+            .scoping
+            .get_reference(object.reference_id.get()?)
+            .symbol_id()?;
+        Some((binding.symbol_id.get()?, object))
+    }
+
     // After a `for...in` or `for...of` the flow is reachable whenever the loop was entered: the
     // loop label feeds the exit directly, whatever the body does. The loop assigns its variable
     // at the top of every pass, but not on the way out.
@@ -1666,7 +1837,11 @@ impl<'a, 's> Analyzer<'s> {
 // `assumeInitialized` for the declared type: `any`, `unknown`, `void` and `undefined` do, and so
 // does a union with one of them. A keyword type or a literal shape does not. A name could be an
 // alias for anything, so nothing is said about it.
-fn annotation_allows_unassigned(annotation: &oxc_ast::ast::TSType<'_>) -> Option<bool> {
+fn annotation_allows_unassigned(
+    annotation: &oxc_ast::ast::TSType<'_>,
+    scoping: &Scoping,
+    namespaces: &NamespaceMembers,
+) -> Option<bool> {
     use oxc_ast::ast::TSType;
     match annotation {
         TSType::TSAnyKeyword(_)
@@ -1701,10 +1876,36 @@ fn annotation_allows_unassigned(annotation: &oxc_ast::ast::TSType<'_>) -> Option
         {
             Some(false)
         }
+        // A class, interface or enum declared in the program: an instance of one is never
+        // `undefined`, whatever its members are, so the checker need not understand the shape
+        // for the read to be an error. A type alias or type parameter could stand for a union
+        // or `any` and still needs the checker; so does a name that is only imported.
+        TSType::TSTypeReference(reference) => {
+            let id = match &reference.type_name {
+                oxc_ast::ast::TSTypeName::IdentifierReference(id) => id,
+                oxc_ast::ast::TSTypeName::QualifiedName(qualified) => {
+                    return qualified_name_is_non_nullable(qualified, scoping, namespaces);
+                }
+                _ => return None,
+            };
+            let symbol = scoping.get_reference(id.reference_id.get()?).symbol_id()?;
+            let flags = scoping.symbol_flags(symbol);
+            let declared_here = flags.intersects(
+                oxc_semantic::SymbolFlags::Class
+                    | oxc_semantic::SymbolFlags::Interface
+                    | oxc_semantic::SymbolFlags::Enum,
+            );
+            let could_be_anything = flags.intersects(
+                oxc_semantic::SymbolFlags::TypeAlias
+                    | oxc_semantic::SymbolFlags::TypeParameter
+                    | oxc_semantic::SymbolFlags::Import,
+            );
+            (declared_here && !could_be_anything).then_some(false)
+        }
         TSType::TSUnionType(union) => {
             let mut all_known = true;
             for member in &union.types {
-                match annotation_allows_unassigned(member) {
+                match annotation_allows_unassigned(member, scoping, namespaces) {
                     Some(true) => return Some(true),
                     Some(false) => {}
                     None => all_known = false,
@@ -1713,6 +1914,147 @@ fn annotation_allows_unassigned(annotation: &oxc_ast::ast::TSType<'_>) -> Option
             all_known.then_some(false)
         }
         _ => None,
+    }
+}
+
+/// What a namespace exports that a type annotation can name: a class, interface or enum (never
+/// nullable), or another namespace to keep walking into.
+#[derive(Debug, Clone, Copy)]
+enum NamespaceMember {
+    NonNullable,
+    Namespace(SymbolId),
+}
+
+/// For each namespace symbol, its exported members by name. Merged declarations of one namespace
+/// share a symbol, so they add to the same table.
+type NamespaceMembers = HashMap<SymbolId, HashMap<String, NamespaceMember>>;
+
+fn collect_namespaces(statements: &[Statement<'_>], members: &mut NamespaceMembers) {
+    for statement in statements {
+        let declaration = match statement {
+            Statement::ExportDeclaration(export) => Some(&export.declaration),
+            other => other.as_declaration(),
+        };
+        if let Some(Declaration::TSNamespaceDeclaration(namespace)) = declaration {
+            collect_namespace(namespace, members);
+        }
+    }
+}
+
+fn collect_namespace(namespace: &TSNamespaceDeclaration<'_>, members: &mut NamespaceMembers) {
+    let Some(symbol) = namespace.id.symbol_id.get() else {
+        return;
+    };
+    match &namespace.body {
+        // `namespace a.b {}`: `b` is an export of `a`.
+        TSNamespaceDeclarationBody::TSNamespaceDeclaration(inner) => {
+            if let Some(inner_symbol) = inner.id.symbol_id.get() {
+                members.entry(symbol).or_default().insert(
+                    inner.id.name.to_string(),
+                    NamespaceMember::Namespace(inner_symbol),
+                );
+            }
+            collect_namespace(inner, members);
+        }
+        TSNamespaceDeclarationBody::TSModuleBlock(block) => {
+            for statement in &block.body {
+                // Everything in an ambient namespace is exported; elsewhere only what says so.
+                let (exported, declaration) = match statement {
+                    Statement::ExportDeclaration(export) => (true, Some(&export.declaration)),
+                    other => (namespace.declare, other.as_declaration()),
+                };
+                let entry = match declaration {
+                    Some(Declaration::ClassDeclaration(class)) => class
+                        .id
+                        .as_ref()
+                        .map(|id| (id.name.to_string(), NamespaceMember::NonNullable)),
+                    Some(Declaration::TSInterfaceDeclaration(interface)) => {
+                        Some((interface.id.name.to_string(), NamespaceMember::NonNullable))
+                    }
+                    Some(Declaration::TSEnumDeclaration(e)) => {
+                        Some((e.id.name.to_string(), NamespaceMember::NonNullable))
+                    }
+                    Some(Declaration::TSNamespaceDeclaration(inner)) => {
+                        collect_namespace(inner, members);
+                        inner
+                            .id
+                            .symbol_id
+                            .get()
+                            .map(|s| (inner.id.name.to_string(), NamespaceMember::Namespace(s)))
+                    }
+                    _ => None,
+                };
+                if let (true, Some((name, member))) = (exported, entry) {
+                    members.entry(symbol).or_default().insert(name, member);
+                }
+            }
+        }
+    }
+}
+
+// `a.b.C` in an annotation: `a` is a namespace of this program, each step is an exported
+// namespace, and `C` is an exported class, interface or enum. Anything else is left to the checker.
+fn qualified_name_is_non_nullable(
+    qualified: &oxc_ast::ast::TSQualifiedName<'_>,
+    scoping: &Scoping,
+    namespaces: &NamespaceMembers,
+) -> Option<bool> {
+    let mut path = vec![qualified.right.name.as_str()];
+    let mut current = &qualified.left;
+    let root = loop {
+        match current {
+            oxc_ast::ast::TSTypeName::QualifiedName(inner) => {
+                path.push(inner.right.name.as_str());
+                current = &inner.left;
+            }
+            oxc_ast::ast::TSTypeName::IdentifierReference(id) => break id,
+            oxc_ast::ast::TSTypeName::ThisExpression(_) => return None,
+        }
+    };
+    path.reverse();
+    let mut symbol = scoping
+        .get_reference(root.reference_id.get()?)
+        .symbol_id()?;
+    let flags = scoping.symbol_flags(symbol);
+    if !flags.intersects(
+        oxc_semantic::SymbolFlags::NamespaceModule | oxc_semantic::SymbolFlags::ValueModule,
+    ) || flags
+        .intersects(oxc_semantic::SymbolFlags::Import | oxc_semantic::SymbolFlags::TypeImport)
+    {
+        return None;
+    }
+    for (index, segment) in path.iter().enumerate() {
+        let member = namespaces.get(&symbol)?.get(*segment)?;
+        let last = index + 1 == path.len();
+        match (member, last) {
+            (NamespaceMember::NonNullable, true) => return Some(false),
+            (NamespaceMember::Namespace(next), false) => symbol = *next,
+            _ => return None,
+        }
+    }
+    None
+}
+
+// An initializer whose value is never `undefined`, so a variable declared by it has a type that
+// does not allow `undefined` even where the checker has no type for it: a literal, an object,
+// an array, a function, a class, a `new`. Anything else (a name, a call) says nothing here.
+fn initializer_excludes_undefined(init: &Expression<'_>) -> bool {
+    match init {
+        Expression::ParenthesizedExpression(inner) => {
+            initializer_excludes_undefined(&inner.expression)
+        }
+        Expression::NumericLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::BigIntLiteral(_)
+        | Expression::TemplateLiteral(_)
+        | Expression::ObjectExpression(_)
+        | Expression::ArrayExpression(_)
+        | Expression::FunctionExpression(_)
+        | Expression::ArrowFunctionExpression(_)
+        | Expression::ClassExpression(_)
+        | Expression::NewExpression(_) => true,
+        _ => false,
     }
 }
 
