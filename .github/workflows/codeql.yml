@@ -1,8 +1,9 @@
 name: CodeQL
 
 # Replaces the default setup, which has no way to skip files. Its JavaScript and TypeScript
-# extractor crashed on tests/typescript-testcases (10,000 TypeScript compiler test files, many
-# of them broken on purpose). The paths-ignore below keeps it to the code that is ours.
+# extractor crashed on the TypeScript compiler test files (many of them broken on purpose), which
+# are fetched into .corpus/ by cargo xtask corpus and kept in tests/fixtures. The paths-ignore below
+# keeps it to the code that is ours.
 # Turn the default setup off first (Settings > Code security > CodeQL analysis), or GitHub
 # rejects the results of this workflow.
 
@@ -39,8 +40,9 @@ jobs:
           build-mode: none
           config: |
             paths-ignore:
-              - 'tests/typescript-testcases/**'
               - 'tests/fixtures/**'
+              - 'tests/corpus/**'
+              - '.corpus/**'
               - 'tests/tsc-conformance/**'
               - 'tests/module-resolution-fixtures/**'
               - 'examples/cfg_sample.ts'

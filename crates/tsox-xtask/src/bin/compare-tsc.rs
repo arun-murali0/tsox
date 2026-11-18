@@ -2,7 +2,7 @@
 //!
 //! Unlike .github/workflows/harness.yml and scripts/compare-local.sh, this binary never
 //! shells out to tsox as a subprocess; it calls `TypeChecker::check_source`
-//! directly, the same entry point bin/tsox.rs uses, and only shells out to
+//! directly, the same entry point crates/tsox-cli/src/main.rs uses, and only shells out to
 //! `tsc` itself (there is no Rust API for that side of the comparison).
 //!
 //! Matching is by line number alone, errors only, and by *presence*: a line
@@ -66,7 +66,7 @@
 //! IMPORTANT: this binary checks each file on its own through `check_source`, so it
 //! cannot point at a real multi-file project (e.g. zustand): every import stays
 //! unbound and the result says nothing about the project. Cross-file checking goes
-//! through `check_project`, which bin/tsox.rs reaches with the module-resolution
+//! through `check_project`, which crates/tsox-cli/src/main.rs reaches with the module-resolution
 //! feature. Single-file conformance fixtures are the only meaningful input here.
 
 use std::{

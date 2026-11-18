@@ -108,7 +108,7 @@ const tsgoRef = require("./tsgo-project");
 
 const args = process.argv.slice(2);
 // Flags that take a value: the value follows the flag and is not a target or a binary.
-const VALUE_FLAGS = ["--runs", "--threads", "--timeout"];
+const VALUE_FLAGS = ["--runs", "--threads", "--timeout", "--reference-map"];
 const positional = args.filter(
   (a, i) => !a.startsWith("--") && !VALUE_FLAGS.includes(args[i - 1]),
 );
@@ -136,7 +136,11 @@ const noCache = args.includes("--no-cache");
 // --tsgo: the reference is tsgo (native TypeScript 7), not tsc. It checks the directory as one
 // project, so it implies --module (see tsgo-project.js).
 const tsgoMode = args.includes("--tsgo");
-const refName = tsgoMode ? "tsgo" : "tsc";
+// --reference-map <folder>: tsc's answers come from a recorded map (scripts/corpus.py) instead of
+// a tsc run. <folder> holds one <part>.json per corpus part, named after the target directory.
+const mapIndex = args.indexOf("--reference-map");
+const referenceMapDir = mapIndex === -1 ? null : args[mapIndex + 1];
+const refName = referenceMapDir ? "map" : tsgoMode ? "tsgo" : "tsc";
 const moduleMode = args.includes("--module") || tsgoMode;
 const runs = intFlag("--runs") ?? (moduleMode ? 5 : 1);
 const threads = intFlag("--threads");
@@ -962,6 +966,43 @@ function runTscProject() {
   };
 }
 
+// --reference-map: the reference's diagnostics are read from the recorded map. A file the map does
+// not list has no diagnostics from the reference. Only the lines' tsc side is used; the tsox side
+// is this run's own.
+function runMappedReference() {
+  const recorded = JSON.parse(
+    fs.readFileSync(
+      path.join(referenceMapDir, `${path.basename(path.resolve(target))}.json`),
+      "utf8",
+    ),
+  );
+  const found = collectTsFiles(target).sort();
+  for (const fsPath of found) {
+    const entry = recorded[path.basename(fsPath)];
+    const results = [];
+    for (const l of entry ? entry.lines : []) {
+      for (const text of l.tsc) {
+        const m = /^TS(\d+) ([\s\S]*)$/.exec(text);
+        if (m)
+          results.push({
+            category: "Error",
+            line: l.line,
+            code: Number(m[1]),
+            message: m[2],
+          });
+      }
+    }
+    onTscFile(fsPath, results);
+  }
+  return {
+    files: found,
+    stats: { cached: 0, ran: found.length, ranMs: 0, cachedMs: 0, cachedUntimed: 0 },
+    perf: { maxRssKb: 0, measuredThisRun: false },
+    project: null,
+    referenceVersion: "map",
+  };
+}
+
 // --tsgo: the same project-mode comparison with tsgo as the reference. compare.js runs the
 // tsgo binary itself through the same measuring wrapper as tsox (so time and peak memory are
 // tsgo's own, not a Node wrapper's) and reads its text output (see tsgo-project.js).
@@ -1025,7 +1066,9 @@ function runTsgoProject() {
   };
 }
 
-const { files, stats, perf, project, referenceVersion } = tsgoMode
+const { files, stats, perf, project, referenceVersion } = referenceMapDir
+  ? runMappedReference()
+  : tsgoMode
   ? runTsgoProject()
   : moduleMode
   ? runTscProject()

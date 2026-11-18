@@ -1,0 +1,11 @@
+id = "tsox"
+name = "tsox"
+description = "TypeScript diagnostics, hover, completion and navigation from the tsox checker (a Rust, in-process TypeScript-semantics compiler)."
+version = "0.1.0"
+schema_version = 1
+authors = ["tsox contributors"]
+repository = "https://github.com/arun-murali0/tsox"
+
+[language_servers.tsox]
+name = "tsox"
+languages = ["TypeScript", "TSX", "JavaScript"]

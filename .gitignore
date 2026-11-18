@@ -37,3 +37,19 @@ scripts/ts-diag-tool/.tsc-cache.json
 
 # tsgo copy installed by compare-local.sh --tsgo
 scripts/ts-diag-tool/.tsgo/
+
+# npm package build output (scripts/build-wasm.sh)
+/npm/tsox/node/
+/npm/tsox/web/
+/npm/tsox/LICENSE-*
+
+# VitePress
+/docs/.vitepress/dist/
+/docs/.vitepress/cache/
+
+# Local secrets (see .env.development.example)
+.env.development
+.env.*.local
+
+# The corpus is fetched here by scripts/corpus.py
+/.corpus/

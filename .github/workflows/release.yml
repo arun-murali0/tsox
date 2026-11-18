@@ -1,0 +1,176 @@
+name: Release
+
+# Builds the command line tool, the language server, the WebAssembly npm package and the VS Code
+# extension (x86_64 Linux and Windows). On a tag `v*` it also publishes a GitHub release with the archives. Nothing is
+# published to the editor marketplaces from here. npm is published only on a tag, or when
+# `publish_npm` is ticked on a manual run, and only when the NPM_TOKEN secret exists.
+#
+# Run it by hand (workflow_dispatch) to get the artifacts for the current commit.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish_npm:
+        description: "Publish the npm package (needs the NPM_TOKEN secret)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "10"
+  # Keep equal to rust-version in Cargo.toml.
+  RUST_TOOLCHAIN: "1.98.1"
+
+jobs:
+  binaries:
+    name: Binaries (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  archive: tar.gz }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    archive: zip }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p tsox-cli -p tsox-lsp
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="tsox-${GITHUB_REF_NAME:-dev}-${{ matrix.target }}"
+          mkdir "$name"
+          ext=""; [ "${{ matrix.archive }}" = zip ] && ext=".exe"
+          cp "target/${{ matrix.target }}/release/tsox$ext" "target/${{ matrix.target }}/release/tsox-lsp$ext" "$name/"
+          cp LICENSE-MIT LICENSE-APACHE README.md "$name/"
+          if [ "${{ matrix.archive }}" = zip ]; then 7z a "$name.zip" "$name" >/dev/null; else tar czf "$name.tar.gz" "$name"; fi
+          echo "ARCHIVE=$name.${{ matrix.archive }}" >> "$GITHUB_ENV"
+      - name: Smoke test
+        shell: bash
+        run: |
+          ext=""; [ "${{ matrix.archive }}" = zip ] && ext=".exe"
+          "target/${{ matrix.target }}/release/tsox$ext" --version
+          "target/${{ matrix.target }}/release/tsox-lsp$ext" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tsox-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+
+  wasm:
+    name: WebAssembly npm package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: wasm-bindgen-cli at the locked version
+        run: |
+          v=$(awk '/name = "wasm-bindgen"$/{getline; gsub(/[version = "]/,""); print; exit}' Cargo.lock)
+          cargo install wasm-bindgen-cli --version "$v" --locked
+      - run: bash scripts/build-wasm.sh
+      - run: node npm/tests/smoke.js
+      - name: Pack
+        run: cd npm/tsox && npm pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tsox-npm
+          path: npm/tsox/*.tgz
+
+  vscode:
+    name: VS Code extension
+    needs: binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, vsce: linux-x64,  exe: tsox-lsp }
+          - { target: x86_64-pc-windows-msvc,   vsce: win32-x64,  exe: tsox-lsp.exe }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: tsox-${{ matrix.target }}
+          path: dl
+      - name: Bundle the server and package
+        shell: bash
+        working-directory: editors/vscode
+        run: |
+          mkdir -p server dl-x
+          archive=$(ls ../../dl/*)
+          case "$archive" in *.zip) unzip -q "$archive" -d dl-x ;; *) tar xzf "$archive" -C dl-x ;; esac
+          cp dl-x/*/${{ matrix.exe }} server/
+          chmod +x server/${{ matrix.exe }}
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          npx vsce package --target ${{ matrix.vsce }} --allow-missing-repository
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tsox-vscode-${{ matrix.vsce }}
+          path: editors/vscode/*.vsix
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [binaries, wasm, vscode]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
+
+  npm:
+    name: Publish to npm
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_npm
+    needs: wasm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: tsox-npm
+          path: pkg
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN is not set: add it under Settings > Secrets and variables > Actions." >&2
+            exit 1
+          fi
+          npm publish pkg/*.tgz --access public --provenance

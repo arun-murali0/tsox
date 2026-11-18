@@ -1,0 +1,17 @@
+[package]
+name = "tsox-zed"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "The tsox extension for Zed."
+
+# Zed builds this crate to wasm itself; it is not part of the tsox workspace.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.7.0"

@@ -1,8 +1,15 @@
 name: CI
 
-# Branches (everything except main and merge-tmp/*): fmt + test via scripts/ci.sh.
+# Branches and pull requests (everything except main and merge-tmp/*), three checks that must all
+# pass before anything reaches main:
+#   All green   fmt, layering, tests (scripts/ci.sh)
+#   Corpus map  tsox over TypeScript's own test suite (fetched by tag, see cargo xtask corpus),
+#               compared with the recorded map tests/corpus/: nothing may get worse, and a
+#               change that improves results must update the map in the same pull request
 # merge-tmp/* (staging branches made by auto-merge.yml): the compare-against-tsc gate.
-# main: nothing runs, because only code that already passed both gates reaches it.
+# main: nothing runs, because only code that already passed these gates reaches it.
+# Who may merge is settled outside this file: auto-merge.yml merges only the owner's own
+# commits; for everyone else main needs the owner's review (CODEOWNERS, scripts/protect-main.sh).
 
 on:
   pull_request:
@@ -47,8 +54,90 @@ jobs:
         with:
           shared-key: ci
 
+      # The abort sample in crates/tsox-cli/tests/corpus_aborts.rs reads the corpus.
+      - name: Restore the corpus
+        uses: actions/cache@v4
+        with:
+          path: .corpus
+          key: corpus-v6.0.3-${{ hashFiles('crates/tsox-xtask/src/bin/xtask/corpus.rs', 'tests/corpus/known-crashers.txt') }}
+
+      - name: Fetch the corpus
+        run: cargo xtask corpus fetch
+
       - name: fmt + test
+        env:
+          TSOX_REQUIRE_CORPUS: "1"
         run: bash ./scripts/ci.sh
+
+  # Branch gate: the corpus map. Only tsox runs; tsc's answers are in the map, so this takes
+  # minutes, not the hour a real tsc run over 10,000 files would.
+  corpus-map:
+    name: Corpus map
+    if: ${{ !startsWith(github.ref, 'refs/heads/merge-tmp/') && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "off"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "1"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-corpus
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: scripts/ts-diag-tool/package-lock.json
+
+      - name: Build tsox (release)
+        run: cargo build --locked --release --bin tsox
+
+      - name: Install ts-diag-tool dependencies
+        working-directory: scripts/ts-diag-tool
+        run: npm ci --no-audit --no-fund
+
+      - name: Restore the corpus
+        uses: actions/cache@v4
+        with:
+          path: .corpus
+          key: corpus-v6.0.3-${{ hashFiles('crates/tsox-xtask/src/bin/xtask/corpus.rs', 'tests/corpus/known-crashers.txt') }}
+
+      - name: Fetch the corpus
+        run: cargo xtask corpus fetch
+
+      - name: Run tsox over the corpus
+        run: cargo xtask corpus run
+
+      - name: Compare with the map
+        run: |
+          set +e
+          cargo xtask corpus verify | tee /tmp/corpus-verify.txt
+          code=${PIPESTATUS[0]}
+          {
+            echo "## Corpus map"
+            echo '```'
+            cat /tmp/corpus-verify.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
+      - name: Keep the run reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-reports
+          path: .corpus/reports
+          if-no-files-found: ignore
+          retention-days: 14
 
   # Staging gate: tsox vs real tsc over tests/fixtures, gated by the baseline.
   # Runs once per merge into main, never per branch push.

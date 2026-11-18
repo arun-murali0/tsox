@@ -36,6 +36,11 @@ set -o pipefail
 #   ./scripts/compare-local.sh path/to/project --module       # cross-file: tsc checks the
 #                                                             # directory as ONE project
 #   ./scripts/compare-local.sh tests/fixtures --tsc --summary  # use real tsc as the reference
+#   ./scripts/compare-local.sh corpus:part-03 --summary       # one part of TypeScript's own suite
+#                                                             # (fetched by tag; tsc's answers come
+#                                                             # from the recorded map, so it is fast)
+#   ./scripts/compare-local.sh corpus:part-03 --tsc           # the same part against real tsc
+#   ./scripts/compare-local.sh corpus:all                     # every part, then verified against the map
 #
 # The reference is tsgo (the native TypeScript 7 compiler) by default. It is designed to
 # report the same diagnostics as TypeScript 6.0 and is several times faster, so a whole-suite
@@ -72,8 +77,26 @@ if [ "${1:-}" = "--status" ]; then
   exec node scripts/ts-diag-tool/compare.js "$@"
 fi
 
+# `corpus` or `corpus:part-NN`: the suite is fetched by tag into .corpus/ (cargo xtask corpus
+# fetch; TSOX_CORPUS_DIR and TSOX_CORPUS_TAG move or change it) and one part is compared.
+# `corpus:all` is the whole run and the check against the map, both done by cargo xtask.
+CORPUS=0
+if [[ "${1:-}" == corpus || "${1:-}" == corpus:* ]]; then
+  spec="${1#corpus}"
+  spec="${spec#:}"
+  shift
+  corpus_tag="${TSOX_CORPUS_TAG:-v6.0.3}"
+  corpus_base="${TSOX_CORPUS_DIR:-.corpus}"
+  if [ "${spec}" = all ]; then
+    cargo xtask corpus run --tag "${corpus_tag}" --dest "${corpus_base}" &&
+      exec cargo xtask corpus verify --tag "${corpus_tag}" --dest "${corpus_base}"
+    exit $?
+  fi
+  cargo xtask corpus fetch --tag "${corpus_tag}" --dest "${corpus_base}" >&2 || exit 2
+  TARGET="${corpus_base}/typescript-${corpus_tag#v}/${spec:-part-01}"
+  CORPUS=1
 # A first argument that is a flag leaves the target at its default.
-if [[ "${1:-}" == --* ]]; then
+elif [[ "${1:-}" == --* ]]; then
   TARGET="tests/fixtures"
 else
   TARGET="${1:-tests/fixtures}"
@@ -100,15 +123,23 @@ fi
 # tsgo is the default reference; --tsc turns it off, and a single-file target cannot use it
 # (tsgo checks a directory as one project), so that case stays on tsc.
 wants_tsgo=1
+saw_tsc=0
 args_out=()
 for a in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
   case "$a" in
-    --tsc) wants_tsgo=0 ;;
+    --tsc) wants_tsgo=0; saw_tsc=1 ;;
     --tsgo) ;;
     *) args_out+=("$a") ;;
   esac
 done
 EXTRA_ARGS=(${args_out[@]+"${args_out[@]}"})
+# A corpus part is checked file by file (names repeat across the suite), so tsgo's one-project mode
+# does not apply. tsc's answers are in the recorded map unless --tsc asks for the real tsc.
+if [ "${CORPUS}" = 1 ]; then
+  wants_tsgo=0
+  corpus_tag="${TSOX_CORPUS_TAG:-v6.0.3}"
+  [ "${saw_tsc}" = 0 ] && EXTRA_ARGS+=(--reference-map "tests/corpus/typescript-${corpus_tag#v}")
+fi
 if [ "${wants_tsgo}" = 1 ] && [ -f "${TARGET}" ]; then
   echo "note: ${TARGET} is a single file, so the reference is tsc (tsgo needs a directory)." >&2
   wants_tsgo=0

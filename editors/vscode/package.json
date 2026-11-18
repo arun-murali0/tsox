@@ -1,0 +1,57 @@
+{
+  "name": "tsox",
+  "displayName": "tsox",
+  "description": "TypeScript diagnostics, hover, completion and navigation from the tsox checker, a TypeScript-semantics compiler written in Rust.",
+  "version": "0.1.0",
+  "publisher": "tsox",
+  "license": "MIT OR Apache-2.0",
+  "repository": { "type": "git", "url": "https://github.com/arun-murali0/tsox" },
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages", "Linters"],
+  "keywords": ["typescript", "type checker", "rust", "language server"],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onLanguage:javascript",
+    "onLanguage:javascriptreact"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "tsox",
+      "properties": {
+        "tsox.server.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `tsox-lsp` executable. Empty means: the copy bundled in this extension, else `tsox-lsp` on your `PATH`."
+        },
+        "tsox.server.logLevel": {
+          "type": "string",
+          "default": "warn",
+          "enum": ["error", "warn", "info", "debug", "trace"],
+          "description": "Log level of the server (written to the tsox output channel)."
+        },
+        "tsox.trace.server": {
+          "type": "string",
+          "default": "off",
+          "enum": ["off", "messages", "verbose"],
+          "description": "Traces the protocol between VS Code and the server."
+        }
+      }
+    },
+    "commands": [
+      { "command": "tsox.restartServer", "title": "tsox: Restart Language Server" },
+      { "command": "tsox.showOutput", "title": "tsox: Show Output" }
+    ]
+  },
+  "scripts": {
+    "check": "node --check extension.js",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "3.2.1"
+  }
+}
