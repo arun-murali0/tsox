@@ -179,6 +179,20 @@ pub(super) fn holds_literal(ctx: &CheckContext<'_, '_>, declared: TypeId) -> boo
     match ctx.arena.get(declared) {
         Type::StringLiteral(_) | Type::NumberLiteral(_) | Type::BooleanLiteral(_) => true,
         Type::Union(members) => members.iter().any(|m| holds_literal(ctx, *m)),
+        // A type parameter whose constraint holds a literal or a primitive (`T extends "a" | "b"`,
+        // `K extends string`) asks for the literal too: tsc keeps `"1"` in `f({ value: "1" })`
+        // against `{ value: T }`, so that T can be inferred as `"1"` and not widened to string.
+        Type::GenericParameter(_, _, Some(bound)) => {
+            holds_literal(ctx, *bound) || holds_primitive(ctx, *bound)
+        }
+        _ => false,
+    }
+}
+
+fn holds_primitive(ctx: &CheckContext<'_, '_>, declared: TypeId) -> bool {
+    match ctx.arena.get(declared) {
+        Type::String | Type::Number | Type::Boolean => true,
+        Type::Union(members) => members.iter().any(|m| holds_primitive(ctx, *m)),
         _ => false,
     }
 }

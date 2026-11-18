@@ -16,7 +16,7 @@ impl zed::Extension for Tsox {
     ) -> Result<zed::Command> {
         let command = worktree.which("tsox-lsp").ok_or_else(|| {
             "tsox-lsp was not found on your PATH. Install it from \
-             https://github.com/arun-murali0/tsox and restart Zed."
+             https://github.com/tsoxide/tsox and restart Zed."
                 .to_string()
         })?;
         Ok(zed::Command {

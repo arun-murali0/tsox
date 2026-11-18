@@ -293,11 +293,19 @@ fn check_destructured_declarator(
         _ => None,
     };
 
+    // The annotation is the contextual type of the initializer, as for a plain name:
+    // `let [a]: [number] = [1]` reads `[1]` as a tuple, not as `number[]`.
+    let declared_context = match &annotation_outcome {
+        AnnotationOutcome::Resolved(declared) => Some(*declared),
+        _ => None,
+    };
     let inferred_type = literal_tuple.or_else(|| {
-        declarator
-            .init
-            .as_ref()
-            .map(|init| infer_expression_type(init, scoping, ctx))
+        declarator.init.as_ref().map(|init| {
+            if let Some(declared) = declared_context {
+                ctx.contextual = Some(declared);
+            }
+            infer_expression_type(init, scoping, ctx)
+        })
     });
 
     let source_type = match (annotation_outcome, inferred_type) {

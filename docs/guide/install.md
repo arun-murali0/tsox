@@ -18,7 +18,7 @@ tsox-lsp --version
 You need the Rust toolchain named by `rust-version` in the root `Cargo.toml`.
 
 ```sh
-git clone https://github.com/arun-murali0/tsox
+git clone https://github.com/tsoxide/tsox
 cd tsox
 cargo install --path crates/tsox-cli
 cargo install --path crates/tsox-lsp

@@ -3,9 +3,12 @@
   "version": "0.1.0",
   "description": "A TypeScript type checker written in Rust, as WebAssembly. Checks a source string and returns diagnostics.",
   "license": "MIT OR Apache-2.0",
+  "author": "arun-murali <arunmurali0810@gmail.com>",
+  "homepage": "https://tsoxide.github.io/tsox/",
+  "bugs": { "url": "https://github.com/tsoxide/tsox/issues" },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/arun-murali0/tsox.git"
+    "url": "git+https://github.com/tsoxide/tsox.git"
   },
   "keywords": [
     "typescript",

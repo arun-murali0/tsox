@@ -5,17 +5,17 @@
 **A TypeScript type checker written in Rust, built on [Oxc](https://oxc.rs/).**
 One engine as a command line tool, a language server, and WebAssembly.
 
-[![CI](https://github.com/Arun-murali0/tsox/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Arun-murali0/tsox/actions/workflows/ci.yml)
-[![Docs](https://github.com/Arun-murali0/tsox/actions/workflows/docs.yml/badge.svg)](https://arun-murali0.github.io/tsox/)
+[![CI](https://github.com/tsoxide/tsox/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tsoxide/tsox/actions/workflows/ci.yml)
+[![Docs](https://github.com/tsoxide/tsox/actions/workflows/docs.yml/badge.svg)](https://tsoxide.github.io/tsox/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Rust](https://img.shields.io/badge/rust-1.98%2B-orange)](Cargo.toml)
 [![Status](https://img.shields.io/badge/status-experimental-yellow)](#status)
 
-[Documentation](https://arun-murali0.github.io/tsox/) ·
-[Install](https://arun-murali0.github.io/tsox/guide/install) ·
-[How it works](https://arun-murali0.github.io/tsox/architecture) ·
-[Contributing](https://arun-murali0.github.io/tsox/contributing) ·
-[Report a problem](https://github.com/Arun-murali0/tsox/issues)
+[Documentation](https://tsoxide.github.io/tsox/) ·
+[Install](https://tsoxide.github.io/tsox/guide/install) ·
+[How it works](https://tsoxide.github.io/tsox/architecture) ·
+[Contributing](https://tsoxide.github.io/tsox/contributing) ·
+[Report a problem](https://github.com/tsoxide/tsox/issues)
 
 `typescript` · `type-checker` · `rust` · `oxc` · `language-server` · `wasm` · `compiler`
 
@@ -34,25 +34,25 @@ of what `tsc` says:
 <!-- corpus-status:start -->
 | | |
 | --- | --- |
-| Files where tsox and tsc agree exactly | **5,100 of 10,083** (50.6%) |
-| Lines with a diagnostic from either side | 37,851, of which 17,677 agree |
-| Gaps (tsc reports, tsox misses) | 13,725 lines; most often TS2322 (1334), TS7006 (716), TS2339 (640), TS1005 (557), TS2304 (501) |
-| False positives (tsox reports, tsc does not) | 2,721 lines; most often TS2322 (736), TS2345 (542), TS2339 (528), TS2693 (199), TS2344 (134) |
+| Files where tsox and tsc agree exactly | **5,107 of 10,083** (50.6%) |
+| Lines with a diagnostic from either side | 37,816, of which 17,678 agree |
+| Gaps (tsc reports, tsox misses) | 13,726 lines; most often TS2322 (1335), TS7006 (716), TS2339 (640), TS1005 (557), TS2304 (501) |
+| False positives (tsox reports, tsc does not) | 2,686 lines; most often TS2322 (705), TS2345 (538), TS2339 (528), TS2693 (199), TS2344 (134) |
 | Corpus | TypeScript v6.0.3, recorded in `tests/corpus/typescript-6.0.3` |
 <!-- corpus-status:end -->
 
 The numbers come from [`tests/corpus`](tests/corpus) and are described in
-[the corpus map](https://arun-murali0.github.io/tsox/corpus). What it catches and what it does not yet
-is in [language coverage](https://arun-murali0.github.io/tsox/language-coverage) and the
-[roadmap](https://arun-murali0.github.io/tsox/roadmap).
+[the corpus map](https://tsoxide.github.io/tsox/corpus). What it catches and what it does not yet
+is in [language coverage](https://tsoxide.github.io/tsox/language-coverage) and the
+[roadmap](https://tsoxide.github.io/tsox/roadmap).
 
 ## Install
 
 Prebuilt programs (`tsox`, `tsox-lsp`) for Linux x86_64 and Windows x86_64 are attached to each
-[release](https://github.com/Arun-murali0/tsox/releases). Or build from source (Rust 1.98 or newer):
+[release](https://github.com/tsoxide/tsox/releases). Or build from source (Rust 1.98 or newer):
 
 ```sh
-git clone https://github.com/Arun-murali0/tsox
+git clone https://github.com/tsoxide/tsox
 cd tsox
 cargo install --path crates/tsox-cli     # the `tsox` command
 cargo install --path crates/tsox-lsp     # the `tsox-lsp` language server
@@ -86,7 +86,7 @@ console.log(checker.checkSource("let a: string = 1;", "a.ts"));
 // [{ severity: "Error", message: "Type 'number' is not assignable to type 'string'.", ... }]
 ```
 
-More in the [guide](https://arun-murali0.github.io/tsox/guide/install).
+More in the [guide](https://tsoxide.github.io/tsox/guide/install).
 
 ## How it is built
 
@@ -133,7 +133,7 @@ merged by the owner. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 
-The site is built from [`docs/`](docs) and published at **https://arun-murali0.github.io/tsox/**
+The site is built from [`docs/`](docs) and published at **https://tsoxide.github.io/tsox/**
 (`cd docs && npm ci && npm run dev` to read it locally).
 
 ## Security

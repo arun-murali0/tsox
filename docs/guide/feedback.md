@@ -2,7 +2,7 @@
 
 tsox wants your reports, especially where it disagrees with `tsc`.
 
-Open an issue at <https://github.com/arun-murali0/tsox/issues> with:
+Open an issue at <https://github.com/tsoxide/tsox/issues> with:
 
 1. the smallest source that shows it (one file if you can),
 2. what `tsc` says and what tsox says,

@@ -493,13 +493,30 @@ fn is_subtype_uncached(
             | Type::BooleanLiteral(_),
             Type::Object(target),
         ) => {
-            target.properties.is_empty()
+            (target.properties.is_empty()
                 && arena.record_value_type(sup).is_none()
-                && !arena.is_promise(sup)
+                && !arena.is_promise(sup))
+                || is_wrapper_of(arena, sub, sup)
         }
 
         _ => false,
     }
+}
+
+// A primitive is assignable to the global interface that wraps it: `boolean` to `Boolean`,
+// `string` (and any string literal or template) to `String`, `number` to `Number`. tsc gets
+// this from the apparent type of a primitive, which is the wrapper's own body; the arena has
+// no library to look that body up in, so the wrapper is recognised by the name it is
+// declared under. A user interface that happens to be called `String` is read the same way,
+// as it would be when it merges into the global one.
+fn is_wrapper_of(arena: &TypeArena, sub: TypeId, sup: TypeId) -> bool {
+    let wrapper = match arena.get(sub) {
+        Type::String | Type::StringLiteral(_) => "String",
+        Type::Number | Type::NumberLiteral(_) => "Number",
+        Type::Boolean | Type::BooleanLiteral(_) => "Boolean",
+        _ => return false,
+    };
+    arena.display_name(sup) == Some(wrapper)
 }
 
 // Tuple against tuple. The source has to promise at least as many elements as the target
