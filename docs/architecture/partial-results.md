@@ -23,7 +23,7 @@
 
 ## 3. Fifteen reasons, three kinds
 
-`IncompleteReason` (in `crates/tsox-checker/src/bridge/exports.rs`) names each way the collector gives up. `ReasonKind` (in `crates/tsox-project/src/module_resolution/partial.rs`) says whether a reason starts a partial list or only passes one on.
+`IncompleteReason` (in `crates/tsox-checker/src/bridge/exports/mod.rs`) names each way the collector gives up. `ReasonKind` (in `crates/tsox-project/src/module_resolution/partial.rs`) says whether a reason starts a partial list or only passes one on.
 
 | Kind | Reasons | Meaning |
 | --- | --- | --- |

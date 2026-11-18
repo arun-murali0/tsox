@@ -44,7 +44,7 @@ use members::{
 use objects::{infer_array_expression_type, infer_object_expression_type};
 
 // The single dispatch point for every expression kind this checker understands.
-// Each arm delegates to a feature module (binary.rs, calls.rs, and so on); this
+// Each arm delegates to a feature module (binary.rs, calls/, and so on); this
 // function's own job is only to route, not to hold checking logic itself. An
 // expression kind with no arm here falls through to the catch-all at the bottom,
 // which reports it honestly as unsupported rather than guessing a type for it.
@@ -364,17 +364,7 @@ fn infer_expression_type_inner(
                 // `(assert(x), x)`: an assertion call among the discarded parts narrows
                 // what follows it, as the same call as a statement does.
                 if index < last {
-                    let mut call_part = part;
-                    while let Expression::ParenthesizedExpression(inner) = call_part {
-                        call_part = &inner.expression;
-                    }
-                    if let Expression::CallExpression(call) = call_part
-                        && let Some((narrowed, _)) = crate::bridge::narrow::narrow_by_predicate_call(
-                            call, scoping, ctx, true,
-                        )
-                    {
-                        ctx.narrow.extend(narrowed);
-                    }
+                    crate::bridge::narrow::apply_call_effects(part, scoping, ctx);
                 }
                 if index < last
                     && !truthiness::has_side_effects(part)

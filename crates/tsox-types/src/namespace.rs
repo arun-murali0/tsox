@@ -330,7 +330,7 @@ impl<'ast> Visit<'ast> for RecursiveAliasReferenceFinder<'_> {
     // reference found", the same as for a type this walk does not look into.
     fn visit_ts_type(&mut self, it: &TSType<'ast>) {
         if crate::stack_guard::exhausted() {
-            crate::stack_guard::note_cut();
+            crate::stack_guard::note_cut(crate::stack_guard::CutReason::AliasBodyNesting);
             return;
         }
         walk::walk_ts_type(self, it);

@@ -16,5 +16,6 @@ use tsox_base::{
 use tsox_checker::{bridge, unit};
 use tsox_types::{diagnostic_messages, portable, types};
 
+pub mod host;
 pub mod module_resolution;
 pub mod scc;

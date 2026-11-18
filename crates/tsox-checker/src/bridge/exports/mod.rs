@@ -146,6 +146,16 @@ pub struct ExportTable {
     /// Exported unannotated functions that read imported ones in a return expression (see
     /// `UnitOutput::return_reads`). Filled by `check_file`, after the collector ran.
     pub return_reads: Vec<crate::unit::ReturnRead>,
+    /// Each import specifier of the file and whether anything uses it as a value (see
+    /// `bridge::model`). Filled by `check_file`.
+    pub import_uses: Vec<(String, tsox_model::ImportUse)>,
+    /// Enum member values, keyed by `enum_member_key`. Filled by `check_file`.
+    pub flow_facts: Vec<(tsox_model::NodeKey, tsox_model::TypeFact)>,
+    pub node_types: Vec<(tsox_model::NodeKey, tsox_model::TypeFact)>,
+    pub node_symbols: Vec<(tsox_model::NodeKey, crate::keys::DeclKey)>,
+    pub const_values: Vec<(crate::keys::DeclKey, tsox_model::ConstValue)>,
+    /// The compiler options the check read (see `CheckContext::option`).
+    pub options_read: crate::check_options::OptionReads,
     pub decls: Vec<PortableDecl>,
     /// Export name to the declaration's key. A name that is both a type and a value
     /// (`interface Foo` and `const Foo`) appears once for each; the declaration's kind
@@ -538,7 +548,10 @@ pub fn collect_exports<'ast>(
     module: ModuleKey,
 ) -> ExportTable {
     let definition = program.source_type.is_typescript_definition();
-    let is_module = is_module_file(program, &ctx.options);
+    let is_module = is_module_file(
+        program,
+        ctx.option(crate::check_options::OptionField::ModuleDetectionForce),
+    );
     // A script's global declarations are built only when the project asks: most are never
     // used by another file, and a portable declaration for every top-level item of every
     // script is the cost. Without the ask the script lists its names and nothing else.
@@ -576,12 +589,9 @@ pub fn collect_exports<'ast>(
 
 // A module for the checker's purposes: it has `import` or `export` syntax, or the project asks for
 // `moduleDetection: "force"` and the file is not a declaration file (those stay scripts).
-pub(super) fn is_module_file(
-    program: &Program<'_>,
-    options: &crate::check_options::CheckOptions,
-) -> bool {
+pub(super) fn is_module_file(program: &Program<'_>, module_detection_force: bool) -> bool {
     is_external_module(program)
-        || (options.module_detection_force && !program.source_type.is_typescript_definition())
+        || (module_detection_force && !program.source_type.is_typescript_definition())
 }
 
 // Whether the file has `import` or `export` syntax, which makes it a module and not a script.
@@ -1327,6 +1337,45 @@ fn collect_in<'ast>(
         }
     }
 
+    // The narrowed type at each read the flow walk answered, written out with the same keys as
+    // the declarations. A type naming something with no stable key is left out of the model.
+    let mut seen_reads: std::collections::BTreeMap<&str, u32> = Default::default();
+    for (name, ty) in &ctx.flow_reads {
+        let index = seen_reads.entry(name).or_insert(0);
+        let key = tsox_model::NodeKey {
+            item: super::model::fnv_name(super::model::FNV_BASIS, name),
+            index: *index,
+        };
+        *index += 1;
+        let input = DeclInput {
+            key: DeclKey::new(module, name, DeclKind::Var, 0),
+            name,
+            kind: DeclKind::Var,
+            body: *ty,
+            type_params: &[],
+        };
+        if let Some(decl) = export_decl(&ctx.arena, &resolver, &input) {
+            let loose = decl.body.nodes.iter().any(|node| {
+                matches!(
+                    node,
+                    PNode::Prim(tsox_base::stable_hash::Prim::Any)
+                        | PNode::Prim(tsox_base::stable_hash::Prim::Error)
+                )
+            });
+            table.flow_facts.push((
+                key,
+                tsox_model::TypeFact {
+                    ty: decl.body,
+                    trust: if loose {
+                        tsox_model::Trust::Unchecked
+                    } else {
+                        tsox_model::Trust::Trusted
+                    },
+                },
+            ));
+        }
+    }
+
     // The exported declarations leave under their names. A declaration they reach but do
     // not export leaves under its own key and no name, so a dependent can follow the
     // reference without being able to import it. Reached ones are found by walking the
@@ -1442,656 +1491,8 @@ fn collect_in<'ast>(
 // of the name resolves to, so its slot is the slot the resolver has to know.
 // Which side of a name a dropped declaration was on. An interface or an alias is a type only;
 // anything else has a runtime side, which is what a use as a value reads.
-fn note_dropped_side(
-    name: &str,
-    kind: DeclKind,
-    types: &mut Vec<String>,
-    values: &mut Vec<String>,
-) {
-    let into = if matches!(kind, DeclKind::Interface | DeclKind::Alias) {
-        types
-    } else {
-        values
-    };
-    if !into.iter().any(|existing| existing == name) {
-        into.push(name.to_string());
-    }
-}
 
-// A generic interface, class or alias that could not be written out still has a parameter
-// list. Keep it, so that a bare `Array` or a `Map<string>` can be reported as the wrong number
-// of type arguments even though nothing is known about the type itself.
-fn note_dropped_generic(
-    ctx: &CheckContext<'_, '_>,
-    name: &str,
-    kind: DeclKind,
-    into: &mut Vec<(String, Vec<(String, bool)>)>,
-) {
-    if !matches!(
-        kind,
-        DeclKind::Interface | DeclKind::Class | DeclKind::Alias
-    ) || into.iter().any(|(existing, _)| existing == name)
-    {
-        return;
-    }
-    if let Some(decl) = ctx.namespace.declared_type_param_decl(name) {
-        into.push((
-            name.to_string(),
-            decl.params
-                .iter()
-                .map(|param| (param.name.name.to_string(), param.default.is_some()))
-                .collect(),
-        ));
-    }
-}
-
-fn interface_or_alias(
-    ctx: &mut CheckContext<'_, '_>,
-    module: ModuleKey,
-    item: &Item<'_>,
-) -> Option<Pending> {
-    // A second part of a merged interface is already inside the first's body, and a
-    // redeclared alias is an error reported elsewhere.
-    if item.index > 0 {
-        return None;
-    }
-    let Resolution::Resolved(type_id) = ctx.namespace.resolve(&item.name, &mut ctx.arena) else {
-        return None;
-    };
-    // An interface, a class and a type-literal alias come back as a Ref, a named alias
-    // as a Named; a generic alias or a primitive alias is the body itself and nothing
-    // refers to it by slot.
-    let body = ctx
-        .arena
-        .decl_parts(type_id)
-        .map_or(type_id, |(_, body)| body);
-    Some(pending_of(module, item, body))
-}
-
-fn function<'ast>(
-    ctx: &mut CheckContext<'ast, '_>,
-    module: ModuleKey,
-    f: &'ast Function<'ast>,
-    item: &Item<'_>,
-) -> Option<Pending> {
-    if item.overloaded {
-        let body = super::declare::resolve_function_type(f, ctx)?;
-        return with_type_params(
-            ctx,
-            pending_of(module, item, body),
-            f.type_parameters.as_deref(),
-        );
-    }
-    let id = f.id.as_ref()?;
-    let body = ctx.symbols.get(id.symbol_id.get()?)?;
-    with_type_params(
-        ctx,
-        pending_of(module, item, body),
-        f.type_parameters.as_deref(),
-    )
-}
-
-fn default_function<'ast>(
-    ctx: &mut CheckContext<'ast, '_>,
-    module: ModuleKey,
-    function: &'ast Function<'ast>,
-    item: &Item<'_>,
-) -> Option<Pending> {
-    let body = ctx
-        .exported_function_types
-        .get(&function.span().start)
-        .copied()
-        .or_else(|| {
-            function
-                .id
-                .as_ref()
-                .and_then(|id| id.symbol_id.get())
-                .and_then(|symbol| ctx.symbols.get(symbol))
-        })
-        .or_else(|| super::declare::resolve_function_type(function, ctx))?;
-    with_type_params(
-        ctx,
-        pending_of(module, item, body),
-        function.type_parameters.as_deref(),
-    )
-}
-
-fn default_class_instance<'ast>(
-    ctx: &mut CheckContext<'ast, '_>,
-    module: ModuleKey,
-    class: &'ast Class<'ast>,
-    item: &Item<'_>,
-) -> Option<Pending> {
-    let body = ctx
-        .namespace
-        .resolve_anonymous_class(class, &mut ctx.arena)?;
-    with_type_params(
-        ctx,
-        pending_of(module, item, body),
-        class.type_parameters.as_deref(),
-    )
-}
-
-fn default_class_value<'ast>(
-    ctx: &mut CheckContext<'ast, '_>,
-    module: ModuleKey,
-    class: &'ast Class<'ast>,
-    item: &Item<'_>,
-) -> Option<Pending> {
-    let instance = ctx
-        .namespace
-        .resolve_anonymous_class(class, &mut ctx.arena)?;
-    let scope = ctx
-        .namespace
-        .push_decl_type_params(&mut ctx.arena, class.type_parameters.as_deref());
-    let (params, is_untyped) = match super::declare::find_constructor(class) {
-        Some(constructor) => match super::super::type_annotation::resolve_function_params(
-            &constructor.params,
-            &mut ctx.namespace,
-            &mut ctx.arena,
-        ) {
-            Some(params) => (params, false),
-            None => (Vec::new(), true),
-        },
-        None => (Vec::new(), false),
-    };
-    ctx.namespace.pop_type_params(scope);
-    let body = ctx.arena.alloc(Type::Function(crate::types::FunctionType {
-        params,
-        return_type: instance,
-        type_params: Vec::new(),
-        is_untyped,
-    }));
-    with_type_params(
-        ctx,
-        pending_of(module, item, body),
-        class.type_parameters.as_deref(),
-    )
-}
-
-fn variable(
-    ctx: &mut CheckContext<'_, '_>,
-    module: ModuleKey,
-    symbol: Option<SymbolId>,
-    item: &Item<'_>,
-) -> Option<Pending> {
-    // The type is whatever the symbol holds once the bodies are checked: the annotation
-    // when there is one, otherwise what the initializer inferred (a `const` keeps its
-    // literal, a `let` is widened), which is the type tsc writes into a declaration file.
-    if item.index > 0 {
-        return None;
-    }
-    let body = ctx.symbols.get(symbol?)?;
-    Some(pending_of(module, item, body))
-}
-
-// An enum is exported by its value-position type: an object of the member literals, which
-// is all the importer needs to rebuild both the type and the value. A merged enum, or one
-// the declare pass could not resolve (a computed member), has no such type here and is
-// left out.
-fn enumeration(
-    ctx: &mut CheckContext<'_, '_>,
-    module: ModuleKey,
-    symbol: Option<SymbolId>,
-    item: &Item<'_>,
-) -> Option<Pending> {
-    if item.index > 0 {
-        return None;
-    }
-    let body = ctx.symbols.get(symbol?)?;
-    Some(pending_of(module, item, body))
-}
-
-// A namespace is its value (an object of its exported members, exported under its own
-// name) plus the types written inside it, each exported under its dotted name (`N.I`) so
-// that `N.I` resolves in a file that imports `N`. Only members visible from outside go:
-// the marked ones, or all of them in an ambient namespace where none is marked. A
-// namespace this checker does not read (a dotted name) is reported as not pushed.
-fn push_namespace<'ast>(
-    items: &mut Vec<Item<'ast>>,
-    seen: &mut FxHashMap<(String, u8), u32>,
-    ns: &'ast oxc_ast::ast::TSNamespaceDeclaration<'ast>,
-    names: Vec<String>,
-    ambient: bool,
-) {
-    let node = Node::NamespaceValue {
-        symbol: ns.id.symbol_id.get(),
-    };
-    push_item(items, seen, &ns.id.name, DeclKind::Var, node, names.clone());
-    push_namespace_types(items, seen, ns, &ns.id.name, &names, ambient || ns.declare);
-}
-
-fn push_namespace_types<'ast>(
-    items: &mut Vec<Item<'ast>>,
-    seen: &mut FxHashMap<(String, u8), u32>,
-    ns: &'ast oxc_ast::ast::TSNamespaceDeclaration<'ast>,
-    prefix: &str,
-    outer_names: &[String],
-    ambient: bool,
-) {
-    use super::declare::TopLevelItem;
-    let members = super::declare::namespace_members(ns);
-    let any_marked = members.iter().any(|(_, marked)| *marked);
-    for (item, marked) in members {
-        if !(marked || (ambient && !any_marked)) {
-            continue;
-        }
-        // Each type goes out under `prefix.Name`, once per name the namespace goes out
-        // under, so `export { N as M }` is handled by the specifier pass instead.
-        let dotted = |name: &str| format!("{prefix}.{name}");
-        let names = |qualified: &str| -> Vec<String> {
-            outer_names
-                .iter()
-                .map(|_| qualified.to_string())
-                .take(1)
-                .collect()
-        };
-        match item {
-            TopLevelItem::Interface(d) => {
-                let q = dotted(&d.id.name);
-                push_item(
-                    items,
-                    seen,
-                    &q,
-                    DeclKind::Interface,
-                    Node::Interface,
-                    names(&q),
-                );
-            }
-            TopLevelItem::Alias(d) => {
-                let q = dotted(&d.id.name);
-                push_item(items, seen, &q, DeclKind::Alias, Node::Alias, names(&q));
-            }
-            TopLevelItem::Class(c) => {
-                if let Some(id) = &c.id {
-                    let q = dotted(&id.name);
-                    push_item(items, seen, &q, DeclKind::Class, Node::Class, names(&q));
-                }
-            }
-            TopLevelItem::Enum(e) => {
-                let q = dotted(&e.id.name);
-                let node = Node::Enum {
-                    symbol: e.id.symbol_id.get(),
-                };
-                push_item(items, seen, &q, DeclKind::Enum, node, names(&q));
-            }
-            TopLevelItem::Namespace(inner) => {
-                let q = dotted(&inner.id.name);
-                push_namespace_types(
-                    items,
-                    seen,
-                    inner,
-                    &q,
-                    outer_names,
-                    ambient || inner.declare,
-                );
-            }
-            TopLevelItem::Function(_)
-            | TopLevelItem::Variable(_)
-            | TopLevelItem::ExternalModule(_) => {}
-        }
-    }
-}
-
-// A class is two declarations that share its name: the instance type, which another type
-// can name, and the constructor, which is the name used as a value. Each is exported under
-// the same names, and an import of the name binds both.
-fn push_class<'ast>(
-    items: &mut Vec<Item<'ast>>,
-    seen: &mut FxHashMap<(String, u8), u32>,
-    name: &str,
-    symbol: Option<SymbolId>,
-    names: Vec<String>,
-) {
-    push_item(
-        items,
-        seen,
-        name,
-        DeclKind::Class,
-        Node::Class,
-        names.clone(),
-    );
-    push_item(
-        items,
-        seen,
-        name,
-        DeclKind::Var,
-        Node::ClassValue { symbol },
-        names,
-    );
-}
-
-fn pending_of(module: ModuleKey, item: &Item<'_>, body: TypeId) -> Pending {
-    Pending {
-        key: DeclKey::new(module, &item.name, item.kind, item.index),
-        name: item.name.clone(),
-        kind: item.kind,
-        body,
-        type_params: Vec::new(),
-        exported_as: item.exported_as.clone(),
-    }
-}
-
-// Registers an export with the resolver. An interface's type parameters may sit on a
-// merged part and not on the exported one, so for an interface or an alias the namespace
-// says which declaration actually carries them. None when the declaration cannot be read
-// completely, which the caller reports as an unsupported export.
-fn register<'ast>(
-    keys: &mut UnitKeys,
-    ctx: &mut CheckContext<'ast, '_>,
-    mut p: Pending,
-) -> Option<Pending> {
-    if matches!(
-        p.kind,
-        DeclKind::Interface | DeclKind::Alias | DeclKind::Class
-    ) {
-        let declared = ctx.namespace.declared_type_param_decl(&p.name);
-        p = with_type_params(ctx, p, declared)?;
-        // The slot the rest of the unit knows this declaration by.
-        if let Resolution::Resolved(type_id) = ctx.namespace.resolve(&p.name, &mut ctx.arena) {
-            if let Some((slot, _)) = ctx.arena.decl_parts(type_id) {
-                keys.slots.insert(slot, (p.key, p.name.clone()));
-            } else if p.kind == DeclKind::Alias && !p.type_params.is_empty() {
-                // A generic alias has no slot of its own, only its body; applications of
-                // it are traced back to this key through the body.
-                let slot = ctx.arena.alloc_name(&p.name);
-                keys.slots.insert(slot, (p.key, p.name.clone()));
-                ctx.arena.set_body_origin(type_id, slot);
-            }
-        }
-    }
-    for (i, tp) in p.type_params.iter().enumerate() {
-        keys.tparams.insert(
-            tp.id,
-            TypeParamKey {
-                owner: p.key,
-                index: i as u32,
-            },
-        );
-    }
-    // Generic function types can appear inside parameters, returns, object members,
-    // aliases, and constraints. They have no top-level export declaration of their own,
-    // so give their type parameters stable child keys before hashing or serializing the
-    // body. Top-level signature parameters above keep the declaration key itself. The key
-    // is the declaration's own key plus the path down to the signature, never a position
-    // in the file.
-    let parent = p.key;
-    let mut path = Vec::new();
-    register_nested_signature_keys(keys, &ctx.arena, &ctx.importer, parent, p.body, &mut path);
-    for (index, parameter) in p.type_params.iter().enumerate() {
-        for (tag, root) in [
-            (TAG_DECL_BOUND, parameter.bound),
-            (TAG_DECL_DEFAULT, parameter.default),
-        ] {
-            if let Some(root) = root {
-                path.clear();
-                path.push(tag);
-                path.extend((index as u32).to_le_bytes());
-                register_nested_signature_keys(
-                    keys,
-                    &ctx.arena,
-                    &ctx.importer,
-                    parent,
-                    root,
-                    &mut path,
-                );
-            }
-        }
-    }
-    Some(p)
-}
-
-// One byte per step from a declaration's type down to a nested type, with a number where
-// the step has an index, so two signatures in one declaration never share a path.
-const TAG_PROPERTY: u8 = 1;
-const TAG_PARAMETER: u8 = 2;
-const TAG_RETURN: u8 = 3;
-const TAG_MEMBER: u8 = 4;
-const TAG_ELEMENT: u8 = 5;
-const TAG_BOUND: u8 = 6;
-const TAG_DEFAULT: u8 = 7;
-const TAG_ARGUMENT: u8 = 8;
-const TAG_INNER: u8 = 9;
-const TAG_GENERIC_BOUND: u8 = 10;
-const TAG_DECL_BOUND: u8 = 11;
-const TAG_DECL_DEFAULT: u8 = 12;
-
-fn register_nested_signature_keys(
-    keys: &mut UnitKeys,
-    arena: &crate::arena::TypeArena,
-    imported: &Importer,
-    parent: DeclKey,
-    root: TypeId,
-    path: &mut Vec<u8>,
-) {
-    struct Walk<'a> {
-        keys: &'a mut UnitKeys,
-        arena: &'a crate::arena::TypeArena,
-        imported: &'a Importer,
-        parent: DeclKey,
-        // Membership only; it is never iterated, so its order cannot reach the output.
-        seen: std::collections::HashSet<TypeId>,
-    }
-
-    // Runs `body` one step further down, and puts the path back afterwards.
-    fn step(path: &mut Vec<u8>, tag: u8, index: Option<u32>, body: impl FnOnce(&mut Vec<u8>)) {
-        let length = path.len();
-        path.push(tag);
-        if let Some(index) = index {
-            path.extend(index.to_le_bytes());
-        }
-        body(path);
-        path.truncate(length);
-    }
-
-    impl Walk<'_> {
-        fn visit(&mut self, id: TypeId, path: &mut Vec<u8>) {
-            if !self.seen.insert(id) {
-                return;
-            }
-            match self.arena.raw(id) {
-                Type::Function(function) => {
-                    if !function.type_params.is_empty() {
-                        let owner = DeclKey::nested_type_signature(self.parent, path);
-                        for (index, parameter) in function.type_params.iter().enumerate() {
-                            if self.keys.tparams.contains_key(&parameter.id)
-                                || self.imported.type_param_key(parameter.id).is_some()
-                            {
-                                continue;
-                            }
-                            self.keys.tparams.insert(
-                                parameter.id,
-                                TypeParamKey {
-                                    owner,
-                                    index: index as u32,
-                                },
-                            );
-                        }
-                    }
-                    for (index, parameter) in function.type_params.iter().enumerate() {
-                        let index = index as u32;
-                        if let Some(constraint) = parameter.constraint {
-                            step(path, TAG_BOUND, Some(index), |p| self.visit(constraint, p));
-                        }
-                        if let Some(default) = parameter.default {
-                            step(path, TAG_DEFAULT, Some(index), |p| self.visit(default, p));
-                        }
-                    }
-                    for (index, parameter) in function.params.iter().enumerate() {
-                        step(path, TAG_PARAMETER, Some(index as u32), |p| {
-                            self.visit(parameter.type_id, p)
-                        });
-                    }
-                    step(path, TAG_RETURN, None, |p| {
-                        self.visit(function.return_type, p)
-                    });
-                }
-                Type::Object(object) => {
-                    for property in object.properties.iter() {
-                        // The name is the step: properties are sorted by name, and a name
-                        // does not move when the declaration does.
-                        let length = path.len();
-                        path.push(TAG_PROPERTY);
-                        path.extend((property.name.len() as u32).to_le_bytes());
-                        path.extend(property.name.as_bytes());
-                        self.visit(property.type_id, path);
-                        path.truncate(length);
-                    }
-                }
-                Type::Array(element) => step(path, TAG_ELEMENT, None, |p| self.visit(*element, p)),
-                Type::Tuple(elements) => {
-                    for (index, element) in elements.iter().enumerate() {
-                        step(path, TAG_ELEMENT, Some(index as u32), |p| {
-                            self.visit(element.type_id, p)
-                        });
-                    }
-                }
-                Type::Union(members) | Type::Intersection(members) => {
-                    for (index, &member) in members.iter().enumerate() {
-                        step(path, TAG_MEMBER, Some(index as u32), |p| {
-                            self.visit(member, p)
-                        });
-                    }
-                }
-                Type::GenericParameter(_, _, bound) => {
-                    if let Some(bound) = bound {
-                        step(path, TAG_GENERIC_BOUND, None, |p| self.visit(*bound, p));
-                    }
-                }
-                Type::Named(_, inner) => step(path, TAG_INNER, None, |p| self.visit(*inner, p)),
-                // `keyof T` and `T[K]`: each operand is a step of its own under the member tag.
-                Type::Keyof(operand) | Type::StringMapping(_, operand) => {
-                    step(path, TAG_MEMBER, Some(0), |p| self.visit(*operand, p));
-                }
-                Type::Variadic(elements) => {
-                    for (position, element) in elements.iter().enumerate() {
-                        step(path, TAG_MEMBER, Some(position as u32), |p| {
-                            self.visit(element.type_id, p)
-                        });
-                    }
-                }
-                Type::Template(template) => {
-                    for (position, part) in template.types.iter().enumerate() {
-                        step(path, TAG_MEMBER, Some(position as u32), |p| {
-                            self.visit(*part, p)
-                        });
-                    }
-                }
-                Type::Mapped(mapped) => {
-                    for (position, part) in [
-                        Some(mapped.constraint),
-                        mapped.name_type,
-                        Some(mapped.value),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .enumerate()
-                    {
-                        step(path, TAG_MEMBER, Some(position as u32), |p| {
-                            self.visit(part, p)
-                        });
-                    }
-                }
-                Type::IndexedAccess(object, index) => {
-                    for (position, part) in [*object, *index].into_iter().enumerate() {
-                        step(path, TAG_MEMBER, Some(position as u32), |p| {
-                            self.visit(part, p)
-                        });
-                    }
-                }
-                // A conditional's four parts, each a step of its own under the member tag.
-                Type::Conditional(conditional) => {
-                    for (index, part) in [
-                        conditional.check_type,
-                        conditional.extends_type,
-                        conditional.true_type,
-                        conditional.false_type,
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        step(path, TAG_MEMBER, Some(index as u32), |p| {
-                            self.visit(part, p)
-                        });
-                    }
-                }
-                // An App's body belongs to its declaration, which is registered separately;
-                // the application only introduces its own arguments at this use site.
-                Type::App(_, arguments, _body) => {
-                    for (index, &argument) in arguments.iter().enumerate() {
-                        step(path, TAG_ARGUMENT, Some(index as u32), |p| {
-                            self.visit(argument, p)
-                        });
-                    }
-                }
-                // A Ref intentionally stops at a declaration boundary. Its body receives
-                // keys while its own declaration is registered.
-                Type::Number
-                | Type::String
-                | Type::Boolean
-                | Type::Null
-                | Type::Undefined
-                | Type::Any
-                | Type::Unknown
-                | Type::NonPrimitive
-                | Type::Error
-                | Type::Never
-                | Type::Void
-                | Type::StringLiteral(_)
-                | Type::NumberLiteral(_)
-                | Type::BooleanLiteral(_)
-                | Type::Ref(_) => {}
-            }
-        }
-    }
-
-    let mut walk = Walk {
-        keys,
-        arena,
-        imported,
-        parent,
-        seen: std::collections::HashSet::new(),
-    };
-    walk.visit(root, path);
-}
-
-// The declaration's own `<T extends B = D, ...>` list as export inputs. The bound is read
-// off the GenericParameter node the declare pass already allocated for the parameter, so
-// it is the very type the body was resolved against. The default is resolved again with
-// the declaration's parameters in scope (the namespace memoizes the parameter nodes, so
-// a default that names an earlier parameter gets that same node). None when a parameter
-// has no node, which means the declaration was never resolved with it in scope.
-fn with_type_params<'ast>(
-    ctx: &mut CheckContext<'ast, '_>,
-    mut p: Pending,
-    declared: Option<&'ast TSTypeParameterDeclaration<'ast>>,
-) -> Option<Pending> {
-    let Some(declared) = declared else {
-        return Some(p);
-    };
-    let file_id = ctx.namespace.file_id();
-    for (i, param) in declared.params.iter().enumerate() {
-        let id = TypeParameterId::with_file(file_id, param.span().start, i as u32);
-        let node = ctx.namespace.type_param_node(id)?;
-        let Type::GenericParameter(_, _, bound) = ctx.arena.raw(node) else {
-            return None;
-        };
-        let bound = *bound;
-        let default = if param.default.is_some() {
-            // A default that cannot be resolved cannot be exported.
-            Some(
-                ctx.namespace
-                    .resolve_type_param_default(&mut ctx.arena, declared, i)?,
-            )
-        } else {
-            None
-        };
-        p.type_params.push(TypeParamInput {
-            id,
-            name: param.name.name.to_string(),
-            bound,
-            default,
-        });
-    }
-    Some(p)
-}
+mod items;
+mod register;
+use self::items::*;
+use self::register::*;

@@ -194,6 +194,9 @@ pub struct FileReport {
     /// The other questions the check put to its imports. `None` when they are not known (a
     /// result replayed from a stored one); a reader must then assume it read everything.
     pub import_reads: Option<ImportReads>,
+    /// The compiler options this file's check read. A result replayed from a stored one does not
+    /// know them and claims all of them, so it is never kept across an option change by mistake.
+    pub options_read: tsox_base::check_options::OptionReads,
     /// Why this file's exports are partial, sorted and without duplicates; empty when they
     /// are complete. A file that imports a partial one stays quiet about a missing name.
     pub incomplete_reasons: Vec<IncompleteReason>,
@@ -1293,6 +1296,7 @@ fn failed_report(id: FileId, text: &str) -> FileReport {
         outcome: FileOutcome::ReadFailed(text.to_string()),
         reads: Vec::new(),
         import_reads: None,
+        options_read: tsox_base::check_options::OptionReads::all(),
         incomplete_reasons: Vec::new(),
     }
 }
@@ -1904,9 +1908,13 @@ pub fn probe_unit_isolated(
 /// digest give a unit the same environment.
 #[cfg(feature = "incremental")]
 pub fn unit_environment(graph: &ModuleGraph) -> String {
+    // The checking options are left out: a unit says which of them it read (`options_read`) and
+    // depends on exactly those, so changing one it never read does not disturb it.
+    let mut compiler_options = graph.compiler_options();
+    compiler_options.check = tsox_base::check_options::CheckOptions::typescript_defaults();
     format!(
         "{:?}|{}|{:?}|{}",
-        graph.compiler_options(),
+        compiler_options,
         bare_specifiers_are_reportable(graph, false),
         graph.root(),
         graph.type_entries_loaded(),
@@ -2660,7 +2668,7 @@ fn load_text<'g>(
 ) -> std::io::Result<Cow<'g, str>> {
     match graph.source(id) {
         Some(text) => Ok(Cow::Borrowed(text)),
-        None => fs::read_to_string(path).map(Cow::Owned),
+        None => graph.host().read_to_string(path).map(Cow::Owned),
     }
 }
 
@@ -2701,6 +2709,7 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
     let mut unit_exports = None;
     let mut reads = Vec::new();
     let mut import_reads = None;
+    let mut options_read = tsox_base::check_options::OptionReads::all();
     let mut incomplete_reasons = Vec::new();
     let outcome = match graph.files().path(id) {
         None => FileOutcome::ReadFailed(format!("no path recorded for file {}", id.index())),
@@ -2815,6 +2824,7 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
                 }
                 match checked {
                     Ok(output) => {
+                        options_read = output.options_read;
                         incomplete_reasons = output.incomplete_reasons.clone();
                         unit_exports = Some(UnitExports {
                             names: Arc::new(output.export_names),
@@ -2841,6 +2851,7 @@ fn check_file(project: &Project<'_>, worker: &mut Worker, id: FileId) -> Checked
             outcome,
             reads,
             import_reads,
+            options_read,
             incomplete_reasons,
         },
         unit_exports,

@@ -10,4 +10,4 @@
 Features: `scratchpad` (bump scratch), `wasm` (serde on diagnostics), `test-hash-seed` (see
 `docs/architecture/workspace.md`; enable it only from a dev-dependency).
 
-Rule: nothing here may import a higher tsox crate. `scripts/check-layering.py` enforces it.
+Rule: nothing here may import a higher tsox crate. `cargo xtask layering` enforces it.

@@ -1,0 +1,16 @@
+[package]
+name = "tsox-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The semantic model: arena-free facts about a checked file that emit, the language server and the IR read."
+
+[lints]
+workspace = true
+
+[dependencies]
+tsox-base = { workspace = true }
+tsox-types = { workspace = true }
+xxhash-rust = { workspace = true }

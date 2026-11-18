@@ -17,7 +17,7 @@ codes on diagnostics (`TS2322`) are only labels the checker attaches to what it 
 | 5 | Completion (scope, namespace and enum members, module specifiers), signature help | done, except members of ordinary values |
 | 6 | Rename, document highlight, workspace symbols, folding ranges, selection ranges | done |
 | 6b | Code actions, semantic tokens, inlay hints | not started |
-| 7 | Hardening, performance, packaging | not started |
+| 7 | Hardening, performance, packaging | packaging: VS Code extension (`editors/vscode`) and Zed extension (`editors/zed`) written, release binaries built by `.github/workflows/release.yml`; hardening and performance not started |
 
 Working feature list today: `textDocument/publishDiagnostics`, `documentSymbol` (nested and
 flat), `definition`, `references`, `hover`, `completion`, `signatureHelp`, `rename` and

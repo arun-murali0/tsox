@@ -515,11 +515,12 @@ pub(super) fn check_try_statement(
         }
         ctx.narrow = at_catch;
         if let Some(param) = &handler.param {
-            let catch_type = if ctx.options.use_unknown_in_catch_variables {
-                ctx.arena.unknown()
-            } else {
-                ctx.arena.any()
-            };
+            let catch_type =
+                if ctx.option(crate::check_options::OptionField::UseUnknownInCatchVariables) {
+                    ctx.arena.unknown()
+                } else {
+                    ctx.arena.any()
+                };
             bind_pattern(&param.pattern, catch_type, scoping, ctx);
         }
         check_block_statements(&handler.body.body, scoping, ctx);

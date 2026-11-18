@@ -132,6 +132,38 @@ impl LibraryUnitCache for DiskLibraryUnitCache {
     }
 }
 
+/// A library cache that keeps its entries in the host's own cache (`Host::cache_get` and
+/// `cache_put`): in memory for a test or a browser worker, wherever the host decides otherwise.
+/// `fingerprint` names the program that writes entries, as the executable's identity does for
+/// the disk cache; a host with no executable passes its build identity.
+pub struct HostLibraryUnitCache {
+    host: std::sync::Arc<dyn tsox_base::host::Host>,
+    fingerprint: u128,
+}
+
+impl HostLibraryUnitCache {
+    pub fn new(host: std::sync::Arc<dyn tsox_base::host::Host>, fingerprint: u128) -> Self {
+        Self { host, fingerprint }
+    }
+}
+
+impl LibraryUnitCache for HostLibraryUnitCache {
+    fn load(&self, key: u128) -> Option<Vec<u8>> {
+        self.host
+            .cache_get(&format!("library-unit:{key:032x}"))
+            .map(|bytes| bytes.to_vec())
+    }
+
+    fn store(&self, key: u128, bytes: &[u8]) {
+        self.host
+            .cache_put(&format!("library-unit:{key:032x}"), bytes.into());
+    }
+
+    fn fingerprint(&self) -> u128 {
+        self.fingerprint
+    }
+}
+
 /// Sweeps `dir` unless it was swept less than `SWEEP_INTERVAL` before `now`.
 fn sweep_if_due(dir: &Path, now: SystemTime) {
     let marker = dir.join(SWEEP_MARKER);
@@ -341,5 +373,22 @@ mod tests {
         sweep_if_due(&dir, now);
         assert!(!dir.join("old3.unit").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod host_cache_tests {
+    use super::*;
+    use tsox_base::host::MemoryHost;
+
+    #[test]
+    fn entries_round_trip_through_the_host_and_keys_are_separate() {
+        let cache = HostLibraryUnitCache::new(std::sync::Arc::new(MemoryHost::new()), 7);
+        assert!(cache.load(1).is_none());
+        cache.store(1, b"one");
+        cache.store(2, b"two");
+        assert_eq!(cache.load(1).as_deref(), Some(&b"one"[..]));
+        assert_eq!(cache.load(2).as_deref(), Some(&b"two"[..]));
+        assert_eq!(cache.fingerprint(), 7);
     }
 }

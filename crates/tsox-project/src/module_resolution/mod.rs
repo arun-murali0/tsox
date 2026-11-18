@@ -35,7 +35,9 @@ pub use discovery::{ModuleRequest, ModuleRequestKind, ModuleScan, scan_module_re
 pub use error::ModuleError;
 pub use graph::{ModuleEdge, ModuleGraph};
 #[cfg(feature = "snapshot")]
-pub use library_cache::{DiskLibraryUnitCache, LibraryUnitCache, install_library_unit_cache};
+pub use library_cache::{
+    DiskLibraryUnitCache, HostLibraryUnitCache, LibraryUnitCache, install_library_unit_cache,
+};
 #[allow(unused_imports)]
 pub use metadata::FileState;
 pub use metadata::{FileFingerprint, content_hash};

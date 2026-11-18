@@ -443,32 +443,6 @@ fn is_subtype_uncached(
 
         (Type::Tuple(a), Type::Tuple(b)) => tuple_is_subtype(arena, a, b, seen, binders),
 
-        // A key of an array-bounded type parameter: the array's own members, and an index a tuple
-        // part or rest element covers (`k: keyof T`, `k = "length"`).
-        (Type::StringLiteral(key), Type::Keyof(operand)) if array_key_of(arena, *operand, key) => {
-            true
-        }
-
-        // `[string, ...T]` against `[string, ...U]`: the same shape, each part related to the part
-        // in its place.
-        (Type::Variadic(a), Type::Variadic(b)) => {
-            a.len() == b.len()
-                && a.iter().zip(b).all(|(x, y)| {
-                    x.rest == y.rest
-                        && x.optional == y.optional
-                        && is_subtype_inner(arena, x.type_id, y.type_id, seen, binders)
-                })
-        }
-        // A generic spread read as its bound (`T extends unknown[]` as `...unknown[]`) is a
-        // tuple the target can be compared with. The reverse does not hold: a plain tuple does not
-        // promise what `T` will be.
-        (Type::Variadic(a), Type::Tuple(b)) => bounded_variadic(arena, a)
-            .is_some_and(|a| tuple_is_subtype(arena, &a, b, seen, binders)),
-        (Type::Variadic(a), Type::Array(target)) => bounded_variadic(arena, a).is_some_and(|a| {
-            a.iter()
-                .all(|e| is_subtype_inner(arena, e.type_id, *target, seen, binders))
-        }),
-
         // A tuple is an array of whatever its elements can be: `[string, number]` is a
         // `(string | number)[]`. The reverse does not hold, an array has no fixed length.
         (Type::Tuple(elements), Type::Array(target)) => elements
@@ -526,106 +500,6 @@ fn is_subtype_uncached(
 
         _ => false,
     }
-}
-
-const ARRAY_MEMBERS: &[&str] = &[
-    "length",
-    "toString",
-    "toLocaleString",
-    "pop",
-    "push",
-    "concat",
-    "join",
-    "reverse",
-    "shift",
-    "slice",
-    "sort",
-    "splice",
-    "unshift",
-    "indexOf",
-    "lastIndexOf",
-    "every",
-    "some",
-    "forEach",
-    "map",
-    "filter",
-    "reduce",
-    "reduceRight",
-    "find",
-    "findIndex",
-    "fill",
-    "copyWithin",
-    "entries",
-    "keys",
-    "values",
-    "includes",
-    "flatMap",
-    "flat",
-    "at",
-];
-
-// Whether `key` is a key of `operand` through its array or tuple bound.
-fn array_key_of(arena: &TypeArena, operand: TypeId, key: &str) -> bool {
-    let mut current = operand;
-    for _ in 0..16 {
-        match arena.get(current) {
-            Type::GenericParameter(_, _, Some(bound)) => current = *bound,
-            _ => break,
-        }
-    }
-    let elements = match arena.get(current) {
-        Type::Array(_) => Vec::new(),
-        Type::Tuple(elements) => elements.clone(),
-        Type::Variadic(elements) => match bounded_variadic(arena, elements) {
-            Some(elements) => elements,
-            None => return false,
-        },
-        _ => return false,
-    };
-    let is_array = !matches!(arena.get(current), Type::Tuple(_) | Type::Variadic(_));
-    if ARRAY_MEMBERS.contains(&key) {
-        return is_array
-            || !elements.is_empty()
-            || matches!(arena.get(current), Type::Tuple(_) | Type::Variadic(_));
-    }
-    match key.parse::<usize>() {
-        Ok(index) => {
-            is_array
-                || index < elements.iter().filter(|e| !e.rest).count()
-                || elements.iter().any(|e| e.rest)
-        }
-        Err(_) => false,
-    }
-}
-
-// The elements of a variadic tuple with each spread type parameter replaced by the element type
-// of its array bound. `None` when a spread has no such bound.
-fn bounded_variadic(arena: &TypeArena, elements: &[TupleElement]) -> Option<Vec<TupleElement>> {
-    let mut out = Vec::with_capacity(elements.len());
-    for element in elements {
-        if !element.rest {
-            out.push(*element);
-            continue;
-        }
-        // Follow `U extends T extends string[]` down to the array or tuple at the bottom.
-        let mut current = element.type_id;
-        for _ in 0..16 {
-            match arena.get(current) {
-                Type::GenericParameter(_, _, Some(bound)) => current = *bound,
-                _ => break,
-            }
-        }
-        match arena.get(current) {
-            Type::Array(item) => out.push(TupleElement {
-                type_id: *item,
-                optional: false,
-                rest: true,
-            }),
-            Type::Tuple(inner) => out.extend(inner.iter().copied()),
-            _ => return None,
-        }
-    }
-    Some(out)
 }
 
 // Tuple against tuple. The source has to promise at least as many elements as the target

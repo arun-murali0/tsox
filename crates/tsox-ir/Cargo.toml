@@ -1,0 +1,15 @@
+[package]
+name = "tsox-ir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A typed mid-level IR, lowered from the AST and the semantic model, for native and WASM back ends."
+
+[lints]
+workspace = true
+
+[dependencies]
+tsox-base = { workspace = true }
+tsox-model = { workspace = true }

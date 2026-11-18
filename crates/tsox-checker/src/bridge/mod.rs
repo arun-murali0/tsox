@@ -10,8 +10,10 @@ mod expressions;
 pub mod flow_shadow;
 mod implicit_any;
 mod imports;
+mod model;
 mod narrow;
 mod parse;
+mod passes;
 mod probe;
 mod statements;
 mod strict_mode_names;
@@ -175,6 +177,16 @@ pub fn check_file(
     if gave_up {
         exports.mark(IncompleteReason::SyntaxErrorNoTree);
     }
+    exports.import_uses = model::import_uses(&program, semantic.scoping());
+    exports.node_types = model::node_types(&exports.decls);
+    exports.node_symbols = model::node_symbols(&semantic, &program, &exports.decls);
+    if let Some(module) = module {
+        exports.const_values = ctx
+            .enum_values
+            .iter()
+            .map(|(e, m, v)| (tsox_model::enum_member_key(module, e, m), v.clone()))
+            .collect();
+    }
     // Exported functions whose return type is inferred from imported functions: the project
     // looks for a circle among them, which no one file can see. A function that is not
     // exported cannot be the way back into this file, so it is not a node of such a circle.
@@ -236,6 +248,7 @@ pub fn check_file(
     });
 
     *arena = ctx.arena;
+    exports.options_read = ctx.options_read.get();
     Ok(Some((diagnostics, metrics, exports)))
 }
 
@@ -316,13 +329,7 @@ fn bodies_phase<'ast>(
     if ctx.cancelled {
         return;
     }
-    unresolved_names::report_unresolved_type_names(program, scoping, ctx);
-    strict_mode_names::report_strict_mode_names(program, ctx);
-    implicit_any::report_implicit_any(program, ctx);
-    duplicates::report_duplicate_declarations(program, ctx);
-    class_implements::check_class_implements(program, ctx);
-    tuple_grammar::report_tuple_grammar_errors(program, ctx);
-    unreachable_code::check_unreachable_code(ctx);
+    passes::run_passes(program, scoping, ctx);
 }
 
 // Turns what the passes left in the namespace into diagnostics and returns the file's
@@ -369,18 +376,25 @@ fn publish(ctx: &mut CheckContext<'_, '_>) -> (Vec<Diagnostic>, CheckMetrics) {
         );
     }
 
-    for (name, span) in ctx.namespace.take_implicit_any_params() {
-        // The declaration pass may have reported this parameter already.
-        if ctx.diagnostics.iter().any(|d| {
-            d.code == crate::diagnostic_codes::DiagnosticCode::ImplicitAnyParameter
-                && d.start == span.start
-        }) {
-            continue;
+    // The declaration pass may have reported a parameter already. The starts it reported are
+    // collected once, so each parameter is one set lookup, not a scan of every diagnostic.
+    let implicit_any_params = ctx.namespace.take_implicit_any_params();
+    if !implicit_any_params.is_empty() {
+        let mut reported: std::collections::HashSet<_> = ctx
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == crate::diagnostic_codes::DiagnosticCode::ImplicitAnyParameter)
+            .map(|d| d.start)
+            .collect();
+        for (name, span) in implicit_any_params {
+            if !reported.insert(span.start) {
+                continue;
+            }
+            ctx.error(
+                crate::diagnostic_messages::messages::parameter_implicitly_any(&name),
+                span,
+            );
         }
-        ctx.error(
-            crate::diagnostic_messages::messages::parameter_implicitly_any(&name),
-            span,
-        );
     }
 
     for (name, span) in ctx.namespace.take_unresolved_constraints() {

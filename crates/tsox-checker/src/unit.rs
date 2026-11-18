@@ -121,6 +121,12 @@ impl<'a> UnitContext<'a> {
 // treat its exports as unknown instead of trusting them.
 #[derive(Debug)]
 pub struct UnitOutput {
+    /// What the check learned about the file, as arena-free tables (see `tsox-model`). Today it
+    /// holds `module_info`; the other tables are filled as their writers move over.
+    pub model: tsox_model::SemanticModel,
+    /// The compiler options this unit read. Under any other values of the options it did not
+    /// read, the output is the same, so a change to one of those needs no re-check.
+    pub options_read: crate::check_options::OptionReads,
     pub diagnostics: Vec<Diagnostic>,
     pub incomplete: bool,
     // Why the unit is partial, sorted and without duplicates: the reasons of its own export
@@ -275,6 +281,8 @@ impl Worker {
                 let partial = table.is_incomplete();
                 let reasons = all_reasons(&table);
                 Ok(UnitOutput {
+                    model: model_of(&table),
+                    options_read: table.options_read,
                     diagnostics,
                     incomplete: partial,
                     incomplete_reasons: reasons,
@@ -365,9 +373,39 @@ fn all_reasons(table: &ExportTable) -> Vec<IncompleteReason> {
     reasons
 }
 
+// The model of one checked file. Exports and imports are read from the export table, which
+// is what the checker already collected; the model sorts them so it does not depend on the
+// order they were found in.
+fn model_of(table: &ExportTable) -> tsox_model::SemanticModel {
+    let mut exports: Vec<(Box<str>, DeclKey)> = table
+        .names
+        .iter()
+        .map(|(name, key)| (name.as_str().into(), *key))
+        .collect();
+    exports.sort();
+    exports.dedup();
+    let mut imports: Vec<(Box<str>, tsox_model::ImportUse)> = table
+        .import_uses
+        .iter()
+        .map(|(specifier, usage)| (specifier.as_str().into(), *usage))
+        .collect();
+    imports.sort_by(|a, b| a.0.cmp(&b.0));
+    tsox_model::SemanticModel {
+        flow_facts: table.flow_facts.iter().cloned().collect(),
+        node_type: table.node_types.iter().cloned().collect(),
+        node_symbol: table.node_symbols.iter().cloned().collect(),
+        const_values: table.const_values.iter().cloned().collect(),
+        module_info: tsox_model::ModuleInfo { exports, imports },
+        ..Default::default()
+    }
+}
+
 fn crashed(ctx: &UnitContext<'_>) -> UnitOutput {
     let message = messages::internal_checker_error();
     UnitOutput {
+        model: tsox_model::SemanticModel::default(),
+        // A crashed unit's reads are unknown, so it claims all of them.
+        options_read: crate::check_options::OptionReads::all(),
         diagnostics: vec![Diagnostic {
             severity: Severity::Error,
             code: message.code,
@@ -410,5 +448,178 @@ mod tests {
         let after = worker.check_unit(&ctx).unwrap();
         assert!(!after.incomplete);
         assert!(after.diagnostics.is_empty(), "{after:?}");
+    }
+
+    #[test]
+    fn the_unit_model_carries_sorted_exports_and_import_uses_and_is_deterministic() {
+        let source = r#"
+            import { a } from "./value";
+            import type { T } from "./types";
+            export const z: number = a();
+            let t: T;
+            export const b: number = 1;
+        "#;
+        let run = || {
+            let ctx =
+                UnitContext::new(FileId::ROOT, "m.ts", source).with_module(ModuleKey::builtin());
+            Worker::new().check_unit(&ctx).unwrap().model
+        };
+        let model = run();
+        let names: Vec<&str> = model
+            .module_info
+            .exports
+            .iter()
+            .map(|(n, _)| &**n)
+            .collect();
+        assert_eq!(names, ["b", "z"]);
+        let imports: Vec<_> = model
+            .module_info
+            .imports
+            .iter()
+            .map(|(s, u)| (&**s, *u))
+            .collect();
+        assert_eq!(
+            imports,
+            [
+                ("./types", tsox_model::ImportUse::TypeOnly),
+                ("./value", tsox_model::ImportUse::Value)
+            ]
+        );
+        assert_eq!(model.stable_hash(), run().stable_hash());
+    }
+
+    #[test]
+    fn the_unit_model_holds_enum_member_values() {
+        let source =
+            "export const enum E { A, B = 5, C, S = \"x\", H = 1.5 }\nenum F { Z = 1 << 3 }\n";
+        let run = || {
+            let ctx =
+                UnitContext::new(FileId::ROOT, "e.ts", source).with_module(ModuleKey::builtin());
+            Worker::new().check_unit(&ctx).unwrap().model
+        };
+        let model = run();
+        let mut values: Vec<_> = model.const_values.values().cloned().collect();
+        values.sort_by_key(|v| format!("{v:?}"));
+        let numbers: Vec<f64> = model
+            .const_values
+            .values()
+            .filter_map(|v| v.as_f64())
+            .collect();
+        for expected in [0.0, 5.0, 6.0, 1.5, 8.0] {
+            assert!(numbers.contains(&expected), "{expected} in {numbers:?}");
+        }
+        assert!(
+            model
+                .const_values
+                .values()
+                .any(|v| *v == tsox_model::ConstValue::String("x".into()))
+        );
+        assert_eq!(model.const_values.len(), 6);
+        assert_eq!(model.stable_hash(), run().stable_hash());
+    }
+
+    #[test]
+    fn the_unit_model_names_what_references_refer_to() {
+        let source = "export function f(): number { return 1; }\nexport const a: number = f() + f();\nconst b = 1;\n";
+        let run = || {
+            let ctx =
+                UnitContext::new(FileId::ROOT, "s.ts", source).with_module(ModuleKey::builtin());
+            Worker::new().check_unit(&ctx).unwrap().model
+        };
+        let model = run();
+        let f = model
+            .module_info
+            .exports
+            .iter()
+            .find(|(n, _)| &**n == "f")
+            .unwrap()
+            .1;
+        assert_eq!(model.node_symbol.len(), 2, "{:?}", model.node_symbol);
+        assert!(model.node_symbol.values().all(|key| *key == f));
+        let indexes: Vec<u32> = model.node_symbol.keys().map(|k| k.index).collect();
+        assert_eq!(indexes, [0, 1]);
+        assert_eq!(model.stable_hash(), run().stable_hash());
+    }
+
+    #[test]
+    fn the_unit_model_holds_declaration_types() {
+        let source =
+            "export const n: number = 1;\nexport function f(x: any): number { return 1; }\n";
+        let run = || {
+            let ctx =
+                UnitContext::new(FileId::ROOT, "t.ts", source).with_module(ModuleKey::builtin());
+            Worker::new().check_unit(&ctx).unwrap().model
+        };
+        let model = run();
+        assert_eq!(model.node_type.len(), 2, "{:?}", model.node_type);
+        let trusts: Vec<_> = model.node_type.values().map(|f| f.trust).collect();
+        assert!(trusts.contains(&tsox_model::Trust::Trusted));
+        assert!(trusts.contains(&tsox_model::Trust::Unchecked));
+        assert_eq!(model.stable_hash(), run().stable_hash());
+    }
+
+    #[test]
+    fn the_unit_model_holds_narrowed_reads() {
+        let source = "export function f(x: string | number): string {\n  if (typeof x === \"string\") { return x; }\n  return String(x);\n}\n";
+        let run = || {
+            let ctx =
+                UnitContext::new(FileId::ROOT, "n.ts", source).with_module(ModuleKey::builtin());
+            Worker::new().check_unit(&ctx).unwrap().model
+        };
+        let model = run();
+        assert!(!model.flow_facts.is_empty(), "{:?}", model.flow_facts);
+        assert_eq!(model.stable_hash(), run().stable_hash());
+    }
+
+    #[test]
+    fn a_unit_reports_the_options_it_read_and_no_others() {
+        use crate::check_options::OptionField;
+        let reads = |source: &str| {
+            let ctx =
+                UnitContext::new(FileId::ROOT, "r.ts", source).with_module(ModuleKey::builtin());
+            Worker::new().check_unit(&ctx).unwrap().options_read
+        };
+        let plain = reads("export const a: number = 1;");
+        let with_class = reads("class A { m() {} } class B extends A { m() {} } export {};");
+        assert!(!plain.contains(OptionField::NoImplicitOverride));
+        assert!(with_class.contains(OptionField::NoImplicitOverride));
+        // Flipping an option the unit never read cannot change its answer.
+        assert!(plain.agree(
+            &crate::check_options::CheckOptions::typescript_defaults(),
+            &crate::check_options::CheckOptions {
+                no_implicit_override: true,
+                ..crate::check_options::CheckOptions::typescript_defaults()
+            }
+        ));
+    }
+
+    // Every read of a compiler option goes through `CheckContext::option`, which records it. A
+    // direct `ctx.options.<field>` read would be missing from `options_read`, and a unit would
+    // then be skipped after a change to an option it depends on.
+    #[test]
+    fn no_checker_code_reads_an_option_without_recording_it() {
+        fn walk(dir: &std::path::Path, hits: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, hits);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && !path.ends_with("context.rs")
+                {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    for (n, line) in text.lines().enumerate() {
+                        if line.contains("ctx.options.") && !line.trim_start().starts_with("//") {
+                            hits.push(format!("{}:{}", path.display(), n + 1));
+                        }
+                    }
+                }
+            }
+        }
+        let mut hits = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge"),
+            &mut hits,
+        );
+        assert!(hits.is_empty(), "unrecorded option reads: {hits:?}");
     }
 }

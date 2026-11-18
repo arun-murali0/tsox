@@ -101,9 +101,10 @@ This separation makes semantic algorithms reusable by future tooling and typed-I
 | `subtyping.rs` | Centralize subtype and assignability rules |
 | `type_annotation.rs` | Convert TypeScript type annotations into semantic types |
 | `bridge/` | Traverse Oxc AST and coordinate checking |
-| `bridge/narrow.rs` | Maintain TypeScript-aware flow narrowing |
+| `bridge/narrow/` | Flow narrowing, one file per feature (state, condition, equality rules, `in`, `instanceof`, `typeof`, literals, truthiness, predicates, destructuring); `narrowers.rs` is the first-match table of condition shapes and `equality.rs` the table of equality rules |
+| `bridge/passes.rs` | `PASSES`: the whole-file passes after the bodies (unresolved names, strict-mode names, implicit any, duplicates, class `implements`, tuple grammar, unreachable code) as one ordered table |
 | `semantic/queries.rs` | Stable read-only semantic relation boundary |
-| `semantic/generics.rs` | Generic inference, substitution, and related semantic helpers |
+| `semantic/generics/` | `infer.rs` (candidates and bindings), `instantiate.rs` (substitution, depth budget, free-parameter analysis), `reduce/` (one file per type operator: conditional, mapped, keyof_index, template, variadic, record) |
 | `explain.rs` | The chain of reasons tsc prints under a not-assignable error |
 | `type_display.rs` | Print a type the way tsc does in a message |
 | `lib_global_types.rs` | Generated list of the global type names tsc knows, so a library name is not reported as unknown |
@@ -111,8 +112,8 @@ This separation makes semantic algorithms reusable by future tooling and typed-I
 | `stable_hash.rs`, `stable_walk.rs` | The canonical node encoding and its Merkle hash, and the arena walk that feeds it |
 | `portable.rs` | Declarations as arena-free data, the importer, and the `ImportSource` a unit reads its imports through |
 | `unit.rs` | A file as a unit of work: `UnitContext`, `UnitOutput` and `Worker` |
-| `bridge/declare.rs` | The declare pass: register a file's top-level declarations |
-| `bridge/imports.rs`, `bridge/exports.rs` | Bind the names a file imports; collect what it exports as portable declarations |
+| `bridge/declare/` | The declare pass: register a file's top-level declarations (`mod.rs`), function and constructor signatures (`functions.rs`), enums (`enums.rs`) |
+| `bridge/imports.rs`, `bridge/exports/` | Bind the names a file imports; collect what it exports as portable declarations (`mod.rs` collects, `items.rs` builds one entry per item kind, `register.rs` registers pending entries) |
 | `bridge/unresolved_names.rs`, `bridge/unreachable_code.rs` | One pass for unknown type names, one for unreachable code |
 | `diagnostics.rs` | The public `Diagnostic`/`Severity` representation consumers see |
 | `diagnostic_codes.rs` | Stable `TSR####` identifiers, tsox's own namespace |
@@ -124,6 +125,10 @@ This separation makes semantic algorithms reusable by future tooling and typed-I
 | `incremental.rs` | Opt-in Salsa input (`SourceFile`) and first query; unchanged saves start no revision |
 | `scratchpad.rs` | Opt-in bump scratch for one worker; accepts only `Copy` values |
 | `module_resolution/` | Opt-in project layer: resolver wrapper, import discovery, module graph with cycles and layers, parallel project check that passes each layer's exports to the next, change detection |
+| `crates/tsox-model` | The semantic model tables the checker will write and consumers read (node types, symbols, flow facts, constants, module info), with a stable hash and a format version; nothing writes it yet |
+| `crates/tsox-emit` | JS emit over Oxc (parse, transform, codegen, source maps); takes an optional model |
+| `crates/tsox-ir` | Scaffold only; IR work is deferred |
+| `tsox_base::host`, `tsox_project::host` | The `Host` trait (files, directories, cache) with `MemoryHost` and `FsHost`; nothing calls it yet |
 | `crates/tsox-wasm` | WASM-facing adaptation (the wasm-bindgen front end, its own crate) |
 
 ## Feature modules
@@ -136,7 +141,7 @@ Expressions:
 expressions/
 ├── assignment.rs
 ├── binary.rs
-├── calls.rs
+├── calls/        (mod.rs, forms.rs: CALL_FORMS table, overloads.rs, promise.rs)
 ├── core.rs
 ├── elaborate.rs
 ├── excess.rs
@@ -231,7 +236,7 @@ These should be introduced only when the underlying semantic operation is mature
 
 ## Generic semantics
 
-Generic algorithms have been moved out of expression traversal into `semantic/generics.rs`.
+Generic algorithms have been moved out of expression traversal into `semantic/generics/`.
 
 The dependency direction is:
 

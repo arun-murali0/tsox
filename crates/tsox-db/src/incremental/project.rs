@@ -626,7 +626,21 @@ pub fn check_scc<'db>(
         }
     }
     register_import_reads(db, project, &bundle, unit, env, &output);
+    register_option_reads(db, project, &output);
     output
+}
+
+// Makes the unit depend on exactly the checking options it read, and no others.
+fn register_option_reads(db: &dyn IncrementalDb, project: ProjectInput, output: &SccOutput) {
+    let mut reads = tsox_base::check_options::OptionReads::none();
+    for (report, _) in &output.result.files {
+        for field in report.options_read.fields() {
+            reads.insert(field);
+        }
+    }
+    for field in reads.fields() {
+        let _ = option_value(db, project, OptionRef::new(db, field as u8));
+    }
 }
 
 // A cycle that settled, with what it was checked against: the unit's provider key, its members
@@ -824,6 +838,30 @@ pub fn check_provider<'db>(
         .as_bytes(),
     );
     Some(Arc::new(ProviderOutput { checked, digest }))
+}
+
+// One compiler option, as a query argument.
+#[salsa::interned(debug)]
+pub struct OptionRef<'db> {
+    #[returns(copy)]
+    pub field: u8,
+}
+
+// The value of one checking option in this epoch. A unit that read the option depends on this
+// and on nothing else about the options: the value is the query's answer, so when an epoch
+// changes other options, this one is re-derived and, being equal, stops there (backdated) and
+// the units that depend on it do not run again. This is the typed read log of the architecture
+// plan: reads are registered after the check, from what the check reported (`options_read`).
+#[salsa::tracked]
+pub fn option_value<'db>(
+    db: &'db dyn IncrementalDb,
+    project: ProjectInput,
+    option: OptionRef<'db>,
+) -> bool {
+    db.note("option_value");
+    let bundle = Arc::clone(project.bundle(db));
+    let field = tsox_base::check_options::OptionField::ALL[option.field(db) as usize];
+    bundle.graph.check_options().get(field)
 }
 
 #[salsa::tracked(returns(clone))]

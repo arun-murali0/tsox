@@ -3,7 +3,7 @@
 **Front end.** The `tsox` command line. Depends only on the `tsox` facade.
 
 - `src/main.rs`: argument parsing, file and project discovery, `--project`, `--incremental`, `--watch`, `--tsc-codes`, and the report.
-- `tests/`: the integration tests that start the binary (`CARGO_BIN_EXE_tsox`): `cli_project`, `corpus_aborts`, `depth_guard`, `determinism`, `partial_reasons`, `recursion_guards`. `corpus_aborts` reads the shared corpus in the repository's `tests/typescript-testcases/`.
+- `tests/`: the integration tests that start the binary (`CARGO_BIN_EXE_tsox`): `cli_project`, `corpus_aborts`, `depth_guard`, `determinism`, `partial_reasons`, `recursion_guards`. `corpus_aborts` runs over the fetched corpus in `.corpus/` (see `docs/corpus.md`) and skips when it is absent.
 
 The binary is named `tsox`, so `target/release/tsox` and `cargo build --bin tsox` work as before
 (the workspace's `default-members` includes this crate).

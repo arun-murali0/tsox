@@ -99,7 +99,15 @@ fn bind_object_pattern(
             );
             continue;
         };
-        let property_type = infer_member_access_type(type_id, &key.name, property.span(), ctx);
+        // A property with a default (`{ e = 1 } = {}`) may be absent from the source: the default
+        // supplies it, so a lookup that fails reports nothing and reads as `undefined`.
+        let has_default = matches!(property.value, BindingPattern::AssignmentPattern(_));
+        let diagnostics_before = ctx.diagnostics.len();
+        let mut property_type = infer_member_access_type(type_id, &key.name, property.span(), ctx);
+        if has_default && ctx.diagnostics.len() > diagnostics_before {
+            ctx.diagnostics.truncate(diagnostics_before);
+            property_type = ctx.arena.undefined();
+        }
         bind_pattern(&property.value, property_type, scoping, ctx);
     }
 

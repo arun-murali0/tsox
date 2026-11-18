@@ -11,12 +11,15 @@ it moves code and adds boundaries, and changes no behavior. `cargo test --worksp
 |---|---|---|---|
 | `tsox-base` | Identities and hashing (`keys`, `stable_hash`, `fxhash`), diagnostics and their codes, `FileId`, `LineIndex`, check options, the project-wide small helpers (`stack_guard`, `source_depth`, `reference_directives`), the generated list of tsc's global type names, the vendored TypeScript lib files (`lib/`, data only), the `scratchpad` | none | thiserror, xxhash-rust; serde (`wasm`), bumpalo (`scratchpad`) |
 | `tsox-types` | The type system: `TypeArena` and `Type`, `subtyping`, generics inference (`semantic/`), `namespace`, `type_annotation`, `type_display`, `explain`, and `portable` (declarations as arena-free data, `ImportSource`) | base | oxc_ast, oxc_ast_visit, oxc_span, oxc_semantic, smallvec |
+| `tsox-model` | The semantic model: arena-free, offset-free, versioned tables (node type, node symbol, flow facts, constants, module info) that emit, the language server and the IR read. A scaffold: nothing writes it yet | base, types | xxhash-rust |
 | `tsox-checker` | The single-file checker: `bridge/` (parse, bind, declare, imports, exports, narrowing, statements, expressions, whole-file passes) and `unit` (a file as a unit of work: `UnitContext`, `UnitOutput`, `Worker`) | base, types | oxc parser, allocator, cfg, semantic; tracing |
 | `tsox-project` | Many files: `module_resolution/` (graph, config, discovery, resolver, check, schedule, partial results), `scc`. Feature `incremental` switches on the hooks the query layer needs | base, types, checker | oxc_resolver, rayon |
 | `tsox-db` | The Salsa query layer over the project driver (`incremental`, `incremental/project.rs`) | base, types, checker, project | salsa |
 | `tsox-cli` | The `tsox` command line: `src/main.rs` and its integration tests in `tests/` (`cli_project`, `corpus_aborts`, `depth_guard`, `determinism`, `partial_reasons`, `recursion_guards`). The binary is still named `tsox`, so `target/release/tsox` and `cargo build --bin tsox` are unchanged | `tsox` (facade only) | mimalloc (optional) |
 | `tsox-lsp` | The language server: a stdio `tower` service with a worker that owns the incremental project, hover, navigation, symbols and diagnostics (see [lsp](lsp.md)) | `tsox` (facade, with its `incremental` feature), `tsox-base` | tokio, tower-lsp-server, oxc parser and semantic, tracing |
 | `tsox-wasm` | The browser front end: `TsoxChecker`, a wasm-bindgen `cdylib` (`src/lib.rs`) | `tsox` (facade only, with its `wasm` feature) | wasm-bindgen, serde, serde-wasm-bindgen, console_error_panic_hook |
+| `tsox-emit` | JavaScript emit: parse, strip types with Oxc's transformer, print with source maps (`emit_js`). Reads the semantic model only for import elision and `const enum` inlining | base, model | oxc_parser, oxc_semantic, oxc_transformer, oxc_codegen |
+| `tsox-ir` | A typed mid-level IR for native and WASM back ends; every value records whether its type is trusted. A skeleton: nothing lowers into it yet | base, model | none |
 | `tsox-xtask` | The development tools: the `harness` and `compare-tsc` binaries (`src/bin/`) and `harness_launcher` | `tsox` (facade only) | xxhash-rust |
 | `tsox` (root) | The facade: `src/lib.rs` re-exports the public API. Also the library's integration tests in `tests/`, the benches and the examples | base, types, checker, project, db | oxc crates, tracing |
 
@@ -25,12 +28,12 @@ it moves code and adds boundaries, and changes no behavior. `cargo test --worksp
 A crate depends only on crates above it in the table. The order is
 
 ```text
-tsox-base < tsox-types < tsox-checker < tsox-project < tsox-db < tsox < tsox-cli | tsox-lsp | tsox-wasm | tsox-xtask
+tsox-base < tsox-types < tsox-model < tsox-checker < tsox-project < tsox-db < tsox < tsox-ir < tsox-cli | tsox-emit | tsox-lsp | tsox-wasm | tsox-xtask
 ```
 
 The three on the right are the front ends. They share a layer: each depends on the `tsox` facade and none on another.
 
-Dev-dependencies count. `scripts/check-layering.py` reads `cargo metadata`, fails on any
+Dev-dependencies count. `cargo xtask layering` reads `cargo metadata`, fails on any
 dependency that is not strictly downward, and fails when a crate has no layer. It runs first in
 `scripts/ci.sh`, so a violation stops CI before anything compiles. To add a crate, put it in
 `LAYERS` in that script and in the table above.
@@ -76,7 +79,7 @@ the root is only the facade, and each front end depends on nothing but that faca
   package that defines the binary, so the six CLI test files moved to `crates/tsox-cli/tests/`
   and `harness_launcher` to `crates/tsox-xtask/tests/`. Their test names are unchanged.
 - **The repository root.** `harness` and `compare-tsc` read `.harness/` and `tests/` from the
-  repository root, and `corpus_aborts` reads `tests/typescript-testcases/`. Each finds the root
+  repository root, and `corpus_aborts` reads `.corpus/` (fetched by `cargo xtask corpus`) and `tests/corpus/`. Each finds the root
   with `Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2)`: the crates sit two levels
   down, and `ancestors` keeps the path as `CARGO_MANIFEST_DIR` spells it, which `strip_prefix`
   on tool output relies on (a `../..` join would not).
@@ -103,7 +106,7 @@ cargo build --release -p tsox-cli --features mimalloc   # release CLI with mimal
 cargo build --profile wasm-release -p tsox-wasm --target wasm32-unknown-unknown
 cargo test --workspace --all-features         # every crate's tests and the integration tests
 cargo check --workspace --no-default-features # every crate without the optional layers
-python3 scripts/check-layering.py             # the dependency rule
+cargo xtask layering             # the dependency rule
 bash scripts/ci.sh                            # the branch gate: fmt, layering, check, test
 ```
 
