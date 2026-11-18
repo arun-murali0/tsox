@@ -37,7 +37,7 @@ jobs:
           - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  archive: tar.gz }
           - { os: windows-latest, target: x86_64-pc-windows-msvc,    archive: zip }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -64,7 +64,7 @@ jobs:
           ext=""; [ "${{ matrix.archive }}" = zip ] && ext=".exe"
           "target/${{ matrix.target }}/release/tsox$ext" --version
           "target/${{ matrix.target }}/release/tsox-lsp$ext" --version
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tsox-${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
@@ -73,7 +73,7 @@ jobs:
     name: WebAssembly npm package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -81,7 +81,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-wasm
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: wasm-bindgen-cli at the locked version
@@ -92,7 +92,7 @@ jobs:
       - run: node npm/tests/smoke.js
       - name: Pack
         run: cd npm/tsox && npm pack
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tsox-npm
           path: npm/tsox/*.tgz
@@ -107,11 +107,11 @@ jobs:
           - { target: x86_64-unknown-linux-gnu, vsce: linux-x64,  exe: tsox-lsp }
           - { target: x86_64-pc-windows-msvc,   vsce: win32-x64,  exe: tsox-lsp.exe }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: tsox-${{ matrix.target }}
           path: dl
@@ -126,7 +126,7 @@ jobs:
           chmod +x server/${{ matrix.exe }}
           npm ci --no-audit --no-fund || npm install --no-audit --no-fund
           npx vsce package --target ${{ matrix.vsce }} --allow-missing-repository
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tsox-vscode-${{ matrix.vsce }}
           path: editors/vscode/*.vsix
@@ -139,11 +139,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: out
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: out/*
           generate_release_notes: true
@@ -157,11 +157,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: tsox-npm
           path: pkg
