@@ -5,13 +5,16 @@ use tsox::TypeChecker;
 #[path = "support/corpus_fixtures.rs"]
 mod corpus_fixtures;
 
-use corpus_fixtures::{CorpusFile, corpus_slice};
+use corpus_fixtures::{Class, CorpusFile, corpus_class, corpus_slice};
 
 // Reading the files happens while the argument is built, outside the measured function, so
 // the instruction count is the checker's own. One file in 500 is about twenty files, which
-// keeps the callgrind run short; TSOX_CORPUS_STRIDE changes the slice.
+// keeps the callgrind run short; TSOX_CORPUS_STRIDE changes the slice. The two class cases take
+// twenty files each that the map says are quiet or draw the diagnostics tsc draws (TSOX_CORPUS_LIMIT).
 #[library_benchmark]
 #[bench::every_500th_file(corpus_slice(500))]
+#[bench::clean_files(corpus_class(Class::Clean, 20))]
+#[bench::agreeing_error_files(corpus_class(Class::Errors, 20))]
 fn check_corpus_slice(files: Vec<CorpusFile>) {
     let checker = TypeChecker::new();
     let mut failed = 0usize;

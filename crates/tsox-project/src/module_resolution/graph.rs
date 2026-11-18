@@ -48,8 +48,20 @@ pub struct ModuleEdge {
 // components dependencies first (which is also a topological order of them), the
 // component of each file, and the files grouped for checking. They are plain arrays, so a
 // caller that asks twice does not search twice.
+/// The host a graph reads project files through; the real file system unless a caller supplies
+/// another with `ModuleGraph::with_host`.
+#[derive(Clone)]
+struct GraphHost(Arc<dyn tsox_base::host::Host>);
+
+impl std::fmt::Debug for GraphHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Host")
+    }
+}
+
 #[derive(Debug)]
 pub struct ModuleGraph {
+    host: GraphHost,
     files: ProjectFiles,
     edges: Vec<Vec<ModuleEdge>>,
     dependencies: Vec<Vec<FileId>>,
@@ -200,7 +212,9 @@ impl ModuleGraph {
                         // resolves to a path nobody can read; that is an unresolved import,
                         // not a reason to stop the walk.
                         let target = resolve_request(resolver, path, &request)
-                            .filter(|resolved| resolved.is_file() || overlay(resolved).is_some())
+                            .filter(|resolved| {
+                                resolver.host().is_file(resolved) || overlay(resolved).is_some()
+                            })
                             .map(|resolved| files.intern(resolved));
                         file_edges.push(ModuleEdge {
                             specifier: request.specifier,
@@ -353,6 +367,7 @@ impl ModuleGraph {
             .collect();
 
         Self {
+            host: GraphHost(Arc::new(crate::host::FsHost)),
             files,
             edges,
             dependencies,
@@ -377,6 +392,16 @@ impl ModuleGraph {
     pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = Some(root.into());
         self
+    }
+
+    /// Reads the files a check loads (those not already held as source) through `host`.
+    pub fn with_host(mut self, host: Arc<dyn tsox_base::host::Host>) -> Self {
+        self.host = GraphHost(host);
+        self
+    }
+
+    pub fn host(&self) -> &dyn tsox_base::host::Host {
+        self.host.0.as_ref()
     }
 
     pub fn root(&self) -> Option<&Path> {
@@ -504,7 +529,7 @@ impl ModuleGraph {
             }
         }
         if in_node_modules(path) {
-            return package_key(path);
+            return package_key(self.host(), path);
         }
         let text = path.to_str()?.replace('\\', "/");
         Some(ModuleKey::external(&text))
@@ -845,7 +870,7 @@ fn is_typescript(path: &Path) -> bool {
 // the package's own name and version from its `package.json`, and the path of the file
 // inside the package. The innermost `node_modules` counts, so a nested install is keyed
 // by the package it belongs to.
-fn package_key(path: &Path) -> Option<crate::keys::ModuleKey> {
+fn package_key(host: &dyn tsox_base::host::Host, path: &Path) -> Option<crate::keys::ModuleKey> {
     let parts: Vec<std::path::Component<'_>> = path.components().collect();
     let at = parts
         .iter()
@@ -863,7 +888,7 @@ fn package_key(path: &Path) -> Option<crate::keys::ModuleKey> {
         .collect::<Option<Vec<_>>>()?
         .join("/");
     let directory: PathBuf = parts[..end].iter().collect();
-    let manifest = std::fs::read_to_string(directory.join("package.json")).ok()?;
+    let manifest = host.read_to_string(&directory.join("package.json")).ok()?;
     let declared = json_top_level_string(&manifest, "name")?;
     let version = json_top_level_string(&manifest, "version")?;
     // A manifest that names another package than its directory is not trusted to key it.

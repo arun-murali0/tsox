@@ -54,7 +54,7 @@ const MAX_INTERSECTION_DISTRIBUTION: usize = 100_000;
 // declaration nesting itself this deep (compare tsc's isDeeplyNestedType, which uses 3)
 // and the type below that point reads as the error type, which does not cascade.
 const MAX_SAME_DECLARATION_NESTING: usize = 5;
-const MAX_RECURSIVE_APP_INSTANTIATIONS: usize = 100;
+const MAX_RECURSIVE_APP_INSTANTIATIONS: usize = crate::stack_guard::BUDGET.recursive_applications;
 
 #[derive(Clone, Copy)]
 enum DeclState {

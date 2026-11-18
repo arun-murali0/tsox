@@ -78,6 +78,8 @@ impl UnitSnapshot {
     /// The unit output this snapshot was taken from.
     pub fn into_output(self) -> UnitOutput {
         UnitOutput {
+            model: tsox_model::SemanticModel::default(),
+            options_read: crate::check_options::OptionReads::all(),
             diagnostics: self.diagnostics,
             incomplete: self.incomplete,
             incomplete_reasons: self.incomplete_reasons,

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use oxc_resolver::{
     ResolveOptions, Resolver, TsconfigDiscovery, TsconfigOptions, TsconfigReferences,
@@ -28,6 +27,9 @@ pub struct ModuleResolver {
     no_lib: bool,
     // Directory -> whether the nearest package.json at or above it says "type": "module".
     package_types: Mutex<HashMap<PathBuf, bool>>,
+    // Where the `package.json` lookups for module format read from. `oxc_resolver` still reads
+    // the disk itself, so this is the part of resolution that can already be redirected.
+    host: Arc<dyn tsox_base::host::Host>,
 }
 
 /// Which condition a package's `exports` map is read under. An `import` statement matches
@@ -49,6 +51,7 @@ impl ModuleResolver {
             node_next: false,
             no_lib: false,
             package_types: Mutex::new(HashMap::new()),
+            host: Arc::new(crate::host::FsHost),
         }
     }
 
@@ -73,6 +76,7 @@ impl ModuleResolver {
             node_next: false,
             no_lib: false,
             package_types: Mutex::new(HashMap::new()),
+            host: Arc::new(crate::host::FsHost),
         }
     }
 
@@ -81,6 +85,16 @@ impl ModuleResolver {
     /// `ProjectConfig::uses_node_next` says whether the project asks for that.
     pub fn with_node_next(mut self, on: bool) -> Self {
         self.node_next = on;
+        self
+    }
+
+    pub fn host(&self) -> &dyn tsox_base::host::Host {
+        &*self.host
+    }
+
+    /// Reads `package.json` files through `host` instead of the disk.
+    pub fn with_host(mut self, host: Arc<dyn tsox_base::host::Host>) -> Self {
+        self.host = host;
         self
     }
 
@@ -114,7 +128,7 @@ impl ModuleResolver {
                 break;
             }
             visited.push(current.to_path_buf());
-            if let Ok(text) = fs::read_to_string(current.join("package.json")) {
+            if let Ok(text) = self.host.read_to_string(&current.join("package.json")) {
                 answer = package_type_is_module(&text);
                 break;
             }
@@ -279,4 +293,21 @@ fn options(mode: ResolveMode) -> ResolveOptions {
 
 fn package_type_is_module(text: &str) -> bool {
     super::config::package_json_type_is_module(text)
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+    use tsox_base::host::MemoryHost;
+
+    #[test]
+    fn the_package_type_is_read_through_the_host() {
+        let host = Arc::new(MemoryHost::default());
+        host.set("/p/package.json", r#"{ "type": "module" }"#);
+        host.set("/q/package.json", r#"{ "name": "q" }"#);
+        let resolver = ModuleResolver::new().with_host(host);
+        assert!(resolver.nearest_package_is_module(Path::new("/p/src/a.ts")));
+        assert!(!resolver.nearest_package_is_module(Path::new("/q/a.ts")));
+        assert!(!resolver.nearest_package_is_module(Path::new("/none/a.ts")));
+    }
 }

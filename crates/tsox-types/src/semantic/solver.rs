@@ -1,7 +1,7 @@
 //! Stable entry points for semantic type-system operations used by the AST checker.
 //!
 //! The checker should depend on these operations rather than on the layout of the
-//! current implementation in `generics.rs`. This first layer is deliberately a
+//! current implementation in `generics/`. This first layer is deliberately a
 //! behavior-preserving adapter: it keeps the existing implementation and caches,
 //! while giving the upcoming solver migration one narrow seam to replace.
 
@@ -21,6 +21,42 @@ pub enum InferencePriority {
     Low,
     Normal,
     Contextual,
+}
+
+/// One step of an inference, recorded only when a session was started with `with_trace`. A
+/// trace answers "why did T become this?" for a contributor debugging a mismatch, and later for
+/// `explain`. Off, it costs one `Option` check per decision and builds nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TraceEvent {
+    /// An argument contributed a candidate for `parameter`.
+    CandidateAdded {
+        parameter: TypeParameterId,
+        ty: TypeId,
+        priority: InferencePriority,
+        covariant: bool,
+        top_level: bool,
+    },
+    /// Only candidates at this priority take part for `parameter`.
+    PriorityChosen {
+        parameter: TypeParameterId,
+        priority: InferencePriority,
+    },
+    /// A top-level candidate went back to its written literal because another candidate for the
+    /// same parameter sits inside an object, array or function.
+    LiteralKept { parameter: TypeParameterId },
+    /// A covariant candidate lost to a contravariant one that it does not fit.
+    ContravariantWon { parameter: TypeParameterId },
+    /// `count` candidates of one kind were merged into the binding.
+    Merged {
+        parameter: TypeParameterId,
+        covariant: bool,
+        count: usize,
+    },
+    /// The binding a parameter ended with.
+    Bound {
+        parameter: TypeParameterId,
+        ty: TypeId,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -45,6 +81,7 @@ pub struct GenericInferenceSession {
     bindings: Vec<(TypeParameterId, TypeId)>,
     locked: Vec<TypeParameterId>,
     candidates: Vec<InferenceCandidate>,
+    trace: Option<Vec<TraceEvent>>,
 }
 
 impl GenericInferenceSession {
@@ -53,6 +90,20 @@ impl GenericInferenceSession {
             bindings,
             locked,
             candidates: Vec::new(),
+            trace: None,
+        }
+    }
+
+    /// Records every decision of this session for `finish_traced`.
+    pub fn with_trace(mut self) -> Self {
+        self.trace = Some(Vec::new());
+        self
+    }
+
+    // The event is built only when tracing is on.
+    fn note(&mut self, event: impl FnOnce() -> TraceEvent) {
+        if let Some(trace) = &mut self.trace {
+            trace.push(event());
         }
     }
 
@@ -107,6 +158,13 @@ impl GenericInferenceSession {
             if self.locked.contains(&id) {
                 continue;
             }
+            self.note(|| TraceEvent::CandidateAdded {
+                parameter: id,
+                ty,
+                priority,
+                covariant: variance == InferenceVariance::Covariant,
+                top_level,
+            });
             self.candidates.push(InferenceCandidate {
                 id,
                 ty,
@@ -125,10 +183,19 @@ impl GenericInferenceSession {
     /// candidates, while contra-only evidence is combined with intersections. The ordinary
     /// argument assignability pass remains responsible for reporting incompatible calls.
     pub fn finish(
-        mut self,
+        self,
         arena: &mut TypeArena,
         cache: &mut RelationCache,
     ) -> Vec<(TypeParameterId, TypeId)> {
+        self.finish_traced(arena, cache).0
+    }
+
+    /// `finish`, also giving back the trace (empty unless the session `with_trace`).
+    pub fn finish_traced(
+        mut self,
+        arena: &mut TypeArena,
+        cache: &mut RelationCache,
+    ) -> (Vec<(TypeParameterId, TypeId)>, Vec<TraceEvent>) {
         let mut highest_priority = FxHashMap::default();
         for candidate in &self.candidates {
             highest_priority
@@ -153,10 +220,15 @@ impl GenericInferenceSession {
             })
             .map(|candidate| candidate.id)
             .collect();
+        let mut kept_literal = Vec::new();
         for candidate in &mut self.candidates {
             if candidate.top_level && nested.contains(&candidate.id) {
                 candidate.ty = candidate.original;
+                kept_literal.push(candidate.id);
             }
+        }
+        for parameter in kept_literal {
+            self.note(|| TraceEvent::LiteralKept { parameter });
         }
 
         // Resolve each parameter as a group. Covariant evidence takes precedence
@@ -177,6 +249,10 @@ impl GenericInferenceSession {
             let Some(&priority) = highest_priority.get(&id) else {
                 continue;
             };
+            self.note(|| TraceEvent::PriorityChosen {
+                parameter: id,
+                priority,
+            });
             let selected: Vec<InferenceCandidate> = self
                 .candidates
                 .iter()
@@ -219,6 +295,7 @@ impl GenericInferenceSession {
                         });
                     if !fits {
                         has_covariant = false;
+                        self.note(|| TraceEvent::ContravariantWon { parameter: id });
                     }
                 }
             }
@@ -241,6 +318,11 @@ impl GenericInferenceSession {
                     .filter(|candidate| candidate.variance != InferenceVariance::Covariant)
                     .collect()
             };
+            self.note(|| TraceEvent::Merged {
+                parameter: id,
+                covariant: has_covariant,
+                count: chosen.len(),
+            });
             for candidate in chosen {
                 if candidate.variance == InferenceVariance::Covariant {
                     GenericSolver::merge_inference_candidate_with_constraint(
@@ -316,7 +398,13 @@ impl GenericInferenceSession {
             }
         }
 
-        self.bindings
+        let bindings = self.bindings.clone();
+        for &(parameter, ty) in &bindings {
+            if parameter_ids.contains(&parameter) {
+                self.note(|| TraceEvent::Bound { parameter, ty });
+            }
+        }
+        (bindings, self.trace.unwrap_or_default())
     }
 }
 
@@ -457,6 +545,34 @@ mod tests {
         session.infer_argument(&mut arena, parameter, argument, &mut cache);
 
         assert_eq!(session.finish(&mut arena, &mut cache), vec![(id, explicit)]);
+    }
+
+    #[test]
+    fn a_traced_session_explains_the_binding_and_an_untraced_one_records_nothing() {
+        let id = TypeParameterId::new(0, 0);
+        let run = |traced: bool| {
+            let mut arena = TypeArena::new();
+            let mut cache = RelationCache::default();
+            let parameter = arena.alloc(crate::types::Type::GenericParameter(id, "T".into(), None));
+            let number = arena.number();
+            let mut session = GenericInferenceSession::new(Vec::new(), Vec::new());
+            if traced {
+                session = session.with_trace();
+            }
+            session.infer_argument(&mut arena, parameter, number, &mut cache);
+            (session.finish_traced(&mut arena, &mut cache), number)
+        };
+        let ((bindings, trace), number) = run(true);
+        assert_eq!(bindings, vec![(id, number)]);
+        assert!(
+            matches!(trace.first(), Some(TraceEvent::CandidateAdded { parameter, .. }) if *parameter == id)
+        );
+        assert!(trace.contains(&TraceEvent::Bound {
+            parameter: id,
+            ty: number
+        }));
+        let ((_, trace), _) = run(false);
+        assert!(trace.is_empty());
     }
 
     #[test]

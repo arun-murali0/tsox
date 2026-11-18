@@ -1,0 +1,9 @@
+# Corpus files that aborted tsox in project mode (out of memory or stack overflow). They are kept out of the part folders and run one at a time by crates/tsox-cli/tests/corpus_aborts.rs.
+compiler__genericDefaultsErrors.ts
+compiler__genericReversingTypeParameters.ts
+compiler__genericReversingTypeParameters2.ts
+compiler__nonInferrableTypePropagation1.ts
+compiler__promiseTypeInference.ts
+compiler__thislessFunctionsNotContextSensitive3.ts
+compiler__typeArgumentDefaultUsesConstraintOnCircularDefault.ts
+conformance__statements__VariableStatements__everyTypeWithAnnotationAndInvalidInitializer.ts

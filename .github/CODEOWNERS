@@ -1,2 +1,3 @@
-# Every change needs the owner's review before it can reach main.
-* @arun-murali0
+# Every change needs review from the owner before it reaches main. With "Require review from
+# Code Owners" turned on for main (scripts/protect-main.sh does it), nobody else can merge.
+*  @Arun-murali0

@@ -200,7 +200,7 @@ fn tuple_in_context(
     expected: TypeId,
 ) -> Option<Vec<crate::types::TupleElement>> {
     match ctx.arena.get(expected) {
-        Type::Tuple(elements) | Type::Variadic(elements) => Some(elements.clone()),
+        Type::Tuple(elements) => Some(elements.clone()),
         Type::Union(members) => {
             let mut found = None;
             for &member in members {
@@ -227,18 +227,8 @@ fn infer_tuple_literal(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
-    // A rest element that is a type parameter (`[...T]`) says nothing about one element's type.
-    let rest = target
-        .last()
-        .filter(|e| e.rest)
-        .map(|e| e.type_id)
-        .filter(|&t| {
-            !matches!(
-                ctx.arena.get(t),
-                Type::GenericParameter(..) | Type::Variadic(..)
-            )
-        });
-    let fixed = target.len() - usize::from(target.last().is_some_and(|e| e.rest));
+    let rest = target.last().filter(|e| e.rest).map(|e| e.type_id);
+    let fixed = target.len() - usize::from(rest.is_some());
     let mut elements = Vec::with_capacity(array.elements.len());
     for (position, element) in array.elements.iter().enumerate() {
         let Some(expr) = element.as_expression() else {
@@ -262,70 +252,6 @@ fn infer_tuple_literal(
         });
     }
     ctx.arena.alloc_tuple(elements)
-}
-
-// `[...t, ...u]` with `t: T` and `u: U` type parameters is the variadic tuple `[...T, ...U]`: the
-// length is not known, but the order of the parts is. Only a literal that spreads a type
-// parameter (or a variadic tuple) is read this way, and only when every spread is a plain name,
-// so typing the elements twice cannot repeat a diagnostic.
-fn infer_generic_spread_literal(
-    array: &oxc_ast::ast::ArrayExpression,
-    scoping: &Scoping,
-    ctx: &mut CheckContext<'_, '_>,
-) -> Option<TypeId> {
-    use oxc_ast::ast::{ArrayExpressionElement, Expression};
-    let mut generic = false;
-    for element in &array.elements {
-        match element {
-            ArrayExpressionElement::SpreadElement(spread) => {
-                let Expression::Identifier(_) = &spread.argument else {
-                    return None;
-                };
-                let ty = infer_expression_type(&spread.argument, scoping, ctx);
-                generic |= matches!(
-                    ctx.arena.get(ty),
-                    Type::GenericParameter(..) | Type::Variadic(..)
-                );
-            }
-            ArrayExpressionElement::Elision(_) => return None,
-            _ => {}
-        }
-    }
-    if !generic {
-        return None;
-    }
-    let mut parts = Vec::new();
-    for element in &array.elements {
-        if let ArrayExpressionElement::SpreadElement(spread) = element {
-            let ty = infer_expression_type(&spread.argument, scoping, ctx);
-            match ctx.arena.get(ty).clone() {
-                Type::Tuple(inner) | Type::Variadic(inner) => parts.extend(inner),
-                Type::Array(_) | Type::GenericParameter(..) => {
-                    parts.push(crate::types::TupleElement {
-                        type_id: ty,
-                        optional: false,
-                        rest: true,
-                    })
-                }
-                _ => return None,
-            }
-        } else {
-            let expr = element.as_expression()?;
-            ctx.contextual = None;
-            let ty = infer_expression_type(expr, scoping, ctx);
-            let ty = if ctx.const_context {
-                ty
-            } else {
-                crate::types::widen(&ctx.arena, ty)
-            };
-            parts.push(crate::types::TupleElement {
-                type_id: ty,
-                optional: false,
-                rest: false,
-            });
-        }
-    }
-    Some(tsox_types::semantic::reduce_variadic(&mut ctx.arena, parts))
 }
 
 // Each element's type is widened (a literal 5 becomes number) before being added
@@ -374,11 +300,11 @@ pub(super) fn infer_array_expression_type(
         return ctx.arena.alloc_tuple(elements);
     }
 
-    if let Some(variadic) = infer_generic_spread_literal(array, scoping, ctx) {
-        return variadic;
-    }
-
     let mut element_types = Vec::with_capacity(array.elements.len());
+    // Membership in `element_types`, so a literal of many distinct element types does one set
+    // lookup per element instead of a scan of the list (the list keeps first-seen order).
+    let mut element_seen: std::collections::HashSet<TypeId> =
+        std::collections::HashSet::with_capacity(array.elements.len());
 
     for element in &array.elements {
         // Problem: `[...xs, 1]` ignored the spread, so the element type left out
@@ -396,7 +322,7 @@ pub(super) fn infer_array_expression_type(
                 _ => ctx.arena.any(),
             };
             let item = crate::types::widen(&ctx.arena, item);
-            if !element_types.contains(&item) {
+            if element_seen.insert(item) {
                 element_types.push(item);
             }
             continue;
@@ -414,7 +340,7 @@ pub(super) fn infer_array_expression_type(
             Some(d) if holds_literal(ctx, d) => type_id,
             _ => crate::types::widen(&ctx.arena, type_id),
         };
-        if !element_types.contains(&type_id) {
+        if element_seen.insert(type_id) {
             element_types.push(type_id);
         }
     }

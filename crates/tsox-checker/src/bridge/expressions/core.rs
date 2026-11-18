@@ -139,6 +139,7 @@ pub fn resolve_identifier_type(
             );
             ctx.shadow = Some(flow);
             if let Some(walked) = walked {
+                ctx.flow_reads.push((ident.name.as_str().into(), walked));
                 return walked;
             }
         }

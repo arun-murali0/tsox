@@ -51,7 +51,9 @@ env:
   GH_TOKEN: ${{ secrets.AUTO_MERGE_TOKEN || github.token }}
   HAS_TOKEN: ${{ secrets.AUTO_MERGE_TOKEN != '' }}
   REPO: ${{ github.repository }}
-  OWNER: ${{ github.repository_owner }}
+  # The only account whose branches are merged automatically. Anyone else needs the owner's
+  # review on a pull request (CODEOWNERS and the branch rules from scripts/protect-main.sh).
+  OWNER: Arun-murali0
 
 jobs:
   merge:

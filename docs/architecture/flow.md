@@ -115,7 +115,7 @@ would need resolving is left alone.
 
 ## The backward resolver in shadow mode (F2)
 
-The forward overlay in `narrow.rs` threads "what is known about each variable" through the
+The forward overlay in `bridge/narrow/` threads "what is known about each variable" through the
 statements. The flow table answers the same question the other way: the type of a read is found by
 walking antecedents back from it. An assignment gives the assigned type, a condition narrows the
 type before it, a join unions its paths, a loop head iterates until its type stops changing, a
@@ -211,7 +211,7 @@ antecedent is a `Start`, no cycle without a back edge) over every file in `tests
 The same invariants over a larger corpus:
 
 ```text
-TSOX_FLOW_CORPUS=tests/typescript-testcases cargo test -p tsox-checker --lib flow::tests::corpus -- --ignored --nocapture
+TSOX_FLOW_CORPUS=.corpus cargo test -p tsox-checker --lib flow::tests::corpus -- --ignored --nocapture
 ```
 
 `TSOX_FLOW_FILE=x.ts cargo test -p tsox-checker --lib flow::tests::show -- --ignored --nocapture`

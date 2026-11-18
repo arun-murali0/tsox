@@ -1,425 +1,145 @@
-# Tsoxide (tsox)
+<div align="center">
 
-> A Rust-based experimental TypeScript type checker built on top of Oxc.
+# tsox
 
-## ⚠️ Experimental, not production-ready
+**A TypeScript type checker written in Rust, built on [Oxc](https://oxc.rs/).**
+One engine as a command line tool, a language server, and WebAssembly.
 
-**Tsoxide (tsox) is experimental software. Do not use it as a production TypeScript compiler**
+[![CI](https://github.com/Arun-murali0/tsox/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Arun-murali0/tsox/actions/workflows/ci.yml)
+[![Docs](https://github.com/Arun-murali0/tsox/actions/workflows/docs.yml/badge.svg)](https://arun-murali0.github.io/tsox/)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+[![Rust](https://img.shields.io/badge/rust-1.98%2B-orange)](Cargo.toml)
+[![Status](https://img.shields.io/badge/status-experimental-yellow)](#status)
 
-The project is actively evolving. TypeScript compatibility is incomplete (mapped and template literal types are not resolved yet, several class rules such as `abstract`, `private` and `implements` are not enforced, and reading a static member through the class name is wrongly reported; [what the checker catches today](docs/language-coverage.md) is measured against `tsc`), and the compatibility harness is an experimental comparison tool rather than a correctness proof.
+[Documentation](https://arun-murali0.github.io/tsox/) ·
+[Install](https://arun-murali0.github.io/tsox/guide/install) ·
+[How it works](https://arun-murali0.github.io/tsox/architecture) ·
+[Contributing](https://arun-murali0.github.io/tsox/contributing) ·
+[Report a problem](https://github.com/Arun-murali0/tsox/issues)
 
-## What is Tsoxide?
+`typescript` · `type-checker` · `rust` · `oxc` · `language-server` · `wasm` · `compiler`
 
-Tsoxide (tsox) explores how much of the TypeScript type system can be implemented in Rust while reusing the mature front-end infrastructure provided by [Oxc](https://oxc.rs/).
+</div>
 
-We deliberately do **not** try to rebuild everything.
+## Status
 
-Oxc handles the expensive front-end pieces:
+tsox is **experimental**. Do not use it as your only TypeScript check. It reports what it finds
+itself and can differ from `tsc`: it misses some errors (gaps) and, less often, reports an error
+`tsc` does not (a false positive).
 
-- TypeScript parsing
-- AST representation
-- semantic symbols/scopes/references
-- source information
-- module resolution where adopted
+How close it is to `tsc` is measured, not claimed. Every change is run over TypeScript's own test
+suite (the single-file cases of release **v6.0.3**, 10,083 files) and compared with a recorded map
+of what `tsc` says:
 
-tsox owns the part that is the reason this project exists:
+<!-- corpus-status:start -->
+| | |
+| --- | --- |
+| Files where tsox and tsc agree exactly | **5,100 of 10,083** (50.6%) |
+| Lines with a diagnostic from either side | 37,851, of which 17,677 agree |
+| Gaps (tsc reports, tsox misses) | 13,725 lines; most often TS2322 (1334), TS7006 (716), TS2339 (640), TS1005 (557), TS2304 (501) |
+| False positives (tsox reports, tsc does not) | 2,721 lines; most often TS2322 (736), TS2345 (542), TS2339 (528), TS2693 (199), TS2344 (134) |
+| Corpus | TypeScript v6.0.3, recorded in `tests/corpus/typescript-6.0.3` |
+<!-- corpus-status:end -->
 
-- semantic type representation
-- `TypeId` and arena-backed type storage
-- structural subtyping and assignability
-- declaration/type resolution
-- expression type inference
-- TypeScript-specific control-flow narrowing
-- parameter and binding semantics
-- diagnostics
-- generic inference and substitution, with advanced type-level semantics planned
-- intersection types
-- stable keys and portable declarations, so a type written in one file is used in another
+The numbers come from [`tests/corpus`](tests/corpus) and are described in
+[the corpus map](https://arun-murali0.github.io/tsox/corpus). What it catches and what it does not yet
+is in [language coverage](https://arun-murali0.github.io/tsox/language-coverage) and the
+[roadmap](https://arun-murali0.github.io/tsox/roadmap).
 
-The design goal is a clean boundary:
+## Install
+
+Prebuilt programs (`tsox`, `tsox-lsp`) for Linux x86_64 and Windows x86_64 are attached to each
+[release](https://github.com/Arun-murali0/tsox/releases). Or build from source (Rust 1.98 or newer):
+
+```sh
+git clone https://github.com/Arun-murali0/tsox
+cd tsox
+cargo install --path crates/tsox-cli     # the `tsox` command
+cargo install --path crates/tsox-lsp     # the `tsox-lsp` language server
+```
+
+In JavaScript, the WebAssembly build: `npm install tsox`.
+
+## Use
+
+**Command line**
+
+```sh
+tsox --project path/to/tsconfig.json
+```
+
+It reads the config, checks the files it selects, follows imports with `paths`, `baseUrl`, `extends`
+and `references`, and prints diagnostics. `--incremental` and `--watch` keep the project in memory.
+`tsox --help` lists everything.
+
+**Editors.** `tsox-lsp` provides diagnostics, hover, completion, signature help, go to definition,
+references, rename, outline, folding and workspace symbols. A [VS Code extension](editors/vscode) and
+a [Zed extension](editors/zed) start it for you; any editor that can launch `tsox-lsp --stdio` works.
+
+**JavaScript and the browser**
+
+```js
+import init, { TsoxChecker } from "tsox";
+await init();
+const checker = new TsoxChecker();
+console.log(checker.checkSource("let a: string = 1;", "a.ts"));
+// [{ severity: "Error", message: "Type 'number' is not assignable to type 'string'.", ... }]
+```
+
+More in the [guide](https://arun-murali0.github.io/tsox/guide/install).
+
+## How it is built
+
+Oxc supplies the parser, AST and scopes. tsox is the part that makes TypeScript mean something:
 
 ```text
-                    TypeScript source
-                           │
-                           ▼
-                    ┌─────────────┐
-                    │     Oxc     │
-                    │ parser / AST│
-                    │  semantic   │
-                    └──────┬──────┘
-                           │
-                           ▼
-                    ┌─────────────┐
-                    │  tsox       │
-                    │   bridge    │
-                    └──────┬──────┘
-                           │
-                           ▼
-              ┌────────────────────────┐
-              │    Semantic Type Core  │
-              │ Type / TypeId / Arena  │
-              │ namespace / subtyping │
-              └───────────┬────────────┘
-                          │
-                    semantic queries
-                          │
-             ┌────────────┼────────────┐
-             ▼            ▼            ▼
-        inference     narrowing    diagnostics
-             │            │
-             └────────────┘
-                    │
-                    ▼
-              checker result
+TypeScript source ─► Oxc (parse, scopes) ─► bridge ─► semantic core ─► diagnostics
+                                                      types · relations · generics · flow
 ```
 
-## Why build it?
+- a type arena with `TypeId` interning, structural assignability, generic inference and substitution,
+  control-flow narrowing, classes, intersections, stable keys for types that cross files;
+- a project layer: module resolution, a dependency graph, a scheduler, partial results when a file
+  cannot be fully checked, and an incremental query layer that re-checks only what an edit can affect;
+- rules as tables (passes, narrowers, call effects, repairs), so a new rule is a new row;
+- one semantic model per file for tools that come after the checker (emit, tooling).
 
-The project exists as an engineering and research exercise around a difficult question:
+The crates, in dependency order: `tsox-base` · `tsox-types` · `tsox-model` · `tsox-checker` ·
+`tsox-project` · `tsox-db` · `tsox` (facade) · `tsox-ir` · `tsox-cli` · `tsox-emit` · `tsox-lsp` ·
+`tsox-wasm` · `tsox-xtask`. A script enforces that each depends only on those before it. The full tree
+and the milestone-to-test map are in [project structure](docs/project-structure.md); the design notes are
+under [docs/architecture](docs/architecture).
 
-> Can a fast Rust implementation build a useful, understandable TypeScript semantic checker while consuming mature compiler front-end infrastructure instead of recreating it?
+## Develop
 
-The project is also an architecture study. The implementation is intentionally built in small, testable milestones so each semantic decision can be inspected, measured, and changed without turning the checker into a collection of AST-specific special cases.
+```sh
+bash scripts/ci.sh                                   # fmt, layering, tests: what CI runs
+cargo test --workspace --all-features                # tests only
 
-## Current implementation
-
-The project records progress using **semantic milestone names**, not opaque version labels. The current baseline is the **Project Engine** (see [docs/architecture/project-engine.md](docs/architecture/project-engine.md)), which builds on **Cross-File Types**: a type written in one file is used in another, imports are diagnosed, and import cycles settle (see [docs/architecture/cross-file-types.md](docs/architecture/cross-file-types.md)), on top of generics that are substantially complete across functions, interfaces, type aliases and classes (see [docs/architecture/generics.md](docs/architecture/generics.md)). [docs/language-coverage.md](docs/language-coverage.md) says what the checker catches today, measured against `tsc`, and the [roadmap](docs/roadmap.md) lists what is open.
-
-```text
-Foundation
-Structural Types
-Literal Widening
-Control-Flow Narrowing
-Classes and Inheritance
-Expression and Program Checking
-Parameters and Destructuring
-Generics
-Narrowing completion, sessions and file identity
-Module Resolution
-Architecture Foundation
-Declaration Slots and Named Nodes
-Intersection Types
-Cross-File Types                 <- current baseline
+cargo xtask corpus fetch                      # TypeScript's test suite, by tag
+cargo xtask corpus run && cargo xtask corpus verify    # the corpus map
 ```
 
-These names are deliberately descriptive so a contributor can infer the purpose of a test suite or document without first learning an arbitrary version history.
-
-## Repository structure
-
-Cargo workspace. Each crate depends only on the ones above it in this list (enforced by
-`scripts/check-layering.py`); the dependency rule and the reasons are in
-[docs/architecture/workspace.md](docs/architecture/workspace.md).
-
-```text
-crates/
-├── tsox-base/             # no tsox dependencies
-│   └── src/               # keys, stable_hash, diagnostics (+ codes, view), file_id, fxhash,
-│                          # line_index, project, check_options, error, source_depth,
-│                          # stack_guard, reference_directives, lib_global_types, scratchpad
-├── tsox-types/            # the type system: arena, types, subtyping, namespace
-│   └── src/               # symbol_map, type_annotation, type_display, explain, portable,
-│                          # stable_walk, diagnostic_messages, semantic/ (generics, queries, solver)
-├── tsox-checker/          # the single-file checker
-│   └── src/               # unit.rs (a file as a unit of work: UnitContext, UnitOutput, Worker)
-│                          # bridge/ (parse, declare, imports, exports, narrow, expressions/,
-│                          #          statements/, and the whole-file passes)
-├── tsox-project/          # many files: module_resolution/ (graph, config, discovery, resolver,
-│   └── src/               # check, schedule, partial), scc.rs. `module-resolution` feature
-├── tsox-db/               # Salsa query layer: incremental.rs, incremental/project.rs
-│   └── src/               # `incremental` feature
-├── tsox-cli/              # the `tsox` command line (binary `tsox`) and its integration tests
-├── tsox-wasm/             # the browser front end (wasm-bindgen): `TsoxChecker`
-└── tsox-xtask/            # the `harness` and `compare-tsc` binaries
-
-src/
-└── lib.rs                 # the `tsox` facade: re-exports the public API of the crates above
-                           # (the front ends on the last three lines depend only on this)
-
-tests/                     # one integration test per milestone or feature (42 files)
-├── foundation.rs
-├── structural_types.rs
-├── literal_widening.rs
-├── control_flow_narrowing.rs
-├── classes_inheritance.rs
-├── expression_program_checking.rs
-├── parameters_destructuring.rs
-├── generics_tier1.rs
-├── intersection_types.rs
-├── unit_exports.rs, unit_imports.rs, project_imports.rs, import_diagnostics.rs
-├── ...
-└── module_resolution.rs   # needs --features module-resolution
-
-tests/fixtures/
-├── foundation/
-├── structural-types/
-├── literal-widening/
-├── control-flow-narrowing/
-├── classes-inheritance/
-├── expression-program-checking/
-├── parameters-destructuring/
-├── generics-tier1/
-├── generics-tier2/
-├── generic-classes/
-├── recursive-types/
-├── builtin-generics/
-├── interface-methods/
-└── unreachable-code/
-
-tests/module-resolution-fixtures/   # small projects on disk, not checked by the tsc comparison
-
-docs/
-├── README.md
-├── architecture.md
-├── architecture/          # one case study per subsystem: arena, narrowing, generics,
-│                          # intersections, module-resolution, cross-file-types, the
-│                          # project engine (scheduler, partial results, cycles, configuration,
-│                          # library, query layer, safety), workspace, flow
-├── language-coverage.md   # what the checker catches today, measured against tsc
-├── conformance/           # the tsc conformance baseline
-├── case-study.md
-├── decisions.md
-├── roadmap.md
-├── testing.md
-├── purpose-and-overdesign.md
-└── <other semantic milestone documents>
-
-scripts/
-├── ci.sh
-├── harness.sh
-├── compare-local.sh
-├── check-layering.py      # the crate dependency rule, run first by ci.sh
-├── coverage-probes.py     # tsox against tsc on small probe programs; feeds docs/language-coverage.md
-├── ts-diag-tool/          # tsc/tsgo diagnostic comparison, see README's own section on it
-└── enable-hooks.sh
-
-benches/                 # Criterion and IAI benchmarks
-examples/                # Small usage and profiling examples
-crates/                  # the workspace crates, including the CLI (see Repository structure)
-```
-
-## Architecture direction
-
-The current implementation deliberately builds on Oxc instead of recreating its parser or front end. tsox owns the TypeScript semantic layer.
-
-The next architectural boundary is the small `semantic::queries` API. It is intentionally read-only and narrow today. As generic inference, indexed access, overloads, and advanced type operations grow, semantic queries can expand without forcing AST-facing feature modules to know how the underlying algorithms are stored.
-
-The future direction is:
-
-```text
-Oxc
-  ↓
-bridge feature modules
-  ↓
-semantic queries
-  ↓
-type relations / generics / flow / resolution
-  ↓
-semantic facts + diagnostics
-  ↓
-tooling or typed IR
-```
-
-This is an incremental boundary, not a second compiler architecture.
-
-## Development
-
-Format:
-
-```bash
-cargo fmt --all
-```
-
-Check:
-
-```bash
-cargo check --workspace --all-targets --all-features
-```
-
-Lint:
-
-```bash
-cargo clippy --all-targets --all-features -- -D warnings
-```
-
-Test:
-
-```bash
-cargo test --workspace --all-targets --all-features
-```
-
-Run the repository quality gate:
-
-```bash
-./scripts/ci.sh
-```
-
-## Semantic milestones and regression contracts
-
-Each semantic milestone maps directly to an executable regression suite. These are development contracts, not package release versions.
-
-Start with the [documentation index](docs/README.md), then inspect the relevant fixture directory and integration test together.
-
-| Milestone | Test runner | Fixture directory | Documentation |
-| --- | --- | --- | --- |
-| Foundation | `tests/foundation.rs` | `tests/fixtures/foundation/` | [Foundation](docs/foundation.md) |
-| Structural Types | `tests/structural_types.rs` | `tests/fixtures/structural-types/` | [Structural Types](docs/structural-types.md) |
-| Literal Widening | `tests/literal_widening.rs` | `tests/fixtures/literal-widening/` | [Literal Widening](docs/literal-widening.md) |
-| Control-Flow Narrowing | `tests/control_flow_narrowing.rs` | `tests/fixtures/control-flow-narrowing/` | [Control-Flow Narrowing](docs/architecture/narrowing.md) |
-| Classes and Inheritance | `tests/classes_inheritance.rs` | `tests/fixtures/classes-inheritance/` | [Classes and Inheritance](docs/classes-inheritance.md) |
-| Expression and Program Checking | `tests/expression_program_checking.rs` | `tests/fixtures/expression-program-checking/` | [Expression and Program Checking](docs/expression-program-checking.md) |
-| Parameters and Destructuring | `tests/parameters_destructuring.rs` | `tests/fixtures/parameters-destructuring/` | [Parameters and Destructuring](docs/parameters-destructuring.md) |
-| Module Resolution | `tests/module_resolution.rs` (feature `module-resolution`) | `tests/module-resolution-fixtures/` | [Module Resolution](docs/architecture/module-resolution.md) |
-| Intersection Types | `tests/intersection_types.rs`, `tests/intersection_overloads.rs` | `tests/fixtures/intersection-types/`, `intersection-calls/`, `intersection-edges/` | [Intersection Types](docs/architecture/intersections.md) |
-| Cross-File Types | `tests/unit_exports.rs`, `tests/unit_imports.rs`, `tests/project_imports.rs`, `tests/import_diagnostics.rs` | sources inline in the tests | [Cross-File Types](docs/architecture/cross-file-types.md) |
-| Architecture Foundation | unit tests in `crates/tsox-db/src/incremental.rs`, `crates/tsox-base/src/scratchpad.rs` | none | [Architecture Foundation](docs/architecture/foundation-dependencies.md) |
-| Generics | `tests/generics_tier1.rs`, `tests/generics_tier2.rs`, `tests/generic_classes.rs`, `tests/recursive_types.rs`, `tests/builtin_generics.rs`, `tests/interface_methods.rs` | `tests/fixtures/generics-tier1/`, `generics-tier2/`, `generic-classes/`, `recursive-types/`, `builtin-generics/`, `interface-methods/` | [Generics](docs/architecture/generics.md) |
-
-
-## Documentation
-
-Start with [docs/README.md](docs/README.md) for the milestone map and architecture.
-
-- [Architecture](docs/architecture.md): ownership, dependencies, semantic boundaries, and future scaling.
-- [Roadmap](docs/roadmap.md): the next semantic capabilities and their intended order.
-- [Module Resolution](docs/architecture/module-resolution.md): the opt-in project layer (resolver, module graph, cycles, layers, parallel project check).
-- [Cross-File Types](docs/architecture/cross-file-types.md): stable keys, portable declarations, units, imports and exports, and where the code differs from the plan.
-- [Arena](docs/architecture/arena.md): ids, interning, `Ref` slots, named nodes and the performance phases.
-- [Case study](docs/case-study.md): why the checker is built the way it is, one decision per section.
-- [Decisions](docs/decisions.md): the design decisions, with what would reopen each.
-- [Architecture Foundation](docs/architecture/foundation-dependencies.md): the optional dependencies (Salsa, Bumpalo, mimalloc), each behind its own feature.
-- [Project Engine](docs/architecture/project-engine.md): how a set of files is checked: the scheduler, partial results, cycles, configuration, library declarations, the query layer, and the limits that keep it from aborting.
-- [Language coverage](docs/language-coverage.md): what the checker catches today, measured against `tsc`.
-- [Testing](docs/testing.md): fixture conventions, regression policy, benchmarks, and compatibility harness.
-- [Purpose and boundaries](docs/purpose-and-overdesign.md): why the project exists and what it deliberately does not rebuild.
-
-Each milestone document explains the semantic rule, implementation choice, and protected behavior for that capability.
-
-## Compatibility harness
-
-`scripts/harness.sh` compares tsox with `tsc` and `tsgo` on one real project and writes a report you can check by hand. The program is `crates/tsox-xtask/src/bin/harness.rs`.
-
-It measures:
-
-- **Speed:** wall time of each compiler after warm-up runs, with the runs interleaved so a slow minute hurts all three alike. Median, mean, standard deviation, min, max, quartiles and a noise flag.
-- **Memory and CPU:** peak resident memory and CPU time of each process. Each program is started by a small measuring process, because the kernel otherwise counts the parent's size as the child's.
-- **Agreement:** tsox's errors against tsc's and tsgo's, matched by file, line and tsc error code. It counts matches, false positives (tsox errors the reference lacks), gaps (reference errors tsox misses), lines that agree, and files by class. tsc and tsgo are also compared with each other, to show whether the reference itself is consistent.
-- **Coverage:** what tsox skipped. Every `TSR9xxx` warning is a construct it did not check, and a partial export is a file whose exports are incomplete. The report says how many agreeing files tsox fully checked, since agreement on a skipped file is weak evidence.
-
-**It is not a semantic-equivalence oracle.** A matching result does not prove two compilers implement the same TypeScript semantics, and tsox checks a smaller language than tsc, so a speed ratio only means something next to the agreement numbers.
-
-### Running it locally
-
-```bash
-./scripts/harness.sh
-```
-
-This clones Zustand (by default), installs its dependencies with its own lockfile, installs tsc and tsgo under `.harness/tools`, builds `tsox` in release mode, and runs everything. Open `.harness/results/<UTC time>/report.md`.
-
-Each results folder holds `report.md`, `summary.json`, `per-file.csv`, `tsox-false-positives.txt`, `tsox-missed.txt`, `tsc-vs-tsgo-differences.txt`, `REPRODUCE.sh` with the exact commands, and `raw/` with the output and `timings.csv` of every run.
-
-Common variations:
-
-```bash
-# Your own project instead of Zustand (needs a tsconfig.json)
-./scripts/harness.sh /path/to/your/ts/project
-
-# More timed runs for steadier medians
-./scripts/harness.sh --runs 10
-
-# Also run the allocation profile of the benchmark workloads (examples/dhat_heap)
-./scripts/harness.sh --dhat
-
-# A pinned Zustand revision, and exit 1 if the run is invalid or tsox has false positives
-./scripts/harness.sh --ref <commit> --strict
-
-# Every option
-./scripts/harness.sh --help
-```
-
-Use a release build of tsox for speed and memory. The report marks a debug build as not meaningful, and marks the whole run invalid when the compilers cannot run or the project's dependencies are missing. Linux and macOS, 64-bit.
-
-### Running it in CI
-
-The harness is **not** part of the `ci.sh` quality gate and never runs automatically on push or pull request — it hits the network, depends on an external fixture repository, and is expected to report diagnostics that disagree with `tsc`/`tsgo` given the current state of the project (see [Category 2/3 of the roadmap](docs/purpose-and-overdesign.md)), so it must not block merges.
-
-It can be run on demand from GitHub Actions instead: go to **Actions → Compatibility Harness → Run workflow**. Results are uploaded as a downloadable artifact (`harness-results`), not committed to the repository.
-
-### Fixture-level three-way report (on demand)
-
-`scripts/harness.sh` above benchmarks against one real project (Zustand, by default). `scripts/ts-diag-tool/compare3.js` applies the same three-way idea (`tsc`, `tsgo`, `tsox`) to `tests/fixtures/` instead — per-fixture diagnostics, timing, and memory, plus a browsable HTML report. Like the harness above, this is on-demand tooling, not part of the fast, CI-gated loop described under "Fixture-level diagnostic comparison" below.
-
-```bash
-# tsgo needs its own scratch install -- see "Fixture-level diagnostic
-# comparison" below: the plain `typescript` package now resolves to v7+,
-# which drops the classic JS compiler API entirely, so it can't share the
-# typescript@6.0.3 install pinned in scripts/ts-diag-tool/
-mkdir -p /tmp/tsgo-scratch && cd /tmp/tsgo-scratch && npm init -y && npm install typescript@7
-
-cd /path/to/tsox
-node scripts/ts-diag-tool/compare3.js tests/fixtures \
-  target/release/tsox \
-  /tmp/tsgo-scratch/node_modules/.bin/tsc \
-  --html report.html
-```
-
-Open `report.html` in a browser: one card per compiler (error count, wall-clock time, peak memory), pairwise line-agreement counts, and an expandable per-file breakdown. `--json` gives the same data as structured output instead of the HTML/table view.
-
-Two measurement caveats worth knowing before reading too much into the numbers:
-- **tsc's memory figure is this Node process's own peak RSS**, not an isolated subprocess measurement like the other two get — there's no in-process way to isolate just the compiler API's own memory use, so this number includes the comparison tool's own overhead (V8, `cli-table3`, etc.).
-- **tsgo runs one subprocess per file** (same reason `check-fixtures.js` gives `tsc` one `ts.Program` per file: fixtures across the suite commonly reuse top-level names, and non-module `.ts` files share a global scope, so batching them would produce spurious duplicate-identifier errors unrelated to real type checking). Its reported time is the *sum* across all those subprocess invocations, and its memory is the *max* peak RSS seen across them — not a single steady-state number the way a one-shot `tsc --project` run would give you.
-
-Memory figures need [GNU time](https://www.gnu.org/software/time/) (`/usr/bin/time -v`) on your `PATH`; without it, `compare3.js` still runs and reports timing, just without the memory columns.
-
-## Fixture-level diagnostic comparison (`scripts/ts-diag-tool/`)
-
-Where the harness above answers "is tsox roughly as fast/compatible as tsc on a real project", this fast, CI-gated tool answers a narrower, more precise question asked continuously: "for each individual fixture under `tests/fixtures/`, which exact diagnostic (code, line, message) does tsox produce versus tsc, and where do they disagree?"
-
-It uses the real TypeScript compiler API (not text-parsing) for `tsc`, so diagnostics are read as structured `ts.Diagnostic` objects — no regex against pretty-printed CLI output, which broke down on type names containing parens or colons in an earlier version of this tooling.
-
-### Setup
-
-```bash
-cd scripts/ts-diag-tool
-npm install
-```
-
-This pins `typescript@6.0.3` deliberately: the plain `typescript` package now resolves to v7+, which ships the native/Go-ported compiler (`tsgo`) instead of the classic JS one, and that package no longer exposes `ts.createProgram`/`ts.Diagnostics` at all.
-
-### Running it locally
-
-```bash
-./scripts/compare-local.sh                              # every fixture under tests/fixtures
-./scripts/compare-local.sh tests/fixtures/generics-tier1 # one folder
-./scripts/compare-local.sh path/to/one_file.ts           # one file
-./scripts/compare-local.sh tests/fixtures --only-differ  # hide fixtures where both sides fully agree
-./scripts/compare-local.sh tests/fixtures --differ       # list only the lines where tsox and tsc disagree (gap / false positive / mismatch)
-./scripts/compare-local.sh tests/fixtures --json         # structured output, e.g. for scripting
-```
-
-Prints one table per fixture folder: file, line, tsox's diagnostic, tsc's diagnostic, and a per-line/per-file verdict (`match`, `tsc extra (gap)`, `tsox extra (fp)`). A **gap** (tsc catches something tsox doesn't yet) is expected on a checker still being built out feature by feature. A **false positive** (tsox rejects code tsc accepts) is the more damaging kind, since it breaks valid code rather than under-checking it.
-
-Builds `target/release/tsox` automatically if it isn't already there, and `npm install`s on first run if needed.
-
-### Running it in CI
-
-Unlike the harness above, this one **is** wired into CI: the `tsc-drift` job in `ci.yml` runs `compare-local.sh --json` against the full `tests/fixtures/` suite on every push and pull request, and fails the build only if the false-positive count exceeds what `scripts/ts-diag-tool/baseline.json` currently allows. Gaps are never gated on — they're expected while the checker is still being built out feature by feature; only false positives (which break valid code, rather than just under-checking it) block a merge.
-
-## Security
-
-See [SECURITY.md](SECURITY.md) for vulnerability reporting and security expectations.
+The checks that gate a merge are described in [contributing](docs/contributing.md) and
+[the corpus map](docs/corpus.md).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+Bug reports, failing cases and pull requests are welcome. The smallest source that shows a difference
+from `tsc` is the best report. Every branch must pass **All green** (fmt, layering, tests) and
+**Corpus map** (nothing worse than the recorded results). `main` only receives changes that passed
+them. The owner's own branches merge automatically; a pull request from anyone else is reviewed and
+merged by the owner. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-When changing compiler behavior:
+## Documentation
 
-1. identify the semantic rule
-2. inspect the relevant stage fixtures
-3. implement the smallest coherent semantic change
-4. add or update a regression fixture
-5. run the full quality gate
+The site is built from [`docs/`](docs) and published at **https://arun-murali0.github.io/tsox/**
+(`cd docs && npm ci && npm run dev` to read it locally).
+
+## Security
+
+See [SECURITY.md](SECURITY.md).
 
 ## License
 
-See [MIT License](LICENSE-MIT) or [Apache License](LICENSE-APACHE).
+Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.

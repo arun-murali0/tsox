@@ -62,7 +62,7 @@ pub fn infer_member_access_type(
     };
     match found {
         Some(found) => {
-            if ctx.options.no_property_access_from_index_signature
+            if ctx.option(crate::check_options::OptionField::NoPropertyAccessFromIndexSignature)
                 && !ctx.bracket_access
                 && read_through_index_only(ctx, effective_type, property_name)
             {
@@ -129,7 +129,7 @@ fn lookup_with_augmentation(
 ) -> Option<TypeId> {
     if let Some(found) = lookup_member(&mut ctx.arena, type_id, property_name) {
         // A name that only an index signature supplies may be absent at run time.
-        if ctx.options.no_unchecked_indexed_access
+        if ctx.option(crate::check_options::OptionField::NoUncheckedIndexedAccess)
             && read_through_index_only(ctx, type_id, property_name)
         {
             let undefined = ctx.arena.undefined();
@@ -897,7 +897,7 @@ pub(super) fn infer_computed_member_access_type(
         // (like tsc under noUncheckedIndexedAccess) does not track array
         // lengths. `arr[0]` and `arr[i]` are both indexing past the end of a
         // real array at runtime if the array turns out to be empty.
-        if !ctx.options.no_unchecked_indexed_access {
+        if !ctx.option(crate::check_options::OptionField::NoUncheckedIndexedAccess) {
             return element_type;
         }
         return ctx
@@ -916,7 +916,7 @@ pub(super) fn infer_computed_member_access_type(
             _ => None,
         };
         if let Some(value) = by_key {
-            if ctx.options.no_unchecked_indexed_access {
+            if ctx.option(crate::check_options::OptionField::NoUncheckedIndexedAccess) {
                 let undefined = ctx.arena.undefined();
                 return ctx.arena.alloc_union(vec![value, undefined]);
             }

@@ -116,16 +116,7 @@ pub(super) fn check_expression_statement(
 ) {
     infer_expression_type(&expr_stmt.expression, scoping, ctx);
     // `assertFoo(x);` leaves `x` narrowed for the rest of the block.
-    let mut expression = &expr_stmt.expression;
-    while let oxc_ast::ast::Expression::ParenthesizedExpression(inner) = expression {
-        expression = &inner.expression;
-    }
-    if let oxc_ast::ast::Expression::CallExpression(call) = expression
-        && let Some((narrowed, _)) =
-            crate::bridge::narrow::narrow_by_predicate_call(call, scoping, ctx, true)
-    {
-        ctx.narrow.extend(narrowed);
-    }
+    crate::bridge::narrow::apply_call_effects(&expr_stmt.expression, scoping, ctx);
 }
 
 // The single dispatch point for every statement kind this checker understands,
@@ -261,7 +252,9 @@ pub fn check_statement(stmt: &Statement, scoping: &Scoping, ctx: &mut CheckConte
                 ) =>
         {
             // TS1202: an ECMAScript module format has no `require`.
-            if ctx.options.module_is_es && !is_declaration_file(ctx.file_name) {
+            if ctx.option(crate::check_options::OptionField::ModuleIsEs)
+                && !is_declaration_file(ctx.file_name)
+            {
                 ctx.error(
                     crate::diagnostic_messages::messages::import_assignment_in_es_modules(),
                     decl.span,
@@ -272,7 +265,9 @@ pub fn check_statement(stmt: &Statement, scoping: &Scoping, ctx: &mut CheckConte
         // it is reported); the export table takes it from the export collector.
         Statement::TSExportAssignment(assign) => {
             // TS1203: an ECMAScript module format has no `module.exports`.
-            if ctx.options.module_is_es && !is_declaration_file(ctx.file_name) {
+            if ctx.option(crate::check_options::OptionField::ModuleIsEs)
+                && !is_declaration_file(ctx.file_name)
+            {
                 ctx.error(
                     crate::diagnostic_messages::messages::export_assignment_in_es_modules(),
                     assign.span,

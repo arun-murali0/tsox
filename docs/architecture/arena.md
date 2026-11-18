@@ -6,7 +6,7 @@ as a case study, so it includes the changes that did not help and the estimates 
 turned out wrong, because those decided what we did next.
 
 Related files: `crates/tsox-types/src/arena.rs`, `crates/tsox-types/src/types.rs`, `crates/tsox-types/src/subtyping.rs`,
-`crates/tsox-types/src/semantic/queries.rs`, `crates/tsox-types/src/semantic/generics.rs`, `crates/tsox-types/src/namespace.rs`,
+`crates/tsox-types/src/semantic/queries.rs`, `crates/tsox-types/src/semantic/generics/`, `crates/tsox-types/src/namespace.rs`,
 `crates/tsox-types/src/type_annotation.rs`.
 
 ## 1. What the arena is for

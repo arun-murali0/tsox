@@ -689,7 +689,7 @@ pub fn resolve_named_reference(
     // cannot be resolved becomes the error type in place instead of
     // being dropped and shifting every later argument left. Each
     // explicit argument is resolved in the *caller's* namespace, exactly
-    // like a generic call's explicit type arguments in calls.rs.
+    // like a generic call's explicit type arguments in expressions/calls/.
     // Arguments beyond the declared count are ignored; an omitted one
     // takes its declared default, or the error type if it has none.
     let mut bindings: Vec<(TypeParameterId, TypeId)> = Vec::new();

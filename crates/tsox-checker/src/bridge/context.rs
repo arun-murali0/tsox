@@ -58,6 +58,12 @@ pub struct CheckContext<'ast, 'src> {
     pub source_text: &'src str,
     // The compiler options this unit is checked under (see check_options.rs).
     pub options: crate::check_options::CheckOptions,
+    /// The options this unit has read (see `CheckContext::option`).
+    pub options_read: std::cell::Cell<crate::check_options::OptionReads>,
+    /// Constant members of the enums declared so far: (enum, member, value), in source order.
+    /// Reads the backward flow walk narrowed: (variable name, type), in the order they were read.
+    pub flow_reads: Vec<(Box<str>, crate::arena::TypeId)>,
+    pub enum_values: Vec<(Box<str>, Box<str>, tsox_model::ConstValue)>,
 
     pub narrow: NarrowState,
 
@@ -429,6 +435,16 @@ pub struct FunctionReturn {
 }
 
 impl<'ast, 'src> CheckContext<'ast, 'src> {
+    /// The value of one compiler option, recording that this unit read it. Every read of an
+    /// option goes through here (a test greps for direct `.options.` reads), so the unit's
+    /// `options_read` is exactly the options its answer can depend on.
+    pub fn option(&self, field: crate::check_options::OptionField) -> bool {
+        let mut reads = self.options_read.get();
+        reads.insert(field);
+        self.options_read.set(reads);
+        self.options.get(field)
+    }
+
     /// Tells the flow shadow what was just assigned, so its walk can apply the same narrowing at
     /// the assignment node. Nothing happens when the shadow is off.
     pub fn shadow_note_assignment(&mut self, node_index: u32, declared: TypeId, assigned: TypeId) {
@@ -524,6 +540,9 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             file_name,
             source_text: "",
             options: crate::check_options::CheckOptions::default(),
+            options_read: std::cell::Cell::new(crate::check_options::OptionReads::none()),
+            flow_reads: Vec::new(),
+            enum_values: Vec::new(),
             narrow: NarrowState::new(),
             flow: crate::reachability::Reachability::default(),
             function_returns: std::collections::HashMap::new(),

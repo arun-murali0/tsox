@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Development tools: the real-project harness and the tsc conformance comparison."
+description = "Development tools: the real-project harness, the tsc conformance comparison, and `cargo xtask` (layering, owner map, corpus)."
 publish = false
 
 [lints]
@@ -16,6 +16,9 @@ workspace = true
 # tests/tsc-conformance). Both find the repository root from this crate's location.
 
 [dependencies]
+serde = { workspace = true }
+serde_json = "1"
+regex = "1"
 # compare-tsc runs the checker in process; the harness only starts the `tsox` binary.
 tsox = { path = "../..", default-features = false }
 xxhash-rust = { workspace = true }

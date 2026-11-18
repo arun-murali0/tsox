@@ -16,19 +16,31 @@ use std::time::{Duration, Instant};
 // Cost: a process per file. By default one file in 500 is run, which is a fixed sample of
 // about twenty and takes seconds; TSOX_CORPUS_STRIDE=1 runs all 10,083, and
 // TSOX_CORPUS_OFFSET shifts the sample so a different slice can be tried.
-// Now: the eight cases that used to abort in project mode (known-crashers-6.0.3) are run
+// Now: the eight cases that used to abort in project mode (tests/corpus/known-crashers) are run
 // one at a time in every run, so a regression there fails the build.
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 
-// The corpus is shared with the root package's tests, so it stays in the repository's tests/
-// directory: this crate is crates/tsox-cli, two levels below the repository root.
-fn corpus() -> PathBuf {
+fn repository_root() -> PathBuf {
+    // This crate is crates/tsox-cli, two levels below the repository root.
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
         .expect("repository root")
-        .join("tests/typescript-testcases")
+        .to_path_buf()
+}
+
+// The corpus is not stored in the repository: `cargo xtask corpus fetch` downloads it
+// from the TypeScript release tag into `.corpus/`. `TSOX_CORPUS_DIR` points elsewhere.
+fn corpus() -> PathBuf {
+    std::env::var_os("TSOX_CORPUS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repository_root().join(".corpus"))
+}
+
+// The eight cases that used to abort are small and stay in the repository.
+fn crashers() -> PathBuf {
+    repository_root().join("tests/corpus/known-crashers")
 }
 
 fn ts_files(dir: &Path) -> Vec<PathBuf> {
@@ -114,12 +126,19 @@ fn env_number(name: &str, default: usize) -> usize {
 #[test]
 fn a_sample_of_the_corpus_runs_to_an_end_one_file_at_a_time() {
     let cases = ts_files(&corpus().join("typescript-6.0.3"));
-    // The corpus is part of the repository. A test that passes because it found nothing to
-    // run says nothing, so a checkout without it fails here and does not look green.
-    assert!(
-        !cases.is_empty(),
-        "tests/typescript-testcases/typescript-6.0.3 has no .ts files"
-    );
+    if cases.is_empty() {
+        // CI sets TSOX_REQUIRE_CORPUS so a missing corpus cannot look green there.
+        assert!(
+            std::env::var_os("TSOX_REQUIRE_CORPUS").is_none(),
+            "no corpus under {}: run `cargo xtask corpus fetch`",
+            corpus().display()
+        );
+        eprintln!(
+            "skipped: no corpus under {} (run `cargo xtask corpus fetch`)",
+            corpus().display()
+        );
+        return;
+    }
     let stride = env_number("TSOX_CORPUS_STRIDE", 500).max(1);
     let offset = env_number("TSOX_CORPUS_OFFSET", 0);
     let mut failures = Vec::new();
@@ -144,10 +163,10 @@ fn a_sample_of_the_corpus_runs_to_an_end_one_file_at_a_time() {
 
 #[test]
 fn the_known_crashers_no_longer_abort_when_run_one_at_a_time() {
-    let cases = ts_files(&corpus().join("known-crashers-6.0.3"));
+    let cases = ts_files(&crashers());
     assert!(
         !cases.is_empty(),
-        "tests/typescript-testcases/known-crashers-6.0.3 has no .ts files"
+        "tests/corpus/known-crashers has no .ts files"
     );
     let mut failures = Vec::new();
     for file in &cases {

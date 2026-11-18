@@ -1,0 +1,47 @@
+{
+  "name": "tsox",
+  "version": "0.1.0",
+  "description": "A TypeScript type checker written in Rust, as WebAssembly. Checks a source string and returns diagnostics.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arun-murali0/tsox.git"
+  },
+  "keywords": [
+    "typescript",
+    "type-checker",
+    "wasm",
+    "rust",
+    "diagnostics"
+  ],
+  "type": "commonjs",
+  "main": "./node/tsox.js",
+  "module": "./web/tsox.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "node": "./node/tsox.js",
+      "browser": "./web/tsox.js",
+      "import": "./web/tsox.js",
+      "default": "./node/tsox.js"
+    },
+    "./web/tsox_bg.wasm": "./web/tsox_bg.wasm",
+    "./web": {
+      "types": "./web/tsox.d.ts",
+      "default": "./web/tsox.js"
+    }
+  },
+  "files": [
+    "node",
+    "web",
+    "index.d.ts",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  }
+}

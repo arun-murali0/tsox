@@ -9,13 +9,27 @@
 5. Keep the semantic milestone name, tests, fixtures, and documentation aligned.
 6. Open a pull request and let CI verify the same quality gates.
 
+## What a merge needs
+
+`main` only receives changes that passed **All green** (fmt, layering, tests) and **Corpus map**
+(tsox over TypeScript's own test suite is not worse than the recorded map). Run both before you push:
+
+```bash
+./scripts/ci.sh
+cargo xtask corpus fetch && cargo xtask corpus run && cargo xtask corpus verify
+```
+
+If results improved, `cargo xtask corpus update` records them; commit `tests/corpus/` in the same
+pull request. The owner's branches merge automatically; a pull request from anyone else is reviewed
+and merged by the owner. Details: `docs/contributing.md`, `docs/corpus.md`.
+
 ## Local checks
 
 ```bash
 ./scripts/ci.sh
 ```
 
-The script formats the workspace, checks the crate layering (`scripts/check-layering.py`), then runs compilation and the full workspace test suite. The local pre-push hook uses the same sequence. Use `cargo test --workspace --all-features`, not a bare `cargo test`: that runs only the default members (the root, `tsox-cli`, `tsox-xtask`) and skips the unit tests in the layer crates.
+The script formats the workspace, checks the crate layering (`cargo xtask layering`), then runs compilation and the full workspace test suite. The local pre-push hook uses the same sequence. Use `cargo test --workspace --all-features`, not a bare `cargo test`: that runs only the default members (the root, `tsox-cli`, `tsox-xtask`) and skips the unit tests in the layer crates.
 
 ## Code organization
 

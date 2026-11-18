@@ -78,6 +78,7 @@ The repository contains:
 - cache and memo counters, readable from a `CheckSession` after a check (`last_metrics`), for regressions that wall-clock time hides;
 - foundation benchmarks in `benches/foundation_benchmark.rs` (the scratchpad against a `Vec`, and the incremental layer's unchanged save and valid read), which need `module-resolution`, `incremental` and `scratchpad`;
 - IAI callgrind benchmarks in `benches/checker_iai.rs`;
+- corpus benchmarks in `benches/corpus_benchmark.rs` and `benches/corpus_iai.rs`, on real files of TypeScript's own suite fetched by tag (`cargo xtask corpus fetch`, or `TSOX_CORPUS_FETCH=1`): a spread over the corpus, the files the map says are clean, the files on which tsc and tsox report the same errors (the diagnostic path costs far more per file than the quiet one), and one whole part. `TSOX_CORPUS_DIR`, `TSOX_CORPUS_TAG`, `TSOX_CORPUS_PART`, `TSOX_CORPUS_STRIDE` and `TSOX_CORPUS_LIMIT` change what is measured;
 - shared complex fixtures in `benches/support/complex_fixtures.rs`;
 - heap profiling in `examples/dhat_heap.rs`.
 
@@ -123,6 +124,8 @@ more serious kind), or `MIXED`.
 ./scripts/compare-local.sh                        # all of tests/fixtures
 ./scripts/compare-local.sh tests/fixtures/generics-tier1
 ./scripts/compare-local.sh path/to/one_file.ts
+./scripts/compare-local.sh corpus:part-03 --summary   # a part of the fetched corpus, tsc answers from the map
+./scripts/compare-local.sh corpus:all                 # every part, then verified against the map
 ```
 
 **`crates/tsox-xtask/src/bin/compare-tsc.rs`** is the in-process, errors-only sibling. Instead of

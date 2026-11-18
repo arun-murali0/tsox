@@ -20,7 +20,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-# The facade is the only tsox crate a front end depends on (scripts/check-layering.py).
+# The facade is the only tsox crate a front end depends on (cargo xtask layering).
 tsox = { path = "../..", default-features = false }
 
 # The platform allocator stays on wasm32, so mimalloc is not even resolved for it.

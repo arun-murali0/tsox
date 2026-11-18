@@ -23,8 +23,11 @@ pub fn report_strict_mode_names<'ast>(
     program: &'ast Program<'ast>,
     ctx: &mut CheckContext<'ast, '_>,
 ) {
-    let in_module = is_module_file(program, &ctx.options);
-    let file_strict = ctx.options.always_strict
+    let in_module = is_module_file(
+        program,
+        ctx.option(crate::check_options::OptionField::ModuleDetectionForce),
+    );
+    let file_strict = ctx.option(crate::check_options::OptionField::AlwaysStrict)
         || in_module
         || program
             .directives

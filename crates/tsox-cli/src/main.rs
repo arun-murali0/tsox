@@ -76,6 +76,11 @@ impl Tally {
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("tsox {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+
     if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
         print_help();
         return ExitCode::SUCCESS;
@@ -573,6 +578,7 @@ fn print_help() {
          tsox --project <path-to-tsconfig.json> [--flat] [--cycles] [--partial] [--eager-libs] [--lib-cache <dir> | --no-lib-cache] [--tsc-codes]\n    \
          [--incremental | --watch] [--no-cycle-recheck]\n\n\
          OPTIONS:\n    \
+         --version, -V       Print the version and exit.\n    \
          --project <path>    Read the tsconfig.json at <path> and check the files its\n                         \
          include/exclude/files select, resolving imports with its\n                         \
          paths, baseUrl, extends and references. If the config cannot\n                         \

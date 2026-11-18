@@ -1,0 +1,1099 @@
+use oxc_ast::ast::Expression;
+use oxc_semantic::Scoping;
+use oxc_span::{GetSpan, Span};
+
+use crate::arena::TypeId;
+use crate::semantic::{GenericInferenceSession, GenericSolver, InferencePriority};
+use crate::types::{FunctionType, Type};
+
+use super::super::context::CheckContext;
+use super::super::narrow::resolve_symbol_id;
+use super::infer_expression_type;
+use super::{check_excess_properties, infer_member_access_type, resolve_identifier_type};
+
+// Resolves an explicit call-site type argument list, e.g. the <string> in
+// identity<string>(x), into concrete TypeIds. Returns an empty vec for a call
+// with no such list (`call.type_arguments`/`new_expr.type_arguments` being the
+// ordinary, common case: a bare `identity(x)`), so callers don't need to
+// special-case "none given" separately from "given but unresolvable".
+// An individual type argument this checker cannot resolve (it names something not in
+// scope) becomes the error type instead of being dropped. The arguments are matched to
+// the type parameters by position, so dropping one would shift every later argument onto
+// the wrong parameter: `two<Nope, string>(1, "x")` would bind `string` to the first
+// parameter and report a bogus mismatch on the first argument. The error type is
+// compatible with everything, so the parameter it lands on stops constraining its
+// arguments without causing a second diagnostic.
+fn resolve_explicit_type_arguments(
+    type_arguments: Option<&oxc_ast::ast::TSTypeParameterInstantiation>,
+    ctx: &mut CheckContext<'_, '_>,
+) -> Vec<TypeId> {
+    let Some(type_arguments) = type_arguments else {
+        return Vec::new();
+    };
+    let mut resolved = Vec::with_capacity(type_arguments.params.len());
+    for ty in &type_arguments.params {
+        let type_id =
+            crate::type_annotation::resolve_ts_type(ty, &mut ctx.namespace, &mut ctx.arena)
+                .unwrap_or_else(|| ctx.arena.error());
+        resolved.push(type_id);
+    }
+    resolved
+}
+
+// Everything about one call or `new` site that check_callable needs besides the
+// callee's type, the scope info, and the checking context. Grouped into one value
+// so check_callable stays under clippy's too_many_arguments limit instead of
+// growing another positional parameter every time a call feature is added.
+struct CallSite<'s, 'ast> {
+    arguments: &'s [oxc_ast::ast::Argument<'ast>],
+    span: Span,
+    callee_name: &'s str,
+    is_new: bool,
+    // True when the callee is written as the name of a function or class declaration.
+    // Such a call instantiates the declaration afresh, even from inside its own body,
+    // so every type parameter in its type is the callee's own to infer. For any other
+    // callee (a parameter, a variable, a method) a parameter of an enclosing
+    // declaration that appears in its type is not.
+    callee_is_declaration: bool,
+    explicit_type_args: &'s [TypeId],
+    // What the call is expected to produce, when its position says (an annotated
+    // declaration, a return, an assignment target).
+    return_context: Option<TypeId>,
+}
+
+// Only a plain name or an `a.b` member is a callee this checker can type. Any other callee
+// (the result of another call, a computed access) gets the not-yet-checked warning and the
+// error type, which is compatible with everything, so a call it cannot read adds no
+// second error. A callee written as a function declaration's name is marked, so the call
+// instantiates the declaration afresh even from inside its own body (see check_callable).
+pub(super) fn infer_call_expression_type(
+    call: &oxc_ast::ast::CallExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> TypeId {
+    let result = infer_call_expression_type_inner(call, scoping, ctx);
+    refine_by_type_guard(call, scoping, ctx, result)
+}
+
+// `array.find(isNumber)`, `array.filter((x): x is number => ...)`: the library has an overload
+// taking a type guard `(value: T) => value is S` that returns `S | undefined` / `S[]`. The array
+// methods here are typed by hand without it, so the narrowed result is put back when the
+// callback is a guard whose type is a subtype of the element.
+fn refine_by_type_guard(
+    call: &oxc_ast::ast::CallExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+    result: TypeId,
+) -> TypeId {
+    use oxc_ast::ast::{TSType, TSTypePredicateName};
+    let Expression::StaticMemberExpression(member) = &call.callee else {
+        return result;
+    };
+    let method = member.property.name.as_str();
+    if !matches!(method, "find" | "findLast" | "filter") {
+        return result;
+    }
+    let Some(first) = call.arguments.first().and_then(|a| a.as_expression()) else {
+        return result;
+    };
+    let claimed = match first {
+        Expression::Identifier(ident) => resolve_symbol_id(ident, scoping)
+            .and_then(|symbol| ctx.type_predicates.get(&symbol).copied())
+            .filter(|p| !p.asserts && p.param_index == 0)
+            .and_then(|p| p.type_id),
+        Expression::ArrowFunctionExpression(arrow) => {
+            guard_type_of(arrow.return_type.as_deref(), &arrow.params, ctx)
+        }
+        Expression::FunctionExpression(func) => {
+            guard_type_of(func.return_type.as_deref(), &func.params, ctx)
+        }
+        _ => None,
+    };
+    fn guard_type_of(
+        annotation: Option<&oxc_ast::ast::TSTypeAnnotation<'_>>,
+        params: &oxc_ast::ast::FormalParameters<'_>,
+        ctx: &mut CheckContext<'_, '_>,
+    ) -> Option<TypeId> {
+        let TSType::TSTypePredicate(predicate) = &annotation?.type_annotation else {
+            return None;
+        };
+        let TSTypePredicateName::Identifier(name) = &predicate.parameter_name else {
+            return None;
+        };
+        let first_param = params.items.first()?;
+        let matches_first = matches!(&first_param.pattern,
+            oxc_ast::ast::BindingPattern::BindingIdentifier(id) if id.name == name.name);
+        if predicate.asserts || !matches_first {
+            return None;
+        }
+        crate::type_annotation::resolve_type_annotation(
+            predicate.type_annotation.as_ref()?,
+            &mut ctx.namespace,
+            &mut ctx.arena,
+        )
+    }
+    let Some(claimed) = claimed else {
+        return result;
+    };
+    if method == "filter" {
+        let Type::Array(element) = ctx.arena.get(result).clone() else {
+            return result;
+        };
+        if crate::subtyping::is_subtype(&ctx.arena, claimed, element) {
+            return ctx.arena.alloc(Type::Array(claimed));
+        }
+        return result;
+    }
+    let Type::Union(members) = ctx.arena.get(result).clone() else {
+        return result;
+    };
+    let undefined = ctx.arena.undefined();
+    let rest: Vec<TypeId> = members
+        .iter()
+        .copied()
+        .filter(|&m| m != undefined)
+        .collect();
+    if rest.len() + 1 != members.len() {
+        return result;
+    }
+    let element = ctx.arena.alloc_union(rest);
+    if crate::subtyping::is_subtype(&ctx.arena, claimed, element) {
+        return ctx.arena.alloc_union(vec![claimed, undefined]);
+    }
+    result
+}
+
+fn infer_call_expression_type_inner(
+    call: &oxc_ast::ast::CallExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> TypeId {
+    let return_context = ctx.call_return_context.take();
+    if let Some(result) = forms::special_call_form(call, scoping, ctx) {
+        return result;
+    }
+    let mut callee_is_declaration = false;
+    let (callee_type, callee_name) = match &call.callee {
+        Expression::Identifier(ident) => {
+            let callee_symbol = resolve_symbol_id(ident, scoping)
+                .filter(|symbol_id| scoping.symbol_flags(*symbol_id).is_function());
+            callee_is_declaration = callee_symbol.is_some();
+            if let Some(symbol_id) = callee_symbol {
+                ctx.return_reads.note_call(symbol_id);
+            } else if let Some(symbol_id) = resolve_symbol_id(ident, scoping)
+                && let Some(keys) = ctx.imported_function_symbols.get(&symbol_id).cloned()
+            {
+                ctx.return_reads.note_imported_call(&keys);
+            }
+            let callee_type = resolve_identifier_type(ident, scoping, ctx);
+            // The callee is not typed as an expression of its own; a request for the type at
+            // its position is answered here.
+            super::super::probe::offer(ctx, ident.span, callee_type);
+            (callee_type, ident.name.to_string())
+        }
+        Expression::StaticMemberExpression(member) => member_callee(member, scoping, ctx),
+        _ => {
+            ctx.warning(
+                crate::diagnostic_messages::messages::unimplemented_call_expression_kind(),
+                call.span(),
+            );
+            return ctx.arena.error();
+        }
+    };
+
+    let explicit_type_args = resolve_explicit_type_arguments(call.type_arguments.as_deref(), ctx);
+
+    check_callable(
+        callee_type,
+        CallSite {
+            return_context,
+            arguments: &call.arguments,
+            span: call.span(),
+            callee_name: &callee_name,
+            is_new: false,
+            callee_is_declaration,
+            explicit_type_args: &explicit_type_args,
+        },
+        scoping,
+        ctx,
+    )
+}
+
+// The type and the name of an `a.b` callee: the member's type read off the object's, with
+// a nullish object reported once, as any other member access is.
+fn member_callee(
+    member: &oxc_ast::ast::StaticMemberExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> (TypeId, String) {
+    let object_type = infer_expression_type(&member.object, scoping, ctx);
+    let (object_type, _) =
+        super::members::strip_nullish_object(&member.object, object_type, member.optional, ctx);
+    let property_type =
+        infer_member_access_type(object_type, &member.property.name, member.span(), ctx);
+    super::super::probe::offer(ctx, member.span(), property_type);
+    (property_type, member.property.name.to_string())
+}
+
+// `new Name(...)` and `new a.b(...)` (`new N.K()`, `new A.B.K()`). Either names a class
+// declaration, so the callee is marked as one like a function's name is: `new Box(x)`
+// inside `Box` infers `T` again instead of reusing the one being checked, and
+// `new N.Box(x)` is read the same way. Any other callee (a call's result, a computed
+// access, a parenthesized expression) gets the not-yet-checked warning and the error type,
+// which is compatible with everything, so a `new` this checker cannot read adds no second
+// error.
+//
+// Problem: only `new Name(...)` was read, so `new N.K()` on a class inside a namespace was
+// skipped with a warning, and its result was the error type, which hid every mistake made
+// with the instance and every wrong argument to its constructor.
+// Picked: take the member's type the way a call on `a.b` does (member_callee) and run the
+// same check as for a plain name. The namespace's value already holds the class's
+// constructor as a property, so there is nothing new to look up.
+// `PromiseSettledResult` for one input: `{ status: "fulfilled", value: T }` or
+// `{ status: "rejected", reason: any }`, one member of it built here.
+fn settled_result(
+    ctx: &mut CheckContext<'_, '_>,
+    status: &str,
+    field: &str,
+    value: TypeId,
+) -> TypeId {
+    let status_literal = ctx.arena.alloc(Type::StringLiteral(status.into()));
+    let entry = |name: &str, type_id: TypeId| crate::types::PropertyEntry {
+        name: name.into(),
+        type_id,
+        optional: false,
+        is_method: false,
+        modifiers: Default::default(),
+    };
+    let properties = vec![entry("status", status_literal), entry(field, value)];
+    ctx.arena
+        .alloc(Type::Object(crate::types::ObjectType::new(properties)))
+}
+
+pub(super) fn infer_new_expression_type(
+    new_expr: &oxc_ast::ast::NewExpression,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> TypeId {
+    let return_context = ctx.call_return_context.take();
+    let (callee_type, callee_name) = match &new_expr.callee {
+        Expression::Identifier(callee_ident) => {
+            let callee_type = resolve_identifier_type(callee_ident, scoping, ctx);
+            super::super::probe::offer(ctx, callee_ident.span, callee_type);
+            (callee_type, callee_ident.name.to_string())
+        }
+        Expression::StaticMemberExpression(member) => member_callee(member, scoping, ctx),
+        _ => {
+            ctx.warning(
+                crate::diagnostic_messages::messages::unimplemented_new_expression_target(),
+                new_expr.span(),
+            );
+            return ctx.arena.error();
+        }
+    };
+    let explicit_type_args =
+        resolve_explicit_type_arguments(new_expr.type_arguments.as_deref(), ctx);
+
+    // `new Promise<T>(executor)` on the global Promise: the library's constructor is not
+    // modelled, so the result is `Promise<T>`, or `Promise<unknown>` when no `T` is written, as tsc
+    // gives when nothing is inferred. The executor is still checked as an expression.
+    if let Expression::Identifier(callee_ident) = &new_expr.callee
+        && callee_ident.name == "Promise"
+        && resolve_symbol_id(callee_ident, scoping).is_none()
+    {
+        let value = match explicit_type_args.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        };
+        for (index, argument) in new_expr.arguments.iter().enumerate() {
+            if let Some(expression) = argument.as_expression() {
+                // The executor's own parameters: `resolve(value: T | PromiseLike<T>)` and
+                // `reject(reason?: any)`. Only when `T` is written; with none to read, the
+                // callbacks stay untyped rather than guessed.
+                if index == 0
+                    && let Some(value) = value
+                {
+                    ctx.contextual = Some(promise_executor_type(ctx, value));
+                }
+                infer_expression_type(expression, scoping, ctx);
+                ctx.contextual = None;
+            }
+        }
+        let value = value.unwrap_or_else(|| ctx.arena.unknown());
+        return ctx.arena.alloc_promise(value);
+    }
+
+    check_callable(
+        callee_type,
+        CallSite {
+            return_context,
+            arguments: &new_expr.arguments,
+            span: new_expr.span(),
+            callee_name: &callee_name,
+            is_new: true,
+            // A class is a declaration whose parameters are its own; a constructor typed as
+            // `new () => T` returns a parameter of the enclosing function, which is fixed.
+            callee_is_declaration: !matches!(
+                ctx.arena.get(callee_type),
+                Type::Function(f) if matches!(ctx.arena.get(f.return_type), Type::GenericParameter(..))
+            ),
+            explicit_type_args: &explicit_type_args,
+        },
+        scoping,
+        ctx,
+    )
+}
+
+fn check_callable(
+    callee_type: TypeId,
+    site: CallSite<'_, '_>,
+    scoping: &Scoping,
+    ctx: &mut CheckContext<'_, '_>,
+) -> TypeId {
+    let CallSite {
+        arguments,
+        span,
+        callee_name,
+        is_new,
+        callee_is_declaration,
+        explicit_type_args,
+        return_context,
+    } = site;
+
+    // A value of a constrained type parameter (`fn: T` with `T extends (...a: any[]) => R`)
+    // is called through its constraint.
+    let callee_type = match ctx.arena.get(callee_type) {
+        Type::GenericParameter(_, _, Some(constraint)) => *constraint,
+        _ => callee_type,
+    };
+    let callee_type = match pick_callable_member(
+        callee_type,
+        arguments,
+        span,
+        explicit_type_args,
+        callee_is_declaration,
+        scoping,
+        ctx,
+    ) {
+        PickedCallable::Member(member) => member,
+        // The call was reported as a whole (tsc's TS2769, or one arity message over every
+        // overload). The arguments are still looked at for their own mistakes, once.
+        PickedCallable::Reported(return_type) => {
+            for arg in arguments {
+                if let Some(arg_expr) = arg.as_expression() {
+                    infer_expression_type(arg_expr, scoping, ctx);
+                }
+            }
+            return return_type;
+        }
+    };
+
+    let Type::Function(function_type) = ctx.arena.get(callee_type).clone() else {
+        // Any and Error both mean "do not report a second, likely-noisy error on
+        // top of one already reported (or deliberately suppressed) elsewhere."
+        // Arguments are still checked for their own independent problems even
+        // though the call itself is not.
+        if !matches!(ctx.arena.get(callee_type), Type::Any | Type::Error) {
+            let message = if is_new {
+                crate::diagnostic_messages::messages::not_a_constructor(&ctx.arena, callee_type)
+            } else {
+                crate::diagnostic_messages::messages::not_callable(&ctx.arena, callee_type)
+            };
+            ctx.error(message, span);
+            return ctx.arena.error();
+        }
+
+        for arg in arguments {
+            if let Some(arg_expr) = arg.as_expression() {
+                infer_expression_type(arg_expr, scoping, ctx);
+            }
+        }
+        return ctx.arena.error();
+    };
+
+    // A parameter this checker could not resolve a type for (declare_top_level
+    // left it untyped) means arity cannot be verified honestly, so it is skipped
+    // with a warning rather than silently allowed or wrongly flagged.
+    if function_type.is_untyped {
+        let message = if is_new {
+            crate::diagnostic_messages::messages::untyped_constructor_parameter_skips_arity_check(
+                callee_name,
+            )
+        } else {
+            crate::diagnostic_messages::messages::untyped_parameter_skips_arity_check(callee_name)
+        };
+        ctx.warning(message, span);
+        for arg in arguments {
+            if let Some(arg_expr) = arg.as_expression() {
+                infer_expression_type(arg_expr, scoping, ctx);
+            }
+        }
+        return function_type.return_type;
+    }
+
+    // Calls may omit trailing type parameters only when those parameters have defaults.
+    // Supplying a partial list for required parameters, or more arguments than exist, is
+    // TS2558. Like tsc, the call is then abandoned: the arguments are still walked so
+    // errors inside them show, but they are not matched against the parameters, and the
+    // result is the error type so nothing cascades from it.
+    if !explicit_type_args.is_empty() {
+        let required_type_args = function_type
+            .type_params
+            .iter()
+            .rposition(|parameter| parameter.default.is_none())
+            .map_or(0, |index| index + 1);
+        let total_type_args = function_type.type_params.len();
+        if explicit_type_args.len() < required_type_args
+            || explicit_type_args.len() > total_type_args
+        {
+            ctx.error(
+                crate::diagnostic_messages::messages::call_type_argument_count_mismatch(
+                    required_type_args,
+                    total_type_args,
+                    explicit_type_args.len(),
+                ),
+                span,
+            );
+            for arg in arguments {
+                if let Some(arg_expr) = arg.as_expression() {
+                    infer_expression_type(arg_expr, scoping, ctx);
+                }
+            }
+            return ctx.arena.error();
+        }
+    }
+
+    let function_type = expand_tuple_rest(&ctx.arena, &function_type).unwrap_or(function_type);
+
+    let required = function_type
+        .params
+        .iter()
+        .filter(|p| !p.optional && !p.rest)
+        .count();
+    let has_rest = function_type.params.last().is_some_and(|p| p.rest);
+    let max = if has_rest {
+        None
+    } else {
+        Some(function_type.params.len())
+    };
+
+    // Problem: `f(...xs)` counted the spread as one argument, so a spread that
+    // stands for several (or none) tripped a false arity error.
+    // Picked: up to the first spread the arguments are positional and can be
+    // counted; the spread's own length is not known, so only "too many" can be
+    // decided, from the arguments written before it.
+    // Cost: a call like `f(...xs)` with too few values is not reported.
+    //
+    // Now: when the first spread is known to be an array (a tuple is not one here: it keeps
+    // the lenient rule, since its elements are not matched to parameters), tsc's own rule applies:
+    // the spread is only accepted when it starts at or after the required parameters
+    // and lands on a rest parameter or a parameter that exists. Anything else is TS2556 on
+    // the spread, which tsc reports instead of an arity message. A spread of anything that
+    // is not known to be an array (any, an unresolved type) keeps the lenient rule above,
+    // so this adds no false errors.
+    let first_spread = arguments
+        .iter()
+        .position(|arg| matches!(arg, oxc_ast::ast::Argument::SpreadElement(_)));
+    // The first spread is inferred here, once, because the check below needs its type;
+    // the pass over the arguments further down skips it so it is not reported twice.
+    let first_spread_type = first_spread.and_then(|index| match &arguments[index] {
+        oxc_ast::ast::Argument::SpreadElement(spread) => {
+            Some(infer_expression_type(&spread.argument, scoping, ctx))
+        }
+        _ => None,
+    });
+    let misplaced_spread = first_spread.zip(first_spread_type).and_then(|(index, ty)| {
+        // `f(...[1, 2])` is a tuple to tsc (the literal is typed by where it lands), so
+        // spreading an array literal is never an error here.
+        let is_literal = matches!(
+            &arguments[index],
+            oxc_ast::ast::Argument::SpreadElement(spread) if is_array_literal(&spread.argument)
+        );
+        let is_array = matches!(ctx.arena.get(ty), Type::Array(_));
+        let accepted = index >= required && (has_rest || index < function_type.params.len());
+        (is_array && !is_literal && !accepted).then_some(index)
+    });
+    let arity_ok = misplaced_spread.is_none()
+        && match first_spread {
+            Some(first) => match max {
+                Some(max) => first <= max,
+                None => true,
+            },
+            None => {
+                arguments.len() >= required
+                    && match max {
+                        Some(max) => arguments.len() <= max,
+                        None => true,
+                    }
+            }
+        };
+    if !arity_ok {
+        if let Some(index) = misplaced_spread {
+            ctx.error(
+                crate::diagnostic_messages::messages::spread_argument_needs_tuple_or_rest(),
+                arguments[index].span(),
+            );
+        } else {
+            // The text is tsc's TS2554 verbatim, which never names the missing
+            // parameter, so there is nothing to look up here.
+            // tsc puts "too many arguments" on the first extra argument and "too few" on
+            // the call, so each lands on the line a reader would look at.
+            let arity_span = match max {
+                Some(max) if arguments.len() > max => arguments[max].span(),
+                _ => span,
+            };
+            // The `resolve` of `new Promise<T>(...)`: one parameter `value` of `T | Promise<T>`.
+            let is_promise_resolve = required == 1
+                && max == Some(1)
+                && arguments.is_empty()
+                && function_type.params.first().is_some_and(|param| {
+                    param.name.as_deref() == Some("value")
+                        && matches!(ctx.arena.get(param.type_id), Type::Union(members)
+                            if members.iter().any(|&m| ctx.arena.is_promise(m)))
+                });
+            if is_promise_resolve {
+                ctx.error(
+                    crate::diagnostic_messages::messages::promise_resolve_needs_value(0),
+                    arity_span,
+                );
+            } else {
+                ctx.error(arity_message(required, max, arguments.len()), arity_span);
+            }
+        }
+
+        for arg in arguments {
+            if let Some(arg_expr) = arg.as_expression() {
+                infer_expression_type(arg_expr, scoping, ctx);
+            }
+        }
+        return function_type.return_type;
+    }
+
+    // Every argument's type is inferred once up front and reused below, rather
+    // than inferred again inside the parameter-checking loop, since inferring an
+    // argument's type can itself report diagnostics; inferring it twice would
+    // report the same problem in that argument twice.
+    //
+    // Now: a spread argument is inferred for its own errors but gets no type, and so
+    // does every argument after it, because once a spread has been seen the index of
+    // a later argument no longer lines up with a parameter position. A missing type
+    // is skipped by both the inference pass and the assignability pass below.
+    // Infer ordinary arguments first. Direct callbacks are delayed until we have a
+    // preliminary view of the generic bindings, so their unannotated parameters can
+    // be contextually typed with concrete types instead of the caller's raw `T`/`U`.
+    // Each expression is still inferred exactly once, preserving diagnostic behavior.
+    let mut arg_types: Vec<Option<TypeId>> = vec![None; arguments.len()];
+    let mut deferred_contextual_args = Vec::new();
+    // An object literal can contain callbacks several properties below the argument
+    // itself. Delay such literals when another ordinary argument can establish generic
+    // bindings first. Object-only calls are left on the ordinary path so their literal
+    // properties remain available as the primary inference candidates.
+    let has_non_callback_non_object_anchor = arguments.iter().any(|argument| {
+        argument.as_expression().is_some_and(|expression| {
+            !matches!(
+                expression,
+                Expression::ArrowFunctionExpression(_)
+                    | Expression::FunctionExpression(_)
+                    | Expression::ObjectExpression(_)
+            )
+        })
+    });
+    for (index, arg) in arguments.iter().enumerate() {
+        let after_spread = first_spread.is_some_and(|first| index >= first);
+        match arg {
+            oxc_ast::ast::Argument::SpreadElement(spread) => {
+                if Some(index) != first_spread {
+                    infer_expression_type(&spread.argument, scoping, ctx);
+                }
+            }
+            other => {
+                let Some(expr) = other.as_expression() else {
+                    continue;
+                };
+                // A callback whose parameters are all annotated does not need the other
+                // arguments to be typed, and it is itself evidence for them (`pipe((n:
+                // number) => String(n), s => s.length)` fixes B from the first one), so
+                // only a context-sensitive one is put off.
+                let is_callback = matches!(
+                    expr,
+                    Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)
+                ) && is_context_sensitive(expr);
+                let is_contextual_object = has_non_callback_non_object_anchor
+                    && matches!(expr, Expression::ObjectExpression(_))
+                    && is_context_sensitive(expr);
+                if (is_callback || is_contextual_object) && !after_spread {
+                    deferred_contextual_args.push(index);
+                    continue;
+                }
+                ctx.contextual = if after_spread {
+                    None
+                } else {
+                    GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index)
+                };
+                let inferred = infer_expression_type(expr, scoping, ctx);
+                if !after_spread {
+                    arg_types[index] = Some(inferred);
+                }
+            }
+        }
+    }
+
+    // A first pass over every argument collects generic parameter bindings before
+    // any argument is checked against its expected type, so a generic function's
+    // return type can be substituted correctly even when the argument that fixes
+    // a type parameter comes after other checked arguments.
+    // An explicit call-site type argument list (identity<string>(x)) is positional,
+    // with no declaration span of its own, so it is zipped against the function's own
+    // type parameters in declaration order. Its required-to-total count is checked below;
+    // defaulted trailing parameters may be omitted, but required parameters may not.
+    let mut declared_param_ids = Vec::new();
+    // Signature metadata preserves declaration order and parameters that do not occur
+    // structurally (for example `<T = string>() => T` or `<T>() => void`).
+    for type_param in &function_type.type_params {
+        if !declared_param_ids.contains(&type_param.id) {
+            declared_param_ids.push(type_param.id);
+        }
+    }
+    // Retain the graph walk for enclosing generic parameters, e.g. a method using the
+    // containing class's T. The walker intentionally does not pull in a nested callback's
+    // own type-parameter list as if it belonged to this call.
+    for param in &function_type.params {
+        GenericSolver::ordered_generic_param_ids(
+            &ctx.arena,
+            param.type_id,
+            &mut declared_param_ids,
+        );
+    }
+    GenericSolver::ordered_generic_param_ids(
+        &ctx.arena,
+        function_type.return_type,
+        &mut declared_param_ids,
+    );
+
+    // A parameter of a declaration the checker is currently inside is fixed, not
+    // inferred: its binding is itself, so substitution leaves it alone. Explicit type
+    // arguments are zipped against the remaining parameters, the callee's own.
+    let ambient_ids: Vec<crate::types::TypeParameterId> = if callee_is_declaration {
+        Vec::new()
+    } else {
+        declared_param_ids
+            .iter()
+            .copied()
+            .filter(|&id| ctx.namespace.is_type_param_in_scope(id))
+            .collect()
+    };
+    let own_ids: Vec<crate::types::TypeParameterId> = declared_param_ids
+        .iter()
+        .copied()
+        .filter(|id| !ambient_ids.contains(id))
+        .collect();
+
+    let mut bindings: Vec<(crate::types::TypeParameterId, TypeId)> = own_ids
+        .iter()
+        .zip(explicit_type_args.iter())
+        .map(|(&id, &explicit)| (id, explicit))
+        .collect();
+    let mut locked: Vec<crate::types::TypeParameterId> =
+        bindings.iter().map(|(id, _)| *id).collect();
+    for &id in &ambient_ids {
+        if let Some(node) = ctx.namespace.type_param_node(id) {
+            bindings.push((id, node));
+            locked.push(id);
+        }
+    }
+
+    // `(...args: T)` with `T extends unknown[]`: the parameter stands for every argument
+    // from its position on, so T is inferred as the tuple of their types rather than
+    // matched against them one by one.
+    let tuple_rest_index = function_type.params.iter().position(|p| {
+        p.rest
+            && matches!(
+                ctx.arena.get(p.type_id),
+                Type::GenericParameter(..) | Type::Variadic(..)
+            )
+    });
+    let mut inference = GenericInferenceSession::new(bindings, locked);
+    let mut deferred: Vec<usize> = Vec::new();
+    for (index, arg_type) in arg_types.iter().enumerate() {
+        if tuple_rest_index.is_some_and(|rest| index >= rest) {
+            continue;
+        }
+        let Some(arg_type) = arg_type else { continue };
+        if let Some(param_type) =
+            GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index)
+        {
+            // A parameter with two spreads waits for the arguments that fix one of them.
+            if GenericSolver::has_multi_spread_variadic(&ctx.arena, param_type) {
+                deferred.push(index);
+                continue;
+            }
+            inference.infer_argument(
+                &mut ctx.arena,
+                param_type,
+                *arg_type,
+                &mut ctx.relation_cache,
+            );
+        }
+    }
+    if let Some(rest) = tuple_rest_index
+        && first_spread.is_none()
+        && arg_types.len() >= rest
+        && arg_types[rest..].iter().all(|t| t.is_some())
+    {
+        let elements: Vec<crate::types::TupleElement> = arg_types[rest..]
+            .iter()
+            .flatten()
+            .map(|&type_id| crate::types::TupleElement {
+                type_id: crate::types::widen(&ctx.arena, type_id),
+                optional: false,
+                rest: false,
+            })
+            .collect();
+        let tuple = ctx.arena.alloc_tuple(elements);
+        inference.infer_argument(
+            &mut ctx.arena,
+            function_type.params[rest].type_id,
+            tuple,
+            &mut ctx.relation_cache,
+        );
+    }
+
+    for index in deferred {
+        let (Some(arg_type), Some(param_type)) = (
+            arg_types[index],
+            GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index),
+        ) else {
+            continue;
+        };
+        inference.infer_argument(
+            &mut ctx.arena,
+            param_type,
+            arg_type,
+            &mut ctx.relation_cache,
+        );
+    }
+
+    // The type the call is expected to produce is evidence for a parameter that only the
+    // return type mentions (`const a: string[] = mk()` for `mk<T>(): T[]`). It is the
+    // weakest kind, so any argument decides first (tsc's InferencePriority.ReturnType).
+    if let Some(expected) = return_context
+        && !GenericSolver::contains_type_param(&ctx.arena, expected)
+        && GenericSolver::contains_type_param(&ctx.arena, function_type.return_type)
+    {
+        inference.infer_argument_with_priority(
+            &mut ctx.arena,
+            function_type.return_type,
+            expected,
+            InferencePriority::Low,
+            &mut ctx.relation_cache,
+        );
+    }
+
+    // Preview bindings from non-callback arguments. This is not the final answer: the
+    // original session remains intact and receives callback candidates below. Defaults
+    // are applied in declaration order only to the preview used for contextual typing.
+    let mut contextual_bindings = inference
+        .clone()
+        .finish(&mut ctx.arena, &mut ctx.relation_cache);
+    // Object literals must not replace unresolved type parameters with the contextual
+    // fallback `unknown`: doing so loses inference that could still be supplied by the
+    // literal's non-callback properties. They use only bindings established by ordinary
+    // arguments, while direct callbacks retain the default/constraint fallback below.
+    let object_contextual_bindings = contextual_bindings.clone();
+    for parameter in &function_type.type_params {
+        if ambient_ids.contains(&parameter.id)
+            || contextual_bindings
+                .iter()
+                .any(|(id, _)| *id == parameter.id)
+        {
+            continue;
+        }
+        let fallback = parameter
+            .default
+            .or(parameter.constraint)
+            .unwrap_or_else(|| ctx.arena.unknown());
+        let fallback = GenericSolver::substitute_bound_type_params(
+            &mut ctx.arena,
+            fallback,
+            &contextual_bindings,
+        );
+        if !GenericSolver::contains_type_param(&ctx.arena, fallback) {
+            contextual_bindings.push((parameter.id, fallback));
+        }
+    }
+
+    for index in deferred_contextual_args {
+        let Some(expr) = arguments[index].as_expression() else {
+            continue;
+        };
+        // An earlier deferred argument may have fixed a parameter this one is typed from
+        // (`two(x => x.length, y => ...)`), so the preview is rebuilt from the evidence
+        // gathered so far, the way tsc fixes parameters left to right.
+        let refreshed = inference
+            .clone()
+            .finish(&mut ctx.arena, &mut ctx.relation_cache);
+        for (id, ty) in refreshed {
+            match contextual_bindings
+                .iter_mut()
+                .find(|(bound, _)| *bound == id)
+            {
+                Some(slot) => slot.1 = ty,
+                None => contextual_bindings.push((id, ty)),
+            }
+        }
+        let Some(param_type) =
+            GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index)
+        else {
+            let inferred = infer_expression_type(expr, scoping, ctx);
+            arg_types[index] = Some(inferred);
+            continue;
+        };
+        let is_object = matches!(expr, Expression::ObjectExpression(_));
+        let bindings_for_context = if is_object {
+            &object_contextual_bindings
+        } else {
+            &contextual_bindings
+        };
+        ctx.contextual = Some(GenericSolver::substitute_bound_type_params(
+            &mut ctx.arena,
+            param_type,
+            bindings_for_context,
+        ));
+        let inferred = infer_expression_type(expr, scoping, ctx);
+        arg_types[index] = Some(inferred);
+        // Candidates from context-sensitive callbacks and object literals have
+        // different strength. A callback is contextually typed from the current
+        // best bindings, so its return type is useful high-priority evidence.
+        // An object literal deferred only to obtain contextual property types is
+        // fallback evidence: it must not displace a concrete candidate supplied by
+        // an ordinary argument, but it can still infer a parameter when no stronger
+        // source exists. This wires the session's priority model into real calls.
+        let priority = if is_object {
+            InferencePriority::Low
+        } else {
+            InferencePriority::Contextual
+        };
+        inference.infer_argument_with_priority(
+            &mut ctx.arena,
+            param_type,
+            inferred,
+            priority,
+            &mut ctx.relation_cache,
+        );
+    }
+    let mut bindings = inference.finish(&mut ctx.arena, &mut ctx.relation_cache);
+
+    // Defaults are consulted only after argument inference: an inferred candidate wins,
+    // an explicit argument is already locked, and a parameter with no candidate receives
+    // its default. Processing in declaration order lets `<T, U = T>` substitute T before
+    // U is added. Unspecified parameters without defaults retain the existing unknown
+    // recovery behavior at final substitution.
+    for parameter in &function_type.type_params {
+        if ambient_ids.contains(&parameter.id) || bindings.iter().any(|(id, _)| *id == parameter.id)
+        {
+            continue;
+        }
+        if let Some(default) = parameter.default {
+            let default =
+                GenericSolver::substitute_bound_type_params(&mut ctx.arena, default, &bindings);
+            bindings.push((parameter.id, default));
+        }
+    }
+
+    // Checked once per call, after every argument candidate has been resolved and
+    // defaults applied, before the per-argument assignability loop: every declared
+    // generic parameter's constraint is checked, including an unused `<T extends X>`.
+    let mut constraints = Vec::new();
+    for parameter in &function_type.type_params {
+        if let Some(constraint) = parameter.constraint
+            && !constraints.iter().any(|(id, _, _)| *id == parameter.id)
+        {
+            constraints.push((parameter.id, parameter.name.clone(), constraint));
+        }
+    }
+    for param in &function_type.params {
+        GenericSolver::collect_generic_param_constraints(
+            &ctx.arena,
+            param.type_id,
+            &mut constraints,
+        );
+    }
+    GenericSolver::collect_generic_param_constraints(
+        &ctx.arena,
+        function_type.return_type,
+        &mut constraints,
+    );
+
+    for (id, _, constraint) in &constraints {
+        if ambient_ids.contains(id) {
+            continue;
+        }
+        let Some(&(_, bound)) = bindings.iter().find(|(bound_id, _)| bound_id == id) else {
+            continue;
+        };
+
+        // A bound can be written in terms of the other parameters
+        // (`U extends T[]`, `T extends Comparable<T>`), so it has to see their
+        // inferred types before the comparison; checked raw, `number[]` would be
+        // compared against the generic `T[]` and rejected. Parameters with no
+        // binding are kept as they are, and a bound that still mentions one has
+        // nothing concrete to compare against, so it is left alone (the same
+        // "uninferred is not an error" stance as the skip above).
+        let constraint =
+            GenericSolver::substitute_bound_type_params(&mut ctx.arena, *constraint, &bindings);
+        if GenericSolver::contains_type_param(&ctx.arena, constraint) {
+            continue;
+        }
+        if !ctx.semantic().is_assignable(bound, constraint) {
+            // A type argument the caller wrote out is TS2344. One that was inferred is
+            // reported by tsc as the argument that does not fit the parameter's
+            // constraint (TS2345).
+            let written = own_ids
+                .iter()
+                .position(|own| own == id)
+                .is_some_and(|position| position < explicit_type_args.len());
+            let message = if written {
+                crate::diagnostic_messages::messages::type_argument_constraint_violation(
+                    &ctx.arena, bound, constraint,
+                )
+            } else {
+                crate::diagnostic_messages::messages::argument_not_assignable(
+                    &ctx.arena, bound, constraint,
+                )
+            };
+            ctx.error(message, span);
+        }
+    }
+
+    for (index, arg) in arguments.iter().enumerate() {
+        let Some(arg_expr) = arg.as_expression() else {
+            continue;
+        };
+        let Some(arg_type) = arg_types[index] else {
+            continue;
+        };
+        let Some(param_type) =
+            GenericSolver::expected_param_type(&ctx.arena, &function_type.params, index)
+        else {
+            continue;
+        };
+        let mut expected =
+            GenericSolver::substitute_type_params(&mut ctx.arena, param_type, &bindings);
+        // An argument under a tuple-typed rest parameter is checked against the tuple
+        // element at its place.
+        let rest_tuple = match tuple_rest_index {
+            Some(rest) if index >= rest => {
+                let substituted = GenericSolver::substitute_type_params(
+                    &mut ctx.arena,
+                    function_type.params[rest].type_id,
+                    &bindings,
+                );
+                match ctx.arena.get(substituted).clone() {
+                    Type::Tuple(elements) => Some((rest, elements)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some((rest, elements)) = rest_tuple {
+            let position = index - rest;
+            expected = match elements.get(position) {
+                Some(element) => element.type_id,
+                None => match elements.last() {
+                    Some(last) if last.rest => last.type_id,
+                    _ => continue,
+                },
+            };
+        }
+        if !ctx.is_assignable_instantiating(arg_type, expected) {
+            // tsc reports a bad property of an object literal argument on the property
+            // itself, as a plain assignability error; only an argument it cannot take
+            // apart gets the `Argument of type ...` message.
+            if !super::elaborate::elaborate_mismatch(arg_expr, arg_type, expected, ctx) {
+                let instantiated = ctx.instantiate_for_message(arg_type, expected);
+                ctx.error(
+                    crate::diagnostic_messages::messages::argument_not_assignable_via(
+                        &ctx.arena,
+                        arg_type,
+                        instantiated,
+                        expected,
+                    ),
+                    arg_expr.span(),
+                );
+            }
+        } else {
+            check_excess_properties(arg_expr, expected, ctx);
+        }
+    }
+
+    // A constructor's result is the class body, and its members may declare type parameters
+    // of their own (`map<U>(f: (t: T) => U): Box<U>`). Those are inferred at the member's
+    // call, so they must stay: only the class's own parameters that nothing informed fall
+    // back to unknown.
+    let result = if is_new {
+        let mut class_bindings = bindings.clone();
+        for &id in &own_ids {
+            if !class_bindings.iter().any(|(bound, _)| *bound == id) {
+                let unknown = ctx.arena.unknown();
+                class_bindings.push((id, unknown));
+            }
+        }
+        GenericSolver::substitute_bound_type_params(
+            &mut ctx.arena,
+            function_type.return_type,
+            &class_bindings,
+        )
+    } else {
+        GenericSolver::substitute_type_params(&mut ctx.arena, function_type.return_type, &bindings)
+    };
+    // A constructor's result is the class body with its parameters substituted. Keep it as
+    // an application of the class, as an annotation `Vec2<number>` is, so it prints that
+    // way and is related to one through the class's variance instead of body by body.
+    if is_new && let Some(parameters) = ctx.arena.decl_params(function_type.return_type) {
+        let arguments: Option<Vec<TypeId>> = parameters
+            .iter()
+            .map(|parameter| {
+                bindings
+                    .iter()
+                    .find(|(id, _)| id == parameter)
+                    .map(|&(_, bound)| bound)
+            })
+            .collect();
+        if let Some(arguments) = arguments
+            && let Some(application) =
+                ctx.arena
+                    .application_of_declaration(function_type.return_type, arguments, result)
+        {
+            return application;
+        }
+    }
+    result
+}
+
+fn is_array_literal(expr: &Expression) -> bool {
+    match expr {
+        Expression::ArrayExpression(_) => true,
+        Expression::ParenthesizedExpression(inner) => is_array_literal(&inner.expression),
+        _ => false,
+    }
+}
+
+fn arity_message(
+    required: usize,
+    max: Option<usize>,
+    got: usize,
+) -> crate::diagnostic_messages::DiagnosticMessage {
+    use crate::diagnostic_messages::messages;
+    match max {
+        Some(max) if max == required => messages::argument_arity_exact(required, got),
+        Some(max) => messages::argument_arity_range(required, max, got),
+        None => messages::argument_arity_at_least(required, got),
+    }
+}
+
+mod overloads;
+mod promise;
+use self::overloads::*;
+use self::promise::*;
+
+mod forms;

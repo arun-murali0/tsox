@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use super::resolver::ModuleResolver;
@@ -96,20 +95,20 @@ impl Json {
 /// no such value, is not a module package.
 // The declaration file a type package is read from: its package.json `types` or `typings`, else
 // `index.d.ts`. None when `directory` is not a package or has neither.
-fn declaration_entry(directory: &Path) -> Option<PathBuf> {
-    if !directory.is_dir() {
+fn declaration_entry(host: &dyn tsox_base::host::Host, directory: &Path) -> Option<PathBuf> {
+    if !host.is_dir(directory) {
         return None;
     }
-    if let Ok(text) = fs::read_to_string(directory.join("package.json")) {
+    if let Ok(text) = host.read_to_string(&directory.join("package.json")) {
         if let Ok(json) = parse_jsonc(&text) {
             for field in ["types", "typings"] {
                 if let Some(relative) = json.get(field).and_then(Json::as_str) {
                     let path = normalize(&directory.join(relative));
-                    if path.is_file() {
+                    if host.is_file(&path) {
                         return Some(path);
                     }
                     let with_extension = normalize(&directory.join(format!("{relative}.d.ts")));
-                    if with_extension.is_file() {
+                    if host.is_file(&with_extension) {
                         return Some(with_extension);
                     }
                 }
@@ -117,7 +116,7 @@ fn declaration_entry(directory: &Path) -> Option<PathBuf> {
         }
     }
     let index = directory.join("index.d.ts");
-    index.is_file().then_some(index)
+    host.is_file(&index).then_some(index)
 }
 
 pub fn package_json_type_is_module(text: &str) -> bool {
@@ -385,9 +384,19 @@ pub struct ProjectConfig {
 impl ProjectConfig {
     /// Reads `config_file` and what it extends. The path should be absolute.
     pub fn load(config_file: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        Self::load_with_host(&crate::host::FsHost, config_file)
+    }
+
+    /// `load` through a `Host`: the config and every file it extends are read from it, so a
+    /// browser or a test can supply them from memory. (Resolution of the files `include` matches still
+    /// reads the real disk until module resolution itself is moved onto the host.)
+    pub fn load_with_host(
+        host: &dyn tsox_base::host::Host,
+        config_file: impl AsRef<Path>,
+    ) -> Result<Self, ConfigError> {
         let config_file = normalize(config_file.as_ref());
         let mut chain = Vec::new();
-        let layers = read_layers(&config_file, &mut chain)?;
+        let layers = read_layers(host, &config_file, &mut chain)?;
         let mut merged = Self {
             config_file: config_file.clone(),
             sources: Vec::new(),
@@ -549,12 +558,17 @@ impl ProjectConfig {
 
     /// The files the project selects, sorted, as absolute paths.
     pub fn entry_files(&self) -> Vec<PathBuf> {
+        self.entry_files_with_host(&crate::host::FsHost)
+    }
+
+    /// `entry_files`, with the file system read through `host`.
+    pub fn entry_files_with_host(&self, host: &dyn tsox_base::host::Host) -> Vec<PathBuf> {
         let mut found: Vec<PathBuf> = Vec::new();
 
         if let Some(files) = &self.files {
             for item in &files.items {
                 let path = normalize(&files.base.join(item));
-                if path.is_file() {
+                if host.is_file(&path) {
                     found.push(path);
                 }
             }
@@ -583,7 +597,7 @@ impl ProjectConfig {
             roots.dedup();
             let mut candidates = Vec::new();
             for root in roots {
-                walk(&root, &excludes, &mut candidates, &mut Vec::new());
+                walk(host, &root, &excludes, &mut candidates, &mut Vec::new());
             }
             for path in candidates {
                 if patterns.iter().any(|p| p.matches_file(&path)) {
@@ -630,7 +644,7 @@ impl ProjectConfig {
                     let in_roots = roots
                         .iter()
                         .map(|root| root.join(&name))
-                        .find_map(|directory| declaration_entry(&directory));
+                        .find_map(|directory| declaration_entry(resolver.host(), &directory));
                     match in_roots {
                         Some(path) => found.push(path),
                         None => {
@@ -759,16 +773,22 @@ struct Layer {
 
 // The layers of a config, base-most first, the file itself last. `chain` holds the files
 // being read now, so a file that extends itself is an error and not a loop.
-fn read_layers(path: &Path, chain: &mut Vec<PathBuf>) -> Result<Vec<Layer>, ConfigError> {
+fn read_layers(
+    host: &dyn tsox_base::host::Host,
+    path: &Path,
+    chain: &mut Vec<PathBuf>,
+) -> Result<Vec<Layer>, ConfigError> {
     if chain.iter().any(|seen| seen == path) {
         return Err(ConfigError::ExtendsCycle {
             path: path.to_path_buf(),
         });
     }
-    let text = fs::read_to_string(path).map_err(|error| ConfigError::Read {
-        path: path.to_path_buf(),
-        reason: error.to_string(),
-    })?;
+    let text = host
+        .read_to_string(path)
+        .map_err(|error| ConfigError::Read {
+            path: path.to_path_buf(),
+            reason: error.to_string(),
+        })?;
     let json = parse_jsonc(&text).map_err(|reason| ConfigError::Parse {
         path: path.to_path_buf(),
         reason,
@@ -788,11 +808,12 @@ fn read_layers(path: &Path, chain: &mut Vec<PathBuf>) -> Result<Vec<Layer>, Conf
         _ => Vec::new(),
     };
     for specifier in specifiers {
-        let found = find_extends(path, &specifier).ok_or_else(|| ConfigError::ExtendsNotFound {
-            from: path.to_path_buf(),
-            specifier: specifier.clone(),
-        })?;
-        layers.extend(read_layers(&found, chain)?);
+        let found =
+            find_extends(host, path, &specifier).ok_or_else(|| ConfigError::ExtendsNotFound {
+                from: path.to_path_buf(),
+                specifier: specifier.clone(),
+            })?;
+        layers.extend(read_layers(host, &found, chain)?);
     }
     chain.pop();
 
@@ -805,33 +826,33 @@ fn read_layers(path: &Path, chain: &mut Vec<PathBuf>) -> Result<Vec<Layer>, Conf
 
 // `./base`, `../base.json` and absolute paths are files; a bare name is a package found
 // in the nearest `node_modules` above the config.
-fn find_extends(from: &Path, specifier: &str) -> Option<PathBuf> {
+fn find_extends(host: &dyn tsox_base::host::Host, from: &Path, specifier: &str) -> Option<PathBuf> {
     let directory = from.parent()?;
     let spec_path = Path::new(specifier);
     if specifier.starts_with("./") || specifier.starts_with("../") || spec_path.is_absolute() {
-        return json_file(&normalize(&directory.join(specifier)));
+        return json_file(host, &normalize(&directory.join(specifier)));
     }
     for ancestor in directory.ancestors() {
         let package = ancestor.join("node_modules").join(specifier);
-        if let Some(found) = json_file(&package) {
+        if let Some(found) = json_file(host, &package) {
             return Some(normalize(&found));
         }
         let inside = package.join("tsconfig.json");
-        if inside.is_file() {
+        if host.is_file(&inside) {
             return Some(normalize(&inside));
         }
     }
     None
 }
 
-fn json_file(path: &Path) -> Option<PathBuf> {
-    if path.is_file() {
+fn json_file(host: &dyn tsox_base::host::Host, path: &Path) -> Option<PathBuf> {
+    if host.is_file(path) {
         return Some(path.to_path_buf());
     }
     let mut with_extension = path.as_os_str().to_owned();
     with_extension.push(".json");
     let with_extension = PathBuf::from(with_extension);
-    with_extension.is_file().then_some(with_extension)
+    host.is_file(&with_extension).then_some(with_extension)
 }
 
 // Removes `.` and resolves `..` without touching the disk, so two spellings of one path
@@ -1045,24 +1066,28 @@ fn glob_segment(pattern: &str, name: &str) -> bool {
 // way down is skipped instead. A directory reached twice by different routes is still
 // listed twice, which is what tsc does too, and `found.dedup()` in `entry_files` merges
 // the files that come out the same.
-fn walk(root: &Path, excludes: &[Pattern], out: &mut Vec<PathBuf>, above: &mut Vec<PathBuf>) {
-    let real = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+fn walk(
+    host: &dyn tsox_base::host::Host,
+    root: &Path,
+    excludes: &[Pattern],
+    out: &mut Vec<PathBuf>,
+    above: &mut Vec<PathBuf>,
+) {
+    let real = host.real_path(root);
     if above.contains(&real) {
         return;
     }
-    let Ok(entries) = fs::read_dir(root) else {
+    let Ok(mut paths) = host.read_dir(root) else {
         return;
     };
     above.push(real);
-    let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
     paths.sort();
     for path in paths {
         if excludes.iter().any(|pattern| pattern.covers(&path)) {
             continue;
         }
-        let is_dir = fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false);
-        if is_dir {
-            walk(&path, excludes, out, above);
+        if host.is_dir(&path) {
+            walk(host, &path, excludes, out, above);
         } else if path
             .file_name()
             .and_then(|n| n.to_str())
@@ -1121,6 +1146,7 @@ fn keep_highest_extension(files: Vec<PathBuf>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn jsonc_reads_comments_trailing_commas_and_a_byte_order_mark() {
@@ -1297,5 +1323,44 @@ mod tests {
                 .project_entries_with_standard_libraries(&resolver)
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    #[test]
+    fn the_selected_files_are_found_in_memory() {
+        use tsox_base::host::MemoryHost;
+        let host = MemoryHost::default();
+        host.set(
+            "/p/tsconfig.json",
+            r#"{ "include": ["src"], "exclude": ["src/skip"] }"#,
+        );
+        host.set("/p/src/a.ts", "");
+        host.set("/p/src/skip/b.ts", "");
+        host.set("/p/other/c.ts", "");
+        let config =
+            super::ProjectConfig::load_with_host(&host, std::path::Path::new("/p/tsconfig.json"))
+                .unwrap();
+        let files = config.entry_files_with_host(&host);
+        assert_eq!(files, [std::path::PathBuf::from("/p/src/a.ts")]);
+    }
+
+    use super::*;
+    use tsox_base::host::MemoryHost;
+
+    #[test]
+    fn a_config_and_its_extends_load_from_memory() {
+        let host = MemoryHost::default();
+        host.set(
+            "/p/base.json",
+            r#"{ "compilerOptions": { "strict": true } }"#,
+        );
+        host.set(
+            "/p/tsconfig.json",
+            r#"{ "extends": "./base.json", "include": ["src"] }"#,
+        );
+        let config = ProjectConfig::load_with_host(&host, "/p/tsconfig.json").unwrap();
+        assert_eq!(config.sources.len(), 2);
     }
 }

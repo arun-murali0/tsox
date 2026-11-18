@@ -17,7 +17,8 @@ fi
 # The crates only depend downwards (base < types < checker < project < db < tsox). Reads
 # `cargo metadata`, so it needs no build.
 echo "==> layering"
-python3 scripts/check-layering.py
+cargo xtask layering
+cargo xtask owners --check
 
 # The module-resolution feature is on by default, so every other step builds with it. A
 # public item exported without its gate only fails to build here.

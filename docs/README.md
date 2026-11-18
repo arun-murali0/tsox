@@ -1,6 +1,14 @@
 # tsox Documentation
 
-This directory is the maintained technical guide for tsox.
+This directory is the maintained technical guide for tsox, and the source of the documentation site
+(https://arun-murali0.github.io/tsox/).
+
+- Using tsox: [install](guide/install.md), [command line](guide/cli.md), [editors](guide/editors.md),
+  [npm](guide/npm.md), [try a build](guide/try-it.md).
+- Working on tsox: [contributing](contributing.md), [the corpus map](corpus.md),
+  [project structure](project-structure.md), [compatibility harness](compatibility-harness.md),
+  [maintaining the repository](maintainers.md).
+- How it works: the milestone documents below and [architecture](architecture.md).
 
 The repository uses **semantic milestone names** instead of opaque numeric development labels. A contributor should be able to understand what a test suite or document covers from its name alone.
 
@@ -80,6 +88,10 @@ A handful of smaller, cross-cutting suites support these milestones rather than 
 The **project engine** has its own overview and one case study for each part:
 
 - [project-engine](architecture/project-engine.md): what the engine is for, the order it was built in, the exit gate and what it taught.
+- [diagnostic-owners](architecture/diagnostic-owners.md): generated map of every diagnostic code to its message function and the code that raises it, with the unchecked (9000s) backlog.
+- [registries](architecture/registries.md): the rule tables (`PASSES`, `NARROWERS`, `EQUALITY_RULES`, `CALL_FORMS`) and how to add a rule.
+- [remaining-work-gap-register](architecture/remaining-work-gap-register.md): generics solver, options, language areas, build mode, declaration emit, robustness, open-source readiness, with a master checklist.
+- [new-architecture-progress](architecture/new-architecture-progress.md): what has moved to the modular layout and what is next.
 - [safety-net-and-limits](architecture/safety-net-and-limits.md): no abort on hostile input, deterministic output, and limits that report instead of guessing.
 - [partial-results](architecture/partial-results.md): what a checker does when a file's exports are known only in part.
 - [cycles-and-settlement](architecture/cycles-and-settlement.md): which edges order the work, and a cycle as one unit.

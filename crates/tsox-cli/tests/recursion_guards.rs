@@ -139,7 +139,7 @@ fn very_long_operator_chain_does_not_overflow_a_worker_stack() {
 // walk pushed `then`'s own binder S onto a list on every lap, so a "seen this type under
 // these binders" key never repeated (found with gdb: two type ids alternating, the binder
 // list growing by one per lap). TypeScript's promiseChaining test hung on it. See
-// free_generic_params in semantic/generics.rs.
+// free_generic_params in semantic/generics/instantiate.rs.
 #[test]
 fn self_referential_generic_signature_terminates() {
     let source = "\
@@ -190,7 +190,7 @@ fn nested_generic_function_binds_its_own_parameter_only() {
 // namespaces) never finished. Inference over the same types had the same shape: it
 // forgot a pair as soon as its match finished, so each route to it matched it again.
 // Here 24 plain classes each point at the next 5, and one call uses the first. See
-// free_generic_params and SeenPairs in semantic/generics.rs; both have to be fixed
+// free_generic_params and SeenPairs in semantic/generics/{instantiate,infer}.rs; both have to be fixed
 // for this to finish. The check runs on its own thread so a regression fails this
 // test after a timeout instead of freezing the whole suite.
 #[test]

@@ -28,15 +28,15 @@ pub fn analyze_flow(program: &Program<'_>, scoping: &Scoping, ctx: &mut CheckCon
     if is_declaration_file(ctx.file_name) {
         return;
     }
-    let forced_module =
-        ctx.options.module_detection_force && !program.source_type.is_typescript_definition();
+    let forced_module = ctx.option(crate::check_options::OptionField::ModuleDetectionForce)
+        && !program.source_type.is_typescript_definition();
     ctx.flow = crate::reachability::analyze_as(program, scoping, forced_module);
 }
 
 pub fn check_unreachable_code(ctx: &mut CheckContext<'_, '_>) {
-    let unreachable = !ctx.options.allow_unreachable_code;
-    let fallthrough = ctx.options.no_fallthrough_cases_in_switch;
-    let unassigned = ctx.options.strict_null_checks;
+    let unreachable = !ctx.option(crate::check_options::OptionField::AllowUnreachableCode);
+    let fallthrough = ctx.option(crate::check_options::OptionField::NoFallthroughCasesInSwitch);
+    let unassigned = ctx.option(crate::check_options::OptionField::StrictNullChecks);
     report_function_returns(ctx);
     if unreachable {
         for span in std::mem::take(&mut ctx.flow.reports) {
@@ -101,8 +101,8 @@ pub fn check_unreachable_code(ctx: &mut CheckContext<'_, '_>) {
 // `Promise<T>` is modelled well enough to read the `T` back. A function whose annotation the
 // checker could not resolve is left alone rather than guessed at.
 fn report_function_returns(ctx: &mut CheckContext<'_, '_>) {
-    let implicit_returns = ctx.options.no_implicit_returns;
-    let strict = ctx.options.strict_null_checks;
+    let implicit_returns = ctx.option(crate::check_options::OptionField::NoImplicitReturns);
+    let strict = ctx.option(crate::check_options::OptionField::StrictNullChecks);
     for fact in std::mem::take(&mut ctx.flow.functions) {
         // What a generator's annotation means (the type its `return` produces) is not modelled.
         if fact.is_generator && fact.has_annotation {

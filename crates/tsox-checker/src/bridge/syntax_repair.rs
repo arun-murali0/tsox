@@ -220,58 +220,164 @@ fn is_name_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte == b'.'
 }
 
-fn rule_for(text: &str, start: usize, end: usize, message: &str) -> Option<Rule> {
+// One way to repair a syntax error so the rest of the file can still be checked. A repair names
+// the parser message it answers (`applies`) and what it does (`run`). The first repair that
+// applies decides, even when its `run` answers `None`: a later row never sees a message an
+// earlier row claimed, which is how the match this table replaced behaved.
+struct Repair {
+    #[cfg_attr(not(test), allow(dead_code))]
+    name: &'static str,
+    #[cfg_attr(not(test), allow(dead_code))]
+    doc: &'static str,
+    applies: fn(text: &str, start: usize, end: usize, message: &str) -> bool,
+    run: fn(text: &str, start: usize, end: usize) -> Option<Rule>,
+}
+
+const REPAIRS: &[Repair] = &[
     // A class member modifier where a statement belongs is TS1128, which no semicolon is supplied
     // for, so this is tried before any rule for the same message.
-    if message.starts_with("Expected a semicolon or an implicit semicolon") {
-        if let Some(rule) = member_modifier_statement(text, start) {
-            return Some(rule);
+    Repair {
+        name: "member_modifier_statement",
+        doc: "A class member modifier where a statement belongs.",
+        applies: |_, _, _, m| m.starts_with("Expected a semicolon or an implicit semicolon"),
+        run: |t, s, _| member_modifier_statement(t, s),
+    },
+    Repair {
+        name: "element_without_argument",
+        doc: "`a[]` and `new A[]`.",
+        applies: |t, s, e, m| m == "Unexpected token" && t.get(s..e) == Some("]"),
+        run: element_without_argument,
+    },
+    Repair {
+        name: "index_signature_without_type",
+        doc: "An index signature with no type annotation.",
+        applies: |_, _, _, m| m == "An index signature must have a type annotation.",
+        run: index_signature_without_type,
+    },
+    Repair {
+        name: "optional_object_member",
+        doc: "`{ a?: 1 }`: an object member declared optional.",
+        applies: |t, s, e, m| m == "Expected `,` or `}` but found `?`" && t.get(s..e) == Some("?"),
+        run: |_, s, e| {
+            member_marker(
+                s,
+                e,
+                Code::ObjectMemberOptional,
+                "An object member cannot be declared optional.",
+            )
+        },
+    },
+    Repair {
+        name: "definite_assignment_in_object",
+        doc: "`{ a!: 1 }`: a definite assignment assertion where it is not permitted.",
+        applies: |t, s, e, m| m == "Expected `,` or `}` but found `!`" && t.get(s..e) == Some("!"),
+        run: |_, s, e| {
+            member_marker(
+                s,
+                e,
+                Code::DefiniteAssignmentNotPermitted,
+                "A definite assignment assertion '!' is not permitted in this context.",
+            )
+        },
+    },
+    Repair {
+        name: "enum_member_separator",
+        doc: "`:` or `;` between enum members.",
+        applies: |t, s, e, m| {
+            matches!(
+                m,
+                "Expected `,` or `}` but found `:`" | "Expected `,` or `}` but found `;`"
+            ) && matches!(t.get(s..e), Some(":" | ";"))
+                && super::syntax_errors::inside_enum(t, s)
+        },
+        run: |_, s, e| enum_member_separator(s, e),
+    },
+    Repair {
+        name: "return_outside_function",
+        doc: "`return` at the top level.",
+        applies: |_, _, _, m| m == "A 'return' statement can only be used within a function body.",
+        run: |t, s, _| return_outside_function(t, s),
+    },
+    Repair {
+        name: "catch_initializer",
+        doc: "`catch (e = 1)`.",
+        applies: |_, _, _, m| m == "Expected `)` but found `=`",
+        run: |t, s, _| catch_initializer(t, s),
+    },
+    Repair {
+        name: "rest_parameter_initializer",
+        doc: "`(...a = [])`.",
+        applies: |_, _, _, m| m == "Expected `,` or `)` but found `=`",
+        run: |t, s, _| rest_parameter_initializer(t, s),
+    },
+    Repair {
+        name: "index_signature_initializer",
+        doc: "`[key: string] = 1`.",
+        applies: |_, _, _, m| m == "Expected `,` or `]` but found `=`",
+        run: |t, s, _| index_signature_initializer(t, s),
+    },
+    // A missing operand comes before a stray brace: `export = }` is TS1109 for the `}`, not a
+    // brace left over after a statement.
+    Repair {
+        name: "unexpected_token",
+        doc: "A missing operand, then a stray closing brace.",
+        applies: |_, _, _, m| m == "Unexpected token",
+        run: |t, s, e| {
+            empty_declaration_list(t, s)
+                .or_else(|| expression_expected(t, s))
+                .or_else(|| stray_closing_brace(t, s, e))
+        },
+    },
+    Repair {
+        name: "rest_element_not_last",
+        doc: "A rest element before other elements of a destructuring pattern.",
+        applies: |_, _, _, m| m == "A rest element must be last in a destructuring pattern",
+        run: |t, s, _| rest_element_not_last(t, s),
+    },
+    Repair {
+        name: "rest_parameter_not_last",
+        doc: "A rest parameter before other parameters.",
+        applies: |_, _, _, m| m == "A rest parameter must be last in a parameter list",
+        run: |t, s, _| rest_parameter_not_last(t, s),
+    },
+    Repair {
+        name: "assignment_target",
+        doc: "An assignment to something that cannot be assigned to.",
+        applies: |_, _, _, m| m == "Cannot assign to this expression",
+        run: assignment_target,
+    },
+    Repair {
+        name: "enum_numeric_name",
+        doc: "An enum member named by a number.",
+        applies: |_, _, _, m| m == "An enum member cannot have a numeric name.",
+        run: enum_numeric_name,
+    },
+    Repair {
+        name: "enum_computed_name",
+        doc: "An enum member named by a computed expression.",
+        applies: |_, _, _, m| m == "Computed property names are not allowed in enums.",
+        run: enum_computed_name,
+    },
+];
+
+fn rule_for(text: &str, start: usize, end: usize, message: &str) -> Option<Rule> {
+    let repair = REPAIRS
+        .iter()
+        .find(|repair| (repair.applies)(text, start, end, message))?;
+    (repair.run)(text, start, end)
+}
+
+#[cfg(test)]
+mod repair_table_tests {
+    use super::*;
+
+    #[test]
+    fn repairs_have_unique_names_and_docs() {
+        let mut seen = std::collections::HashSet::new();
+        for repair in REPAIRS {
+            assert!(seen.insert(repair.name), "duplicate repair {}", repair.name);
+            assert!(!repair.doc.is_empty());
         }
-    }
-    match message {
-        "Unexpected token" if text.get(start..end) == Some("]") => {
-            element_without_argument(text, start, end)
-        }
-        "An index signature must have a type annotation." => {
-            index_signature_without_type(text, start, end)
-        }
-        "Expected `,` or `}` but found `?`" if text.get(start..end) == Some("?") => member_marker(
-            start,
-            end,
-            Code::ObjectMemberOptional,
-            "An object member cannot be declared optional.",
-        ),
-        "Expected `,` or `}` but found `!`" if text.get(start..end) == Some("!") => member_marker(
-            start,
-            end,
-            Code::DefiniteAssignmentNotPermitted,
-            "A definite assignment assertion '!' is not permitted in this context.",
-        ),
-        "Expected `,` or `}` but found `:`" | "Expected `,` or `}` but found `;`"
-            if matches!(text.get(start..end), Some(":" | ";"))
-                && super::syntax_errors::inside_enum(text, start) =>
-        {
-            enum_member_separator(start, end)
-        }
-        "A 'return' statement can only be used within a function body." => {
-            return_outside_function(text, start)
-        }
-        "Expected `)` but found `=`" => catch_initializer(text, start),
-        "Expected `,` or `)` but found `=`" => rest_parameter_initializer(text, start),
-        "Expected `,` or `]` but found `=`" => index_signature_initializer(text, start),
-        // A missing operand comes before a stray brace: `export = }` is TS1109 for the `}`, not a
-        // brace left over after a statement.
-        "Unexpected token" => empty_declaration_list(text, start)
-            .or_else(|| expression_expected(text, start))
-            .or_else(|| stray_closing_brace(text, start, end)),
-        "A rest element must be last in a destructuring pattern" => {
-            rest_element_not_last(text, start)
-        }
-        "A rest parameter must be last in a parameter list" => rest_parameter_not_last(text, start),
-        "Cannot assign to this expression" => assignment_target(text, start, end),
-        "An enum member cannot have a numeric name." => enum_numeric_name(text, start, end),
-        "Computed property names are not allowed in enums." => enum_computed_name(text, start, end),
-        _ => None,
     }
 }
 

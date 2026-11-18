@@ -195,7 +195,7 @@ fn check_extends<'ast>(
     ) else {
         return;
     };
-    if ctx.options.no_implicit_override {
+    if ctx.option(crate::check_options::OptionField::NoImplicitOverride) {
         report_missing_overrides(class, &base_name.name, base, ctx);
     }
     if crate::subtyping::is_subtype(&ctx.arena, instance, base) {

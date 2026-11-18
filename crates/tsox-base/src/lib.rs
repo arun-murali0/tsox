@@ -18,6 +18,7 @@ mod dom_only_globals;
 pub mod error;
 pub mod file_id;
 pub mod fxhash;
+pub mod host;
 pub mod keys;
 pub mod lib_global_types;
 pub mod line_index;

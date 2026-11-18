@@ -21,17 +21,56 @@ use std::sync::Mutex;
 /// size, so a file discovery could parse is a file a worker can parse.
 pub const BIG_STACK_BYTES: usize = 64 * 1024 * 1024;
 
+/// Every numeric limit a walk of the checker may reach, in one place. A walk that reaches one
+/// stops and records its `CutReason`, so a cut is never silent. The stack limit is not a
+/// number here: it comes from the thread (`set_thread_stack`). Changing a limit is a change
+/// to this table, and `Budget::limit_of` is how a test or `--stats` asks what a reason's
+/// limit is.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Budget {
+    /// Levels one substitution walk may nest (`CutReason::InstantiationDepth`).
+    pub instantiation_depth: usize,
+    /// Substitution steps one statement may take, as tsc's `instantiationCount`
+    /// (`CutReason::InstantiationCount`, TS2589).
+    pub instantiations: u64,
+    /// Times one recursive generic application may instantiate itself
+    /// (`CutReason::RecursiveApplication`).
+    pub recursive_applications: usize,
+    /// Nesting of `(`, `[` and `{` a file may have before it is refused unparsed.
+    pub bracket_depth: usize,
+}
+
+pub const BUDGET: Budget = Budget {
+    instantiation_depth: 100,
+    instantiations: 5_000_000,
+    recursive_applications: 100,
+    bracket_depth: 4_000,
+};
+
+impl Budget {
+    /// The number behind a cut reason, or `None` for one the thread's stack decides.
+    pub fn limit_of(&self, reason: CutReason) -> Option<u64> {
+        match reason {
+            CutReason::InstantiationDepth => Some(self.instantiation_depth as u64),
+            CutReason::InstantiationCount => Some(self.instantiations),
+            CutReason::RecursiveApplication => Some(self.recursive_applications as u64),
+            CutReason::StackExhausted | CutReason::AliasBodyNesting => None,
+        }
+    }
+}
+
 /// How deeply a file may nest `(`, `[` and `{` before it is refused without being parsed.
 ///
 /// The stack guard cannot reach the parser's recursion, and in a debug build on a 64 MB
 /// stack the worst construct measured, nested objects, aborts at about 20,000 levels. This
 /// leaves a factor of five. Real code nests a few dozen levels, so the refusal is for a
 /// file built to be deep, and it is made before the parse so that nothing can abort first.
-pub const MAX_BRACKET_DEPTH: usize = 4_000;
+pub const MAX_BRACKET_DEPTH: usize = BUDGET.bracket_depth;
 
 thread_local! {
-    // Set when a walk that has nowhere to report stopped at a limit (see `note_cut`).
-    static CUT: Cell<bool> = const { Cell::new(false) };
+    // How many times a walk that has nowhere to report stopped at a limit, by reason (see
+    // `note_cut`). Indexed by `CutReason as usize`.
+    static CUTS: Cell<[u32; CutReason::COUNT]> = const { Cell::new([0; CutReason::COUNT]) };
     // Substitution steps taken since the last `reset_instantiations`.
     static INSTANTIATIONS: Cell<u64> = const { Cell::new(0) };
     // The lowest address this thread may reach before `exhausted()` says so. Zero means
@@ -61,15 +100,67 @@ pub fn set_thread_stack(total_bytes: usize) {
     FLOOR.with(|floor| floor.set(stack_position().saturating_sub(usable)));
 }
 
+/// Why a walk stopped at a limit. Every limit names itself, so a cut is never silent and a test
+/// or a `--stats` line can say which budget ran out.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CutReason {
+    /// The thread's stack budget was used up (`exhausted`).
+    StackExhausted,
+    /// A substitution walk went past `MAX_INSTANTIATION_DEPTH` levels.
+    InstantiationDepth,
+    /// A unit took more than `MAX_INSTANTIATIONS` substitution steps.
+    InstantiationCount,
+    /// A recursive generic application instantiated itself too many times over.
+    RecursiveApplication,
+    /// A type alias body nested too deep for the reference scan.
+    AliasBodyNesting,
+}
+
+impl CutReason {
+    pub const COUNT: usize = 5;
+    pub const ALL: [CutReason; Self::COUNT] = [
+        CutReason::StackExhausted,
+        CutReason::InstantiationDepth,
+        CutReason::InstantiationCount,
+        CutReason::RecursiveApplication,
+        CutReason::AliasBodyNesting,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CutReason::StackExhausted => "stack exhausted",
+            CutReason::InstantiationDepth => "instantiation depth",
+            CutReason::InstantiationCount => "instantiation count",
+            CutReason::RecursiveApplication => "recursive application",
+            CutReason::AliasBodyNesting => "alias body nesting",
+        }
+    }
+}
+
 /// Records that a walk without a context to report to (type substitution) stopped at a limit and
 /// returned the error type. The unit reads it once with `take_cut` and says so with TSR9102.
-pub fn note_cut() {
-    CUT.with(|cut| cut.set(true));
+pub fn note_cut(reason: CutReason) {
+    CUTS.with(|cuts| {
+        let mut counts = cuts.get();
+        counts[reason as usize] = counts[reason as usize].saturating_add(1);
+        cuts.set(counts);
+    });
 }
 
 /// Whether a walk was cut since the last call, and clears the record.
 pub fn take_cut() -> bool {
-    CUT.with(|cut| cut.replace(false))
+    !take_cut_reasons().is_empty()
+}
+
+/// The reasons walks were cut since the last call, with how many times each, and clears the
+/// record. Empty when nothing was cut.
+pub fn take_cut_reasons() -> Vec<(CutReason, u32)> {
+    let counts = CUTS.with(|cuts| cuts.replace([0; CutReason::COUNT]));
+    CutReason::ALL
+        .into_iter()
+        .filter(|reason| counts[*reason as usize] > 0)
+        .map(|reason| (reason, counts[reason as usize]))
+        .collect()
 }
 
 /// True when the calling thread has used its budget and must not recurse further.
@@ -137,6 +228,22 @@ mod tests {
     }
 
     #[test]
+    fn a_cut_names_its_reason_and_take_clears_it() {
+        let _ = take_cut_reasons();
+        note_cut(CutReason::InstantiationDepth);
+        note_cut(CutReason::InstantiationDepth);
+        note_cut(CutReason::StackExhausted);
+        assert_eq!(
+            take_cut_reasons(),
+            vec![
+                (CutReason::StackExhausted, 1),
+                (CutReason::InstantiationDepth, 2)
+            ]
+        );
+        assert!(!take_cut());
+    }
+
+    #[test]
     fn a_thread_without_a_budget_is_never_exhausted() {
         std::thread::spawn(|| assert!(!exhausted())).join().unwrap();
     }
@@ -189,7 +296,7 @@ mod tests {
 
 /// TypeScript stops a statement or expression that has instantiated this many types
 /// (`instantiationCount` in checker.go) and reports TS2589.
-pub const MAX_INSTANTIATIONS: u64 = 5_000_000;
+pub const MAX_INSTANTIATIONS: u64 = BUDGET.instantiations;
 
 /// Starts a new budget, at the top of each statement the checker visits.
 pub fn reset_instantiations() {
@@ -224,5 +331,20 @@ mod instantiation_budget_tests {
         reset_instantiations();
         assert_eq!(instantiations_taken(), 0);
         assert!(count_instantiation());
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn every_reason_that_has_a_number_has_a_positive_one() {
+        for reason in CutReason::ALL {
+            if let Some(limit) = BUDGET.limit_of(reason) {
+                assert!(limit > 0, "{}", reason.name());
+            }
+        }
+        assert_eq!(BUDGET.limit_of(CutReason::StackExhausted), None);
     }
 }

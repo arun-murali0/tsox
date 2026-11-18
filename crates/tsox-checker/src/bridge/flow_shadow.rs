@@ -1,6 +1,6 @@
 // The backward flow resolver (F2).
 //
-// The overlay in `narrow.rs` threads a "what is known about each variable" state forward through
+// The overlay in `narrow/` threads a "what is known about each variable" state forward through
 // the statements. The flow table (`crate::flow`) is the same program as a graph, and the question
 // "what is the type of this read" is answered on it by walking antecedents backwards from the
 // read: an assignment gives the assigned type, a condition narrows the type before it, a join
@@ -164,6 +164,19 @@ pub struct ShadowStats {
     pub disagreed: u32,
     pub unknown: u32,
     pub unreachable: u32,
+    /// Reads the walk handed back to the overlay, by reason (active mode).
+    pub fallback: FallbackCounts,
+}
+
+/// Why the walk left a read to the overlay. One counter per reason in `resolve_now`.
+#[derive(Default, Debug, Clone)]
+pub struct FallbackCounts {
+    pub destructured: u32,
+    pub assertion_function: u32,
+    pub unsupported_structure: u32,
+    pub dead_code: u32,
+    pub not_narrowable: u32,
+    pub walk_inconclusive: u32,
 }
 
 type Key = (usize, FlowId, u32);
@@ -379,10 +392,16 @@ impl<'ast> FlowShadow<'ast> {
                 .values()
                 .any(|predicate| predicate.asserts)
         {
+            if ctx.destructured_index.contains_key(&symbol) {
+                self.stats.fallback.destructured += 1;
+            } else {
+                self.stats.fallback.assertion_function += 1;
+            }
             return None;
         }
         // A body with a kind of structure the walk is not switched on for stays with the overlay.
         if self.body_uses[body] & !self.features != 0 {
+            self.stats.fallback.unsupported_structure += 1;
             return None;
         }
         // A read in code that cannot run: tsc gives it the declared type, which the overlay does.
@@ -391,10 +410,12 @@ impl<'ast> FlowShadow<'ast> {
             .get(&node_index)
             .is_some_and(|start| ctx.flow.is_dead(*start))
         {
+            self.stats.fallback.dead_code += 1;
             return None;
         }
         let declared = ctx.symbols.get(symbol)?;
         if !matches!(ctx.arena.get(declared), Type::Union(_) | Type::Unknown) {
+            self.stats.fallback.not_narrowable += 1;
             return None;
         }
         self.scratch.clear();
@@ -403,7 +424,10 @@ impl<'ast> FlowShadow<'ast> {
         ctx.diagnostics.truncate(diagnostics_before);
         match found {
             Found::Ty(ty) => Some(ty),
-            _ => None,
+            _ => {
+                self.stats.fallback.walk_inconclusive += 1;
+                None
+            }
         }
     }
 
@@ -492,6 +516,9 @@ impl<'ast> FlowShadow<'ast> {
                 "flow shadow: {} agreed, {} disagreed, {} unknown, {} unreachable",
                 self.stats.agreed, self.stats.disagreed, self.stats.unknown, self.stats.unreachable
             );
+        }
+        if self.mode == Mode::All {
+            eprintln!("flow shadow fallbacks: {:?}", self.stats.fallback);
         }
         self.observations.sort_by_key(|o| o.span.start);
         for observation in &self.observations {
