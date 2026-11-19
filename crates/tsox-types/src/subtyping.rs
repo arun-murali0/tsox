@@ -862,6 +862,21 @@ fn property_is_subtype(
     {
         return function_is_subtype_with(arena, sub_function, sup_function, true, seen, binders);
     }
+    // An optional target property is read as `T | undefined`: `{ text: undefined }` and
+    // `{ text: string | undefined }` fit `{ text?: string }`. (With exactOptionalPropertyTypes
+    // they would not; that option is not visible from here, and the default is the common one.)
+    if sup_property.optional {
+        match arena.get(sub_type) {
+            Type::Undefined => return true,
+            Type::Union(members) => {
+                return members.iter().all(|&member| {
+                    matches!(arena.get(member), Type::Undefined)
+                        || is_subtype_inner(arena, member, sup_property.type_id, seen, binders)
+                });
+            }
+            _ => {}
+        }
+    }
     is_subtype_inner(arena, sub_type, sup_property.type_id, seen, binders)
 }
 

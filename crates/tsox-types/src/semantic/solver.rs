@@ -504,6 +504,16 @@ impl GenericSolver {
         super::generics::contains_type_param(arena, type_id)
     }
 
+    /// Whether a type still mentions one of `ids`, a call's own parameters. After the call's
+    /// inferred types are substituted, one that is left had nothing to infer it from.
+    pub fn mentions_any_param(
+        arena: &TypeArena,
+        type_id: TypeId,
+        ids: &[crate::types::TypeParameterId],
+    ) -> bool {
+        super::generics::mentions_any_param(arena, type_id, ids)
+    }
+
     /// Substitute bound parameters, preserving any parameters without a binding.
     pub fn substitute_bound_type_params(
         arena: &mut TypeArena,

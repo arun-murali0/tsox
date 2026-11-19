@@ -86,6 +86,14 @@ pub(super) fn infer_conditional_expression_type(
 
     ctx.conditional_arms
         .insert(conditional.span.start, (consequent_type, alternate_type));
+    // `cond ? { a: 1 } : { b: "x" }`: two object literals are normalised against each other.
+    if super::objects::is_object_literal(&conditional.consequent)
+        && super::objects::is_object_literal(&conditional.alternate)
+    {
+        let normalised =
+            super::objects::normalize_object_literals(ctx, &[consequent_type, alternate_type]);
+        return ctx.arena.alloc_union(normalised);
+    }
     ctx.arena.alloc_union(vec![consequent_type, alternate_type])
 }
 

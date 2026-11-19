@@ -1005,6 +1005,13 @@ fn check_callable(
                 },
             };
         }
+        // A parameter type that still names one of this call's own type parameters had
+        // nothing to infer it from (a generic callback, a mapped or conditional type over
+        // it): comparing the argument with the bare parameter says nothing, so it is not an
+        // error. Same stance as for a constraint above.
+        if GenericSolver::mentions_any_param(&ctx.arena, expected, &own_ids) {
+            continue;
+        }
         if !ctx.is_assignable_instantiating(arg_type, expected) {
             // tsc reports a bad property of an object literal argument on the property
             // itself, as a plain assignability error; only an argument it cannot take
