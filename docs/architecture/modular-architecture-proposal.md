@@ -2,7 +2,7 @@
 
 > **Snapshot.** File names in this document (`narrow.rs`, `exports.rs`, `declare.rs`, `calls.rs`, `generics.rs`) are the ones before the splits; they are directories now. `new-architecture-progress.md` has the current layout and status.
 
-Revision of the Nov 15, 2026 draft by @Kkk · Nov 16, 2026
+Revision of the Nov 15, 2026 draft, Nov 16, 2026
 
 The first draft built the skeleton: layers, registries, a semantic model, a host boundary and an emit/IR order. This revision keeps all of it and adds what the draft left out: the type-checking engines (relations, generics, members, narrowing, diagnostics), a single flow architecture, the exact mechanics of per-body reuse, and a migration plan that fixes correctness and incrementality in parallel with the refactors instead of after them.
 

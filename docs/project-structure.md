@@ -13,6 +13,8 @@ crates/
 ├── tsox-types/            # the type system: arena, types, subtyping, namespace
 │   └── src/               # symbol_map, type_annotation, type_display, explain, portable,
 │                          # stable_walk, diagnostic_messages, semantic/ (generics, queries, solver)
+├── tsox-model/            # the semantic model tables (node type, node symbol, flow facts,
+│   └── src/               # constants, module info), arena-free and versioned
 ├── tsox-checker/          # the single-file checker
 │   └── src/               # unit.rs (a file as a unit of work: UnitContext, UnitOutput, Worker)
 │                          # bridge/ (parse, declare, imports, exports, narrow, expressions/,
@@ -21,13 +23,16 @@ crates/
 │   └── src/               # check, schedule, partial), scc.rs. `module-resolution` feature
 ├── tsox-db/               # Salsa query layer: incremental.rs, incremental/project.rs
 │   └── src/               # `incremental` feature
+├── tsox-ir/               # a typed mid-level IR skeleton; nothing lowers into it yet
 ├── tsox-cli/              # the `tsox` command line (binary `tsox`) and its integration tests
+├── tsox-lsp/              # the language server (`tsox-lsp`)
 ├── tsox-wasm/             # the browser front end (wasm-bindgen): `TsoxChecker`
-└── tsox-xtask/            # the `harness` and `compare-tsc` binaries
+├── tsox-emit/             # JavaScript emit over Oxc; reads the model for import elision
+└── tsox-xtask/            # the `harness` and `compare-tsc` binaries, and `cargo xtask`
 
 src/
 └── lib.rs                 # the `tsox` facade: re-exports the public API of the crates above
-                           # (the front ends on the last three lines depend only on this)
+                           # (the front ends reach the checker through this)
 
 tests/                     # one integration test per milestone or feature
 ├── foundation.rs
