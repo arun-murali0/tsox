@@ -71,7 +71,28 @@ pub(super) fn infer_call_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
+    let reported_before = ctx.diagnostics.len();
     let result = infer_call_expression_type_inner(call, scoping, ctx);
+    // `o.missing(x => x)`: the method does not exist, so nothing types the callback's
+    // parameters, and tsc reports each one as an implicit any beside the missing property.
+    if let Expression::StaticMemberExpression(member) = &call.callee
+        && ctx.diagnostics[reported_before..].iter().any(|d| {
+            d.code == crate::diagnostic_codes::DiagnosticCode::PropertyDoesNotExist
+                && d.start == member.span.start
+        })
+    {
+        for argument in &call.arguments {
+            match argument.as_expression() {
+                Some(Expression::ArrowFunctionExpression(arrow)) => {
+                    super::super::statements::report_implicit_any_params(&arrow.params, ctx)
+                }
+                Some(Expression::FunctionExpression(func)) => {
+                    super::super::statements::report_implicit_any_params(&func.params, ctx)
+                }
+                _ => {}
+            }
+        }
+    }
     refine_by_type_guard(call, scoping, ctx, result)
 }
 
