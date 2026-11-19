@@ -10,7 +10,7 @@ Command per part: `./scripts/compare-local.sh tests/typescript-testcases/typescr
 Both look like generic instantiation that grows each level, the same family as `tests/lib-probe-hangs/` (not confirmed).
 
 Notes: counts per code are lines (a file can contribute several); examples are the first message seen per code.
-tsox build: working tree with uncommitted `typeof` change (not mine). `--timeout 5` stops tsc (about 6 s per 500-file part), so tsc used `--timeout 90`.
+tsox build: working tree with an uncommitted `typeof` change. `--timeout 5` stops tsc (about 6 s per 500-file part), so tsc used `--timeout 90`.
 
 ## Per part
 | part | MATCH | MSG DIFF | CODE DIFF | GAP | FALSE POS | MIXED | agree lines | exact lines | tsox ms | tsc ms |

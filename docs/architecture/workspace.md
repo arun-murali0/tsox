@@ -1,7 +1,7 @@
 # The workspace
 
-tsox is a Cargo workspace of five library crates under `crates/` and a root package, `tsox`,
-that is the public face of all of them. The split follows the layers the checker already had;
+tsox is a Cargo workspace of twelve crates under `crates/` and a root package, `tsox`,
+that is the public face of the library crates. The split follows the layers the checker already had;
 it moves code and adds boundaries, and changes no behavior. `cargo test --workspace
 --all-features` passes with the same tests as before the split.
 
@@ -11,7 +11,7 @@ it moves code and adds boundaries, and changes no behavior. `cargo test --worksp
 |---|---|---|---|
 | `tsox-base` | Identities and hashing (`keys`, `stable_hash`, `fxhash`), diagnostics and their codes, `FileId`, `LineIndex`, check options, the project-wide small helpers (`stack_guard`, `source_depth`, `reference_directives`), the generated list of tsc's global type names, the vendored TypeScript lib files (`lib/`, data only), the `scratchpad` | none | thiserror, xxhash-rust; serde (`wasm`), bumpalo (`scratchpad`) |
 | `tsox-types` | The type system: `TypeArena` and `Type`, `subtyping`, generics inference (`semantic/`), `namespace`, `type_annotation`, `type_display`, `explain`, and `portable` (declarations as arena-free data, `ImportSource`) | base | oxc_ast, oxc_ast_visit, oxc_span, oxc_semantic, smallvec |
-| `tsox-model` | The semantic model: arena-free, offset-free, versioned tables (node type, node symbol, flow facts, constants, module info) that emit, the language server and the IR read. A scaffold: nothing writes it yet | base, types | xxhash-rust |
+| `tsox-model` | The semantic model: arena-free, offset-free, versioned tables (node type, node symbol, flow facts, constants, module info) that emit, the language server and the IR read. The checker writes it on each unit's output (`UnitOutput.model`). Expression-node types are not in it yet | base, types | xxhash-rust |
 | `tsox-checker` | The single-file checker: `bridge/` (parse, bind, declare, imports, exports, narrowing, statements, expressions, whole-file passes) and `unit` (a file as a unit of work: `UnitContext`, `UnitOutput`, `Worker`) | base, types | oxc parser, allocator, cfg, semantic; tracing |
 | `tsox-project` | Many files: `module_resolution/` (graph, config, discovery, resolver, check, schedule, partial results), `scc`. Feature `incremental` switches on the hooks the query layer needs | base, types, checker | oxc_resolver, rayon |
 | `tsox-db` | The Salsa query layer over the project driver (`incremental`, `incremental/project.rs`) | base, types, checker, project | salsa |
@@ -31,7 +31,7 @@ A crate depends only on crates above it in the table. The order is
 tsox-base < tsox-types < tsox-model < tsox-checker < tsox-project < tsox-db < tsox < tsox-ir < tsox-cli | tsox-emit | tsox-lsp | tsox-wasm | tsox-xtask
 ```
 
-The three on the right are the front ends. They share a layer: each depends on the `tsox` facade and none on another.
+`tsox-ir` is a skeleton. The five on the right share the top layer: each depends on the lower crates it needs and none on another. `tsox-cli`, `tsox-lsp`, `tsox-wasm` and `tsox-xtask` are the front ends and the tools, and they reach the checker through the `tsox` facade.
 
 Dev-dependencies count. `cargo xtask layering` reads `cargo metadata`, fails on any
 dependency that is not strictly downward, and fails when a crate has no layer. It runs first in

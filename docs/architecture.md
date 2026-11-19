@@ -2,6 +2,24 @@
 
 tsox is a semantic checker built on top of Oxc. The architecture deliberately avoids rebuilding the TypeScript parser/front end and avoids copying the scale or internal structure of larger TypeScript compiler projects.
 
+## At a glance
+
+Oxc parses and binds. tsox owns everything after that, in three steps.
+
+<Flow :steps="[
+  { title: 'Oxc', note: 'Parser and semantic information' },
+  { title: 'Bridge', note: 'Behaviour that depends on the AST' },
+  { title: 'Semantic layer', note: 'Type arena, subtyping, generics, narrowing' },
+  { title: 'Diagnostics and facts', note: 'What the checker found and knows' },
+]" />
+
+The code is split into crates that form strict layers. Each row may use only the rows below it.
+
+<Layers />
+
+The crates and their features are described in [workspace](architecture/workspace.md). The order in
+which the parts were built is in [how tsox was built](journey.md).
+
 ## Design goal
 
 The core question is:
@@ -125,7 +143,7 @@ This separation makes semantic algorithms reusable by future tooling and typed-I
 | `incremental.rs` | Opt-in Salsa input (`SourceFile`) and first query; unchanged saves start no revision |
 | `scratchpad.rs` | Opt-in bump scratch for one worker; accepts only `Copy` values |
 | `module_resolution/` | Opt-in project layer: resolver wrapper, import discovery, module graph with cycles and layers, parallel project check that passes each layer's exports to the next, change detection |
-| `crates/tsox-model` | The semantic model tables the checker will write and consumers read (node types, symbols, flow facts, constants, module info), with a stable hash and a format version; nothing writes it yet |
+| `crates/tsox-model` | The semantic model tables the checker writes and consumers read (node types, symbols, flow facts, constants, module info), with a stable hash and a format version; expression-node types are not in it yet |
 | `crates/tsox-emit` | JS emit over Oxc (parse, transform, codegen, source maps); takes an optional model |
 | `crates/tsox-ir` | Scaffold only; IR work is deferred |
 | `tsox_base::host`, `tsox_project::host` | The `Host` trait (files, directories, cache) with `MemoryHost` and `FsHost`; nothing calls it yet |

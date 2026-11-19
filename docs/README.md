@@ -5,6 +5,7 @@ This directory is the maintained technical guide for tsox, and the source of the
 
 - Using tsox: [install](guide/install.md), [command line](guide/cli.md), [editors](guide/editors.md),
   [npm](guide/npm.md), [try a build](guide/try-it.md).
+- Following the build: [how tsox was built](journey.md), step by step, and the [work plan](plan.md) for what is left.
 - Working on tsox: [contributing](contributing.md), [the corpus map](corpus.md),
   [project structure](project-structure.md), [compatibility harness](compatibility-harness.md),
   [maintaining the repository](maintainers.md).
@@ -83,7 +84,7 @@ A handful of smaller, cross-cutting suites support these milestones rather than 
 - [cross-file-types](architecture/cross-file-types.md): keys, portable declarations, units, imports and exports.
 - [foundation-dependencies](architecture/foundation-dependencies.md): Salsa, bump allocation, mimalloc.
 - [flow](architecture/flow.md): the flow graph built for every function body.
-- [workspace](architecture/workspace.md): the eight crates, the one-way dependency rule and how it is checked, features, and the front-end crates.
+- [workspace](architecture/workspace.md): the twelve crates, the one-way dependency rule and how it is checked, features, and the front-end crates.
 
 The **project engine** has its own overview and one case study for each part:
 

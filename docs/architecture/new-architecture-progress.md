@@ -3,7 +3,7 @@
 Plan: docs/architecture/modular-architecture-proposal.md. Current code reading:
 docs/architecture/current-workflow-notes.md.
 
-## Done (no change to checker output; 2156 tests pass, layering ok)
+## Done (no change to checker output, layering ok)
 
 | Area | Change |
 | --- | --- |

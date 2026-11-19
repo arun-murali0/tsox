@@ -4,18 +4,18 @@
 
 Everything still open outside the flow work and the semantic model · Nov 17, 2026 · companion to the locked architecture doc (revision 2)
 
-**Scope.** Flow and the semantic model are done. The architecture, the editor and WASM plan and the insight layer each have their own document (links below). This document holds the rest: the generics and inference solver, missing options and language areas, build mode, declaration emit, robustness, open-source readiness, the conformance dashboard and diagnostic ownership. It ends with one master checklist.
+**Scope.** Flow and the semantic model are done. The architecture has its own document (linked below). This document holds the rest: the generics and inference solver, missing options and language areas, build mode, declaration emit, robustness, open-source readiness, the conformance dashboard and diagnostic ownership. It ends with one master checklist.
 
-**Status markers.** *Verified* means read in the source (`a05b7c7c`, branch `newtypes`). *Search* means found by keyword search only, which is coarse: a feature under another name would show zero hits. *Open* means unverified. Nothing here has been built or run.
+**Status markers.** *Verified* means read in the source (`a05b7c7c`, branch `newtypes`). *Search* means found by keyword search only, which is coarse: a feature under another name would show zero hits. *Open* means unverified. The statuses describe the code at that revision. Work started since then is recorded in [progress on the new architecture](new-architecture-progress.md) and summarised in the [work plan](../plan.md).
 
 ## 1. Related documents
 
 | Document | Covers |
 | --- | --- |
-| [Architecture, revision 2](https://claude.ai/artifact/2VwFMgYojgRg9Gu7sKrnMB) | Layers, queries, engines, flow, semantic model, registries, migration tracks |
-| [Editor and WASM expansion](https://claude.ai/artifact/4AqWa2eaUkqmzmLKvvhrnd) | `tsox-ide`, LSP hardening, VS Code extension, WASM project API |
-| [Insight layer design](https://claude.ai/artifact/6YL2SckKqtFjodNjgCaWPy) | Opt-in CLI for change impact and agent queries |
-| [Insight pitch](https://claude.ai/artifact/TEW47todWEBqJ8byX8AYJn) | Why and for whom |
+| [Architecture, revision 2](modular-architecture-proposal.md) | Layers, queries, engines, flow, semantic model, registries, migration tracks |
+| [Progress on the new architecture](new-architecture-progress.md) | What has moved to the modular layout, the state of each workstream here, and what is next |
+| [The language server](lsp.md) | What the editor integration does today |
+| [Work plan](../plan.md) | The short, visual version of this register with the status of W1 to W10 |
 
 ## 2. Workstreams at a glance
 
@@ -170,7 +170,7 @@ The roadmap in the architecture doc covers JavaScript emit only.
 
 The checker runs on untrusted text in editors, in a browser and inside agents, so it must never crash, hang or use unbounded memory.
 
-- **Fuzzing.** Targets for the parser and repair loop, the checker, module resolution and the WASM API; seed with the corpus; run nightly in CI; keep every crasher as a regression file. I did not check whether fuzz targets exist.
+- **Fuzzing.** Targets for the parser and repair loop, the checker, module resolution and the WASM API; seed with the corpus; run nightly in CI; keep every crasher as a regression file. Whether fuzz targets already exist has not been checked.
 - **Panic safety.** A panic in one request or one file becomes a diagnostic or an error for that unit and the process continues. The LSP and the WASM API test this.
 - **Limits.** The depth guard and size limits exist (verified: instantiation depth 100 with a recorded flag). Extend the same budget idea to every engine and make exhaustion a named partial result, never silence.
 - **Time and memory caps** per unit, with the cancellation token, and a test that a pathological input finishes inside the 5000 ms budget or reports a partial result.

@@ -1,0 +1,39 @@
+/* Status badges shared by the journey and plan components. */
+.badge {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.badge.done {
+  color: var(--vp-c-green-1);
+  background: var(--vp-c-green-soft);
+}
+.badge.partial {
+  color: var(--vp-c-yellow-1);
+  background: var(--vp-c-yellow-soft);
+}
+.badge.open {
+  color: var(--vp-c-text-2);
+  background: var(--vp-c-gray-soft);
+}
+.badge.current {
+  color: var(--vp-c-brand-1);
+  background: var(--vp-c-brand-soft);
+}
+
+/* Wide tables scroll inside the page instead of pushing the layout sideways. */
+.vp-doc table {
+  display: block;
+  overflow-x: auto;
+}
+
+/* The home page body is prose below the feature cards. */
+.VPHome .vp-doc {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}

@@ -18,6 +18,8 @@ tsc on the fixtures) agrees. A pull request from anyone else is merged by the ow
 
 ## A change, step by step
 
+<Flow :steps="['Fork and branch', 'Failing case first', 'Smallest change', 'scripts/ci.sh', 'Corpus map', 'Pull request']" />
+
 1. Fork, branch from `main`.
 2. Write a small failing case first: a fixture in `tests/fixtures/<area>/` or a test in `tests/`.
 3. Make the smallest change that fixes it, in the lowest crate that can hold it
@@ -39,3 +41,27 @@ The most useful report is the smallest source that shows a difference from `tsc`
   adding a row to a table. See [registries](architecture/registries.md).
 - Diagnostics have owners: [diagnostic owners](architecture/diagnostic-owners.md).
 - The design notes are under [Architecture](architecture.md).
+
+## Working on the docs
+
+The documentation site is the `docs/` folder, built with VitePress.
+
+```sh
+cd docs
+npm ci
+npm run dev      # live preview
+npm run build    # the same build CI runs
+```
+
+- **Link between documents with relative `.md` paths**, such as `[arena](architecture/arena.md)`.
+  They work on GitHub and on the site. A broken one fails the build.
+- **Link to source files with a full GitHub URL**, such as
+  `https://github.com/tsoxide/tsox/blob/main/scripts/ci.sh`. A relative path outside `docs/` is
+  a dead link on the site.
+- **Write a case study, not a changelog.** Say what was planned, the issue that was found, what
+  was changed and what it gained, and check each claim against the code.
+- **Visual pieces** are components registered in `docs/.vitepress/theme`: `Flow` for a row of
+  steps, `Layers` for the crate stack, `Stats`, and the journey and workstream pages, which read
+  `docs/.vitepress/data/`. Update the data file when a milestone or a workstream changes state.
+- **Angle brackets and `[x]()`** in prose are read as HTML and as links. Put types such as
+  `Array<T>` in backticks.
