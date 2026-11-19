@@ -10,6 +10,15 @@ use crate::types::{ObjectType, Param, TupleElement, Type, TypeParameterId};
 // that already failed to check, would need its own arm in every single case of that
 // match instead of one shared escape hatch here.
 pub fn is_subtype(arena: &TypeArena, sub: TypeId, sup: TypeId) -> bool {
+    // A deferred type (`T["k"]`, an indexed access on a type parameter) cannot be
+    // reduced here, and tsc decides it by rules this checker does not have. Giving up in the
+    // lenient direction reports fewer errors, never an invented one.
+    if sub != sup
+        && matches!(arena.get(sub), Type::IndexedAccess(..))
+        && crate::semantic::GenericSolver::contains_type_param(arena, sub)
+    {
+        return true;
+    }
     is_subtype_inner(arena, sub, sup, &mut PairStack::new(), &[])
 }
 
@@ -1005,6 +1014,7 @@ mod tests {
                 .into_iter()
                 .enumerate()
                 .map(|(index, name)| PropertyEntry {
+                    order: Default::default(),
                     name: name.into(),
                     type_id: if index == 0 { first } else { string },
                     optional: false,
@@ -1096,6 +1106,7 @@ mod tests {
         let number = arena.number();
         let object = arena.alloc(Type::Object(ObjectType::new(vec![
             crate::types::PropertyEntry {
+                order: Default::default(),
                 name: "length".into(),
                 type_id: number,
                 optional: false,
@@ -1464,6 +1475,7 @@ mod tests {
         let properties: Vec<PropertyEntry> = props
             .iter()
             .map(|&(name, type_id, optional)| PropertyEntry {
+                order: Default::default(),
                 name: name.into(),
                 type_id,
                 optional,
@@ -1706,6 +1718,7 @@ mod intersection_relation_tests {
         let entries = properties
             .iter()
             .map(|&(name, type_id, optional)| PropertyEntry {
+                order: Default::default(),
                 name: name.into(),
                 type_id,
                 optional,

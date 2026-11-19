@@ -109,6 +109,7 @@ mod contract_tests {
         let string = arena.string();
         let object = arena.alloc(Type::Object(ObjectType::new(vec![
             crate::types::PropertyEntry {
+                order: Default::default(),
                 name: "a".into(),
                 type_id: string,
                 optional: false,

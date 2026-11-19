@@ -47,10 +47,10 @@ tsox build: working tree with uncommitted `typeof` change (not mine). `--timeout
 | TS2339 | 181 | Property 'collection' does not exist on type '{ readonly primaryPath: any; }'. |
 | TS2322 | 118 | Type 'null' is not assignable to type 'Result'. |
 | TS2345 | 85 | Argument of type 'symbol' is not assignable to parameter of type 'object'. |
-| TS2344 | 15 | Type 'GetProps<C>' does not satisfy the constraint 'Shared<TInjectedProps, GetPr |
+| TS2344 | 15 | Type 'GetProps&lt;C>' does not satisfy the constraint 'Shared&lt;TInjectedProps, GetPr |
 | TS18048 | 11 | 'T' is possibly 'undefined'. |
 | TS7008 | 11 | Member 'var' implicitly has an 'any' type. |
-| TS2488 | 10 | Type 'number' must have a '[Symbol.iterator]()' method that returns an iterator. |
+| TS2488 | 10 | Type 'number' must have a `[Symbol.iterator]()` method that returns an iterator. |
 | TS2554 | 10 | Expected 0 arguments, but got 3. |
 | TS2349 | 9 | This expression is not callable. |
 | TS7053 | 8 | Element implicitly has an 'any' type because expression of type '"arguments"' ca |

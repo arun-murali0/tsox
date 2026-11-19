@@ -36,6 +36,7 @@ pub fn reduce_record(arena: &mut TypeArena, key: TypeId, value: TypeId) -> Optio
     let properties = names
         .into_iter()
         .map(|name| PropertyEntry {
+            order: Default::default(),
             name: name.into(),
             type_id: value,
             optional: false,

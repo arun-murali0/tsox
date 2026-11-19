@@ -484,14 +484,17 @@ fn object_children(
     to: &ObjectType,
     depth: usize,
 ) -> Vec<Level> {
-    let missing: Vec<&str> = to
+    let missing = to
         .properties
         .iter()
         .filter(|wanted| {
             !wanted.optional && !from.properties.iter().any(|have| have.name == wanted.name)
         })
-        .map(|wanted| &*wanted.name)
-        .collect();
+        .collect::<Vec<_>>();
+    // tsc lists them in the order the target wrote them, not alphabetically.
+    let mut missing = missing;
+    missing.sort_by_key(|wanted| wanted.order.0);
+    let missing: Vec<&str> = missing.into_iter().map(|wanted| &*wanted.name).collect();
     if !missing.is_empty() {
         return vec![missing_level(arena, source, target, &missing)];
     }

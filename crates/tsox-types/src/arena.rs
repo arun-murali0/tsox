@@ -1276,6 +1276,7 @@ impl TypeArena {
         let properties = members
             .into_iter()
             .map(|(member, type_id)| crate::types::PropertyEntry {
+                order: Default::default(),
                 name: member.into(),
                 type_id: self.alloc_named(enum_name, type_id),
                 optional: false,
@@ -1802,6 +1803,7 @@ mod tests {
 
     fn property(name: &str, type_id: TypeId, optional: bool) -> PropertyEntry {
         PropertyEntry {
+            order: Default::default(),
             name: name.into(),
             type_id,
             optional,
@@ -1915,6 +1917,7 @@ mod tests {
         let mut arena = TypeArena::new();
         let number = arena.number();
         let body = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
+            order: Default::default(),
             name: "value".into(),
             type_id: number,
             optional: false,
@@ -2386,6 +2389,7 @@ mod tests {
         let mut arena = TypeArena::new();
         let number = arena.number();
         let object = arena.alloc_fresh(Type::Object(ObjectType::new(vec![PropertyEntry {
+            order: Default::default(),
             name: "value".into(),
             type_id: number,
             optional: false,
@@ -2487,6 +2491,7 @@ mod tests {
         let mut right = arena.number();
         for _ in 0..40 {
             left = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
+                order: Default::default(),
                 name: "next".into(),
                 type_id: left,
                 optional: false,
@@ -2494,6 +2499,7 @@ mod tests {
                 modifiers: Default::default(),
             }])));
             right = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
+                order: Default::default(),
                 name: "next".into(),
                 type_id: right,
                 optional: false,
@@ -2752,6 +2758,7 @@ mod tests {
             is_untyped: false,
         }));
         let entry = |is_method: bool| PropertyEntry {
+            order: Default::default(),
             name: "f".into(),
             type_id: function,
             optional: false,
@@ -2809,6 +2816,7 @@ mod intersection_tests {
 
     fn property(name: &str, type_id: TypeId) -> PropertyEntry {
         PropertyEntry {
+            order: Default::default(),
             name: name.into(),
             type_id,
             optional: false,

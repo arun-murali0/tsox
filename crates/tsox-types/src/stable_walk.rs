@@ -269,6 +269,7 @@ mod tests {
 
     fn prop(name: &str, type_id: TypeId) -> PropertyEntry {
         PropertyEntry {
+            order: Default::default(),
             name: Rc::from(name),
             type_id,
             optional: false,

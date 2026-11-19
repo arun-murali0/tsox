@@ -741,6 +741,7 @@ mod tests {
         let id = TypeParameterId::new(14, 0);
         let number = arena.number();
         let animal = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
+            order: Default::default(),
             name: Rc::from("x"),
             type_id: number,
             optional: false,
@@ -749,6 +750,7 @@ mod tests {
         }])));
         let giraffe = arena.alloc(Type::Object(ObjectType::new(vec![
             PropertyEntry {
+                order: Default::default(),
                 name: Rc::from("x"),
                 type_id: number,
                 optional: false,
@@ -756,6 +758,7 @@ mod tests {
                 modifiers: Default::default(),
             },
             PropertyEntry {
+                order: Default::default(),
                 name: Rc::from("neck"),
                 type_id: number,
                 optional: false,
@@ -765,6 +768,7 @@ mod tests {
         ])));
         let elephant = arena.alloc(Type::Object(ObjectType::new(vec![
             PropertyEntry {
+                order: Default::default(),
                 name: Rc::from("x"),
                 type_id: number,
                 optional: false,
@@ -772,6 +776,7 @@ mod tests {
                 modifiers: Default::default(),
             },
             PropertyEntry {
+                order: Default::default(),
                 name: Rc::from("trunk"),
                 type_id: number,
                 optional: false,
@@ -799,6 +804,7 @@ mod tests {
         let u_id = TypeParameterId::new(40, 1);
         let number = arena.number();
         let base = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
+            order: Default::default(),
             name: Rc::from("x"),
             type_id: number,
             optional: false,
@@ -807,6 +813,7 @@ mod tests {
         }])));
         let giraffe = arena.alloc(Type::Object(ObjectType::new(vec![
             PropertyEntry {
+                order: Default::default(),
                 name: Rc::from("x"),
                 type_id: number,
                 optional: false,
@@ -814,6 +821,7 @@ mod tests {
                 modifiers: Default::default(),
             },
             PropertyEntry {
+                order: Default::default(),
                 name: Rc::from("neck"),
                 type_id: number,
                 optional: false,
@@ -823,6 +831,7 @@ mod tests {
         ])));
         let elephant = arena.alloc(Type::Object(ObjectType::new(vec![
             PropertyEntry {
+                order: Default::default(),
                 name: Rc::from("x"),
                 type_id: number,
                 optional: false,
@@ -830,6 +839,7 @@ mod tests {
                 modifiers: Default::default(),
             },
             PropertyEntry {
+                order: Default::default(),
                 name: Rc::from("trunk"),
                 type_id: number,
                 optional: false,
@@ -896,6 +906,7 @@ mod tests {
             is_untyped: false,
         }));
         let expected = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
+            order: Default::default(),
             name: Rc::from("convert"),
             type_id: expected_method,
             optional: false,
@@ -903,6 +914,7 @@ mod tests {
             modifiers: Default::default(),
         }])));
         let actual = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
+            order: Default::default(),
             name: Rc::from("convert"),
             type_id: actual_method,
             optional: false,

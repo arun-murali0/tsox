@@ -434,6 +434,7 @@ fn bind_global_namespace<'ast>(
             };
             if let Some(type_id) = value_type {
                 properties.push(PropertyEntry {
+                    order: Default::default(),
                     name: name.as_str().into(),
                     type_id,
                     optional: false,
@@ -747,6 +748,7 @@ fn module_object<'ast>(
             continue;
         }
         properties.push(PropertyEntry {
+            order: Default::default(),
             name: name.into(),
             type_id,
             optional: false,

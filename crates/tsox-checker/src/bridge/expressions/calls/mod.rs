@@ -71,7 +71,28 @@ pub(super) fn infer_call_expression_type(
     scoping: &Scoping,
     ctx: &mut CheckContext<'_, '_>,
 ) -> TypeId {
+    let reported_before = ctx.diagnostics.len();
     let result = infer_call_expression_type_inner(call, scoping, ctx);
+    // `o.missing(x => x)`: the method does not exist, so nothing types the callback's
+    // parameters, and tsc reports each one as an implicit any beside the missing property.
+    if let Expression::StaticMemberExpression(member) = &call.callee
+        && ctx.diagnostics[reported_before..].iter().any(|d| {
+            d.code == crate::diagnostic_codes::DiagnosticCode::PropertyDoesNotExist
+                && d.start == member.span.start
+        })
+    {
+        for argument in &call.arguments {
+            match argument.as_expression() {
+                Some(Expression::ArrowFunctionExpression(arrow)) => {
+                    super::super::statements::report_implicit_any_params(&arrow.params, ctx)
+                }
+                Some(Expression::FunctionExpression(func)) => {
+                    super::super::statements::report_implicit_any_params(&func.params, ctx)
+                }
+                _ => {}
+            }
+        }
+    }
     refine_by_type_guard(call, scoping, ctx, result)
 }
 
@@ -259,6 +280,7 @@ fn settled_result(
 ) -> TypeId {
     let status_literal = ctx.arena.alloc(Type::StringLiteral(status.into()));
     let entry = |name: &str, type_id: TypeId| crate::types::PropertyEntry {
+        order: Default::default(),
         name: name.into(),
         type_id,
         optional: false,
@@ -321,6 +343,35 @@ pub(super) fn infer_new_expression_type(
         }
         let value = value.unwrap_or_else(|| ctx.arena.unknown());
         return ctx.arena.alloc_promise(value);
+    }
+
+    // A mixin result: `Constructor<Tagged> & typeof Base` constructs the intersection of what
+    // each constructor builds (tsc's mixin rule), not whatever the first signature builds.
+    if let Type::Intersection(members) = ctx.arena.get(callee_type).clone() {
+        let built: Vec<TypeId> = members
+            .iter()
+            .filter_map(|&member| match ctx.arena.get(member) {
+                Type::Function(f) => Some(f.return_type),
+                _ => None,
+            })
+            .collect();
+        let has_mixin_signature = members.iter().any(|&member| {
+            matches!(ctx.arena.get(member), Type::Function(f)
+                if f.params.len() == 1
+                    && f.params[0].rest
+                    && matches!(ctx.arena.get(f.params[0].type_id), Type::Array(e) if matches!(ctx.arena.get(*e), Type::Any)))
+        });
+        if has_mixin_signature && built.len() >= 2 && built.len() == members.len() {
+            for argument in &new_expr.arguments {
+                if let Some(expression) = argument.as_expression() {
+                    infer_expression_type(expression, scoping, ctx);
+                }
+            }
+            return ctx
+                .arena
+                .alloc_intersection(built.clone())
+                .unwrap_or(built[0]);
+        }
     }
 
     check_callable(

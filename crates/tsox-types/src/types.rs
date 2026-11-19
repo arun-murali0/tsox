@@ -507,6 +507,9 @@ impl ObjectType {
     // list is a single linear pass, so callers that happen to have sorted input
     // pay almost nothing for not having to know that.
     pub fn new(mut properties: Vec<PropertyEntry>) -> Self {
+        for (index, property) in properties.iter_mut().enumerate() {
+            property.order = DeclOrder(index as u32);
+        }
         properties.sort_by(|a, b| a.name.cmp(&b.name));
         Self {
             properties: properties.into(),
@@ -537,6 +540,27 @@ pub struct PropertyEntry {
     // `readonly` and the accessibility keywords, which assignability does not read but a write
     // (TS2540) and a member access (TS2341, TS2445) do.
     pub modifiers: PropModifiers,
+
+    // Where the member was written, for the messages that list members the way tsc does (the
+    // missing properties of TS2739). `ObjectType::new` numbers entries in the order it is given
+    // them; it never takes part in equality or hashing, so two types differing only in it are
+    // the same type.
+    pub order: DeclOrder,
+}
+
+/// The position of a member in its declaration. Always equal and hashes to nothing: see
+/// `PropertyEntry::order`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DeclOrder(pub u32);
+
+impl PartialEq for DeclOrder {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for DeclOrder {}
+impl std::hash::Hash for DeclOrder {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
 }
 
 /// Who may reach a class member: everyone, the declaring class and its subclasses, or the

@@ -11,3 +11,7 @@ Open an issue at <https://github.com/tsoxide/tsox/issues> with:
 
 A report of a crash or a hang is worth as much as a wrong diagnostic. Questions and opinions on
 direction are welcome in discussions.
+
+## Report what tsox skipped, from the CLI
+
+Run `tsox --project tsconfig.json --report-issue` and tsox lists every place it did not check (the `TSR9xxx` warnings), then opens a prefilled issue in `tsoxide/tsox`. The text has codes and counts only: no paths, lines or source. `--report` writes a local file with the full sites, and `--report-submit` posts through `gh` after you confirm. See the [CLI guide](./cli.md).

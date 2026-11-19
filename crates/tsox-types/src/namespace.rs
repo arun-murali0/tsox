@@ -2402,6 +2402,7 @@ fn upsert_property(
             existing.modifiers = modifiers;
         }
         None => properties.push(PropertyEntry {
+            order: Default::default(),
             name: name.into(),
             type_id,
             optional,

@@ -89,6 +89,9 @@ fn check_identifier_declarator(
                 // inside this function is an implicit any.
                 ctx.next_function_has_no_this = true;
             }
+            Some(Expression::ObjectExpression(object)) => {
+                report_object_literal_params(object, ctx);
+            }
             _ => {}
         }
     }
@@ -404,5 +407,33 @@ fn declare_variable(
         ctx.declare_value(symbol_id, name, type_id);
     } else {
         ctx.symbols.declare(symbol_id, type_id);
+    }
+}
+
+// The functions that are property values of an object literal with no contextual type (the
+// initializer of an unannotated variable) get no parameter types from anywhere: each untyped
+// parameter is an implicit any. Nested object literals are the same.
+fn report_object_literal_params(
+    object: &oxc_ast::ast::ObjectExpression<'_>,
+    ctx: &mut CheckContext<'_, '_>,
+) {
+    use oxc_ast::ast::{ObjectPropertyKind, PropertyKind};
+    for property in &object.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+            continue;
+        };
+        if property.kind != PropertyKind::Init {
+            continue;
+        }
+        match &property.value {
+            Expression::ArrowFunctionExpression(arrow) => {
+                report_implicit_any_params(&arrow.params, ctx);
+            }
+            Expression::FunctionExpression(func) => {
+                report_implicit_any_params(&func.params, ctx);
+            }
+            Expression::ObjectExpression(inner) => report_object_literal_params(inner, ctx),
+            _ => {}
+        }
     }
 }

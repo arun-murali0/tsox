@@ -436,6 +436,7 @@ fn re_export_namespace(
             _ => None,
         }?;
         properties.push(PropertyEntry {
+            order: Default::default(),
             name: name.into(),
             type_id: value,
             optional: false,

@@ -95,7 +95,7 @@ pub fn statement_leaves_flow(stmt: &Statement) -> bool {
 // A destructured parameter, a parameter with a default (`x = 1`), and a rest
 // parameter are skipped: tsc infers from the default, and reports the other two
 // under different diagnostics.
-pub(super) fn report_implicit_any_params(
+pub(in crate::bridge) fn report_implicit_any_params(
     params: &FormalParameters,
     ctx: &mut CheckContext<'_, '_>,
 ) {

@@ -1,4 +1,5 @@
 mod cache_dir;
+mod report;
 
 use std::env;
 use std::fs;
@@ -50,6 +51,8 @@ struct Tally {
     warnings: usize,
     fatal: bool,
     note: Option<String>,
+    // Every `TSR9xxx` warning: a place tsox did not check. Read by `--report`.
+    gave_up: Vec<report::GaveUp>,
 }
 
 impl Tally {
@@ -59,6 +62,14 @@ impl Tally {
             match diagnostic.severity {
                 Severity::Error => self.errors += 1,
                 Severity::Warning => self.warnings += 1,
+            }
+            if report::is_give_up(diagnostic.code.as_str()) {
+                self.gave_up.push(report::GaveUp {
+                    file: diagnostic.file_name.clone(),
+                    line: line_index.line_col_utf8(diagnostic.start, source).0,
+                    code: diagnostic.code.as_str().to_string(),
+                    message: diagnostic.message.clone(),
+                });
             }
             println!(
                 "{}",
@@ -172,6 +183,9 @@ fn main() -> ExitCode {
     };
 
     print_summary(&tally);
+    if let Some(code) = handle_report(&args, &options, &tally, project_root) {
+        return code;
+    }
 
     if tally.fatal {
         // A file that failed to read or parse at all is distinguished from a file
@@ -184,6 +198,105 @@ fn main() -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+// `--report[=FILE]`, `--report-issue`, `--report-submit`: see report.rs. None means carry on to
+// the normal exit code; Some is an exit code for a report that could not be made as asked.
+fn handle_report(
+    args: &[String],
+    options: &Options,
+    tally: &Tally,
+    root: &std::path::Path,
+) -> Option<ExitCode> {
+    let file_flag = args.iter().find_map(|a| {
+        if a == "--report" {
+            Some("tsox-report.md".to_string())
+        } else {
+            a.strip_prefix("--report=").map(String::from)
+        }
+    });
+    let issue = args.iter().any(|a| a == "--report-issue");
+    let submit = args.iter().any(|a| a == "--report-submit");
+    if file_flag.is_none() && !issue && !submit {
+        return None;
+    }
+    if tally.gave_up.is_empty() {
+        println!(
+            "\nreport: tsox did not skip anything in this run, so there is nothing to report."
+        );
+        return None;
+    }
+    let repo = env::var("TSOX_REPORT_REPO").unwrap_or_else(|_| report::DEFAULT_REPO.to_string());
+    let flags: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|a| {
+            a.starts_with("--") && !a.starts_with("--project") && !a.starts_with("--report")
+        })
+        .collect();
+    let _ = options;
+    let ctx = report::Context {
+        version: env!("CARGO_PKG_VERSION"),
+        os: env::consts::OS,
+        arch: env::consts::ARCH,
+        flags: flags.join(" "),
+        files: tally.files,
+        errors: tally.errors,
+        warnings: tally.warnings,
+    };
+    if let Some(path) = file_flag {
+        match fs::write(&path, report::local_markdown(&ctx, &tally.gave_up, root)) {
+            Ok(()) => println!(
+                "\nreport: wrote {path} ({} places). It stays on this machine.",
+                tally.gave_up.len()
+            ),
+            Err(error) => {
+                eprintln!("error: could not write {path}: {error}");
+                return Some(ExitCode::from(2));
+            }
+        }
+    }
+    if issue || submit {
+        let keep_names = args.iter().any(|a| a == "--report-names");
+        let title = report::issue_title(&tally.gave_up);
+        let body = report::issue_body(&ctx, &tally.gave_up, keep_names);
+        if submit {
+            println!(
+                "\nreport: this exact text would be posted to https://github.com/{repo}/issues\n\n{title}\n\n{body}"
+            );
+            let yes = args.iter().any(|a| a == "--yes");
+            if !yes {
+                use std::io::{BufRead, IsTerminal, Write};
+                if !std::io::stdin().is_terminal() {
+                    eprintln!(
+                        "error: --report-submit asks for confirmation; pass --yes to confirm without a terminal"
+                    );
+                    return Some(ExitCode::from(2));
+                }
+                print!("Post it? [y/N] ");
+                let _ = std::io::stdout().flush();
+                let mut answer = String::new();
+                let _ = std::io::stdin().lock().read_line(&mut answer);
+                if !answer.trim().eq_ignore_ascii_case("y") {
+                    println!("report: not posted.");
+                    return None;
+                }
+            }
+            match report::submit_with_gh(&repo, &title, &body) {
+                Ok(url) => {
+                    println!("report: posted {url}");
+                    return None;
+                }
+                Err(why) => println!("report: could not post ({why}); use the link below instead."),
+            }
+        }
+        let url = report::issue_url(&repo, &title, &body);
+        println!("\nreport: open this link to review and send the issue yourself:\n{url}");
+        if !args.iter().any(|a| a == "--no-open") && !submit {
+            report::open_in_browser(&url);
+        }
+    }
+    None
 }
 
 fn print_summary(tally: &Tally) {
@@ -598,6 +711,13 @@ fn print_help() {
          --no-lib-cache      Do not use the cache for this run.\n    \
          --tsc-codes         Print each diagnostic under the tsc code it maps to\n                         \
          (TS2322) instead of tsox's own (TSR1003).\n    \
+         --report[=FILE]     After the run, write FILE (default tsox-report.md) listing\n                         \
+         every place tsox did not check (the TSR9xxx warnings). Local only.\n    \
+         --report-issue      Print a link that opens a prefilled GitHub issue about those\n                         \
+         places, and open it. Nothing is sent; no paths or source are in it,\n                         \
+         and names quoted in messages are replaced (--report-names keeps them).\n    \
+         --report-submit     Post that issue with the GitHub CLI after showing the exact\n                         \
+         text and asking y/N (--yes answers it). Falls back to the link.\n    \
          --incremental       Check through the query layer. One run costs about twice the\n                         \
          default; it exists for --watch and for tools that keep it.\n    \
          --watch             Check, then check again whenever a file changes, running only\n                         \

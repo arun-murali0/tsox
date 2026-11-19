@@ -1049,6 +1049,7 @@ impl Importer {
                     let props = props
                         .iter()
                         .map(|p| PropertyEntry {
+                            order: Default::default(),
                             name: Rc::from(&*p.name),
                             type_id: ids[p.ty as usize],
                             optional: p.optional,
@@ -1197,6 +1198,7 @@ mod tests {
 
     fn prop(name: &str, type_id: TypeId) -> PropertyEntry {
         PropertyEntry {
+            order: Default::default(),
             name: Rc::from(name),
             type_id,
             optional: false,

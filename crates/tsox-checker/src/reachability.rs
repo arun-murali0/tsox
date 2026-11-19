@@ -767,6 +767,22 @@ impl<'s> Analyzer<'s> {
             // `x` is truthy, so not `undefined`.
             Expression::Identifier(id) if when_true => out.extend(self.narrowed_index(id)),
             // `isC(x)`: a call to a predicate function narrows its arguments on the true edge.
+            // The library predicates `Array.isArray(x)` and `ArrayBuffer.isView(x)`: both edges
+            // narrow `x`, so neither read is of an unassigned variable.
+            Expression::CallExpression(call)
+                if matches!(skip_parens(&call.callee), Expression::StaticMemberExpression(m)
+                    if matches!(&m.object, Expression::Identifier(o)
+                        if (o.name == "Array" && m.property.name == "isArray")
+                            || (o.name == "ArrayBuffer" && m.property.name == "isView"))) =>
+            {
+                for argument in &call.arguments {
+                    if let Some(Expression::Identifier(id)) =
+                        argument.as_expression().map(skip_parens)
+                    {
+                        out.extend(self.narrowed_index(id));
+                    }
+                }
+            }
             Expression::CallExpression(call) if when_true => {
                 if let Expression::Identifier(callee) = skip_parens(&call.callee)
                     && let Some(symbol) = self.symbol_of(callee)

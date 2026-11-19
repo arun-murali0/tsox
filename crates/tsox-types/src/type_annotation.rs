@@ -1292,6 +1292,7 @@ pub fn resolve_object_members(
                 let annotation = property.type_annotation.as_ref()?;
                 let type_id = resolve_type_annotation(annotation, namespace, arena)?;
                 PropertyEntry {
+                    order: Default::default(),
                     name: key.name.to_string().into(),
                     type_id,
                     optional: property.optional,
@@ -1415,6 +1416,7 @@ fn resolve_method_signature(
         is_untyped: false,
     }));
     Some(PropertyEntry {
+        order: Default::default(),
         name: key.name.to_string().into(),
         type_id: function,
         optional: method.optional,

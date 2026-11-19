@@ -34,10 +34,10 @@ of what `tsc` says:
 <!-- corpus-status:start -->
 | | |
 | --- | --- |
-| Files where tsox and tsc agree exactly | **5,128 of 10,083** (50.9%) |
-| Lines with a diagnostic from either side | 37,631, of which 17,682 agree |
-| Gaps (tsc reports, tsox misses) | 13,749 lines; most often TS2322 (1334), TS7006 (716), TS2339 (640), TS1005 (557), TS2304 (501) |
-| False positives (tsox reports, tsc does not) | 2,501 lines; most often TS2322 (669), TS2339 (526), TS2345 (352), TS2693 (199), TS2344 (134) |
+| Files where tsox and tsc agree exactly | **5,197 of 10,083** (51.5%) |
+| Lines with a diagnostic from either side | 37,496, of which 17,837 agree |
+| Gaps (tsc reports, tsox misses) | 13,616 lines; most often TS2322 (1348), TS2339 (639), TS7006 (623), TS1005 (557), TS2304 (503) |
+| False positives (tsox reports, tsc does not) | 2,366 lines; most often TS2322 (646), TS2339 (528), TS2345 (348), TS2693 (181), TS2349 (96) |
 | Corpus | TypeScript v6.0.3, recorded in `tests/corpus/typescript-6.0.3` |
 <!-- corpus-status:end -->
 

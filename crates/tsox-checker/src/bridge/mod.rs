@@ -445,6 +445,22 @@ fn publish(ctx: &mut CheckContext<'_, '_>) -> (Vec<Diagnostic>, CheckMetrics) {
     }
 
     for (_, actual, constraint, span) in ctx.namespace.take_constraint_violations() {
+        // A type argument that is still generic (a type parameter, a conditional, mapped or
+        // indexed type) or that failed to resolve is not judged: tsc defers those to the
+        // instantiation, and this checker cannot reason about them yet.
+        if crate::semantic::GenericSolver::contains_type_param(&ctx.arena, actual)
+            || matches!(
+                ctx.arena.get(actual),
+                crate::types::Type::Conditional(_)
+                    | crate::types::Type::Mapped(_)
+                    | crate::types::Type::IndexedAccess(..)
+                    | crate::types::Type::Error
+                    | crate::types::Type::Keyof(_)
+                    | crate::types::Type::Variadic(_)
+            )
+        {
+            continue;
+        }
         ctx.error(
             crate::diagnostic_messages::messages::type_argument_constraint_violation(
                 &ctx.arena, actual, constraint,

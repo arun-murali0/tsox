@@ -41,6 +41,28 @@ pub fn check_class_implements<'ast>(program: &Program<'ast>, ctx: &mut CheckCont
                 })
                 .collect();
             ctx.abstract_members.insert(id.name.to_string(), names);
+            let mut statics: std::collections::HashSet<String> = class
+                .heritage
+                .as_ref()
+                .and_then(|h| match &h.expression {
+                    oxc_ast::ast::Expression::Identifier(base) => {
+                        ctx.static_members.get(base.name.as_str())
+                    }
+                    _ => None,
+                })
+                .cloned()
+                .unwrap_or_default();
+            for element in &class.body.body {
+                let (key, is_static) = match element {
+                    oxc_ast::ast::ClassElement::PropertyDefinition(p) => (&p.key, p.r#static),
+                    oxc_ast::ast::ClassElement::MethodDefinition(m) => (&m.key, m.r#static),
+                    _ => continue,
+                };
+                if is_static && let Some(name) = key.static_name() {
+                    statics.insert(name.to_string());
+                }
+            }
+            ctx.static_members.insert(id.name.to_string(), statics);
         }
     }
     for statement in &program.body {
@@ -364,12 +386,25 @@ fn report_missing_overrides<'ast>(
             ),
             _ => continue,
         };
-        if is_static || has_override || skip {
+        if has_override || skip {
             continue;
         }
         let Some(name) = key.static_name() else {
             continue;
         };
+        if is_static {
+            if ctx
+                .static_members
+                .get(base_name)
+                .is_some_and(|set| set.contains(name.as_ref()))
+            {
+                ctx.error(
+                    crate::diagnostic_messages::messages::missing_override_modifier(base_name),
+                    key.span(),
+                );
+            }
+            continue;
+        }
         let is_abstract = ctx
             .abstract_members
             .get(base_name)

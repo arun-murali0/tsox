@@ -177,6 +177,7 @@ pub fn reduce_mapped(arena: &mut TypeArena, mapped: crate::types::MappedType) ->
         }
         for final_name in final_names {
             properties.push(PropertyEntry {
+                order: Default::default(),
                 name: final_name.into(),
                 type_id: value,
                 optional,

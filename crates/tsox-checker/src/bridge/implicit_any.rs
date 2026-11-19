@@ -26,6 +26,9 @@ pub fn report_implicit_any<'ast>(program: &Program<'ast>, ctx: &mut CheckContext
         source: program.source_text,
         ambient: 0,
         constructor_assigned: Vec::new(),
+        context_free_returns: Vec::new(),
+        next_is_method: false,
+        class_declarations: Vec::new(),
     };
     walker.visit_program(program);
 }
@@ -39,6 +42,15 @@ struct Walker<'c, 'ast, 'src> {
     // Per enclosing class: the members its constructor assigns through `this`. tsc infers
     // an untyped member's type from those, so such a member is not an implicit any.
     constructor_assigned: Vec<std::collections::HashSet<String>>,
+    // Per enclosing function: whether a `return` there has no contextual type, which is so for a
+    // function declaration or a class method that writes no return type. A function or arrow
+    // returned from one has nothing to take its parameter types from.
+    context_free_returns: Vec<bool>,
+    // The next function visited is the value of a class method.
+    next_is_method: bool,
+    // Per enclosing class: whether it is a declaration. A class expression can be typed from
+    // where it is used, so its methods are contextually typed.
+    class_declarations: Vec<bool>,
 }
 
 // How tsc writes a member name in these messages: an identifier as is, a string with its
@@ -146,7 +158,10 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
             }
         }
         self.constructor_assigned.push(assigned.names);
+        self.class_declarations
+            .push(class.r#type == oxc_ast::ast::ClassType::ClassDeclaration);
         walk::walk_class(self, class);
+        self.class_declarations.pop();
         self.constructor_assigned.pop();
         self.ambient -= u32::from(ambient);
     }
@@ -167,6 +182,10 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
     }
 
     fn visit_function(&mut self, func: &Function<'a>, flags: oxc_semantic::ScopeFlags) {
+        let is_method = std::mem::take(&mut self.next_is_method);
+        let declaration = func.r#type == oxc_ast::ast::FunctionType::FunctionDeclaration;
+        self.context_free_returns
+            .push((declaration || is_method) && func.return_type.is_none());
         if func.body.is_none() {
             self.params(&func.params);
             if func.return_type.is_none()
@@ -180,6 +199,28 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
             }
         }
         walk::walk_function(self, func, flags);
+        self.context_free_returns.pop();
+    }
+
+    fn visit_arrow_function_expression(
+        &mut self,
+        arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>,
+    ) {
+        self.context_free_returns.push(false);
+        walk::walk_arrow_function_expression(self, arrow);
+        self.context_free_returns.pop();
+    }
+
+    fn visit_return_statement(&mut self, statement: &oxc_ast::ast::ReturnStatement<'a>) {
+        use oxc_ast::ast::Expression;
+        if self.context_free_returns.last().copied().unwrap_or(false) {
+            match &statement.argument {
+                Some(Expression::ArrowFunctionExpression(arrow)) => self.params(&arrow.params),
+                Some(Expression::FunctionExpression(func)) => self.params(&func.params),
+                _ => {}
+            }
+        }
+        walk::walk_return_statement(self, statement);
     }
 
     fn visit_method_definition(&mut self, method: &MethodDefinition<'a>) {
@@ -196,7 +237,10 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
                 self.lacks_return(&method.key, method.computed);
             }
         }
+        self.next_is_method = method.kind == MethodDefinitionKind::Method
+            && self.class_declarations.last().copied().unwrap_or(false);
         walk::walk_method_definition(self, method);
+        self.next_is_method = false;
     }
 
     fn visit_property_definition(&mut self, property: &PropertyDefinition<'a>) {
@@ -219,6 +263,20 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
                     messages::member_implicitly_any(&name),
                     property.key.span(),
                 );
+            }
+        }
+        // An unannotated class property initialised with a function has no contextual type.
+        if property.type_annotation.is_none()
+            && self.class_declarations.last().copied().unwrap_or(false)
+        {
+            match &property.value {
+                Some(oxc_ast::ast::Expression::ArrowFunctionExpression(arrow)) => {
+                    self.params(&arrow.params)
+                }
+                Some(oxc_ast::ast::Expression::FunctionExpression(func)) => {
+                    self.params(&func.params)
+                }
+                _ => {}
             }
         }
         walk::walk_property_definition(self, property);

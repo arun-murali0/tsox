@@ -136,6 +136,16 @@ codegen-units = 1
 # Release speed with symbols kept, for heap and CPU profilers that need to name frames.
 #   cargo run --profile profiling --features dhat-heap --example dhat_heap
 # Add module-resolution to the features to include the multi-file project workloads.
+# For the corpus loop (`cargo xtask corpus run` with TSOX_BIN=target/corpus/tsox): the same code,
+# optimised enough to run all 10,083 files in well under a minute, and rebuilt incrementally in
+# seconds instead of the minutes fat LTO takes. Not for timing or for a release.
+[profile.corpus]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16
+incremental = true
+
 [profile.profiling]
 inherits = "release"
 debug = true

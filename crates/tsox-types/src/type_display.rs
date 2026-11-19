@@ -664,6 +664,7 @@ mod tests {
         let (number, string) = (arena.number(), arena.string());
         let obj = arena.alloc(Type::Object(ObjectType::new(vec![
             PropertyEntry {
+                order: Default::default(),
                 name: "y".into(),
                 type_id: string,
                 optional: true,
@@ -671,6 +672,7 @@ mod tests {
                 modifiers: Default::default(),
             },
             PropertyEntry {
+                order: Default::default(),
                 name: "x".into(),
                 type_id: number,
                 optional: false,
@@ -688,6 +690,7 @@ mod tests {
         let mut arena = TypeArena::new();
         let string = arena.string();
         let inner = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
+            order: Default::default(),
             name: "name".into(),
             type_id: string,
             optional: false,
@@ -696,6 +699,7 @@ mod tests {
         }])));
         let arr = arena.alloc(Type::Array(inner));
         let outer = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
+            order: Default::default(),
             name: "items".into(),
             type_id: arr,
             optional: false,
@@ -782,6 +786,7 @@ mod tests {
         let mut arena = TypeArena::new();
         let string = arena.string();
         let body = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
+            order: Default::default(),
             name: "name".into(),
             type_id: string,
             optional: false,
@@ -841,6 +846,7 @@ mod tests {
         let mut arena = TypeArena::new();
         let string = arena.string();
         let body = arena.alloc(Type::Object(ObjectType::new(vec![PropertyEntry {
+            order: Default::default(),
             name: "name".into(),
             type_id: string,
             optional: false,

@@ -13,8 +13,8 @@ mod support;
 mod variables;
 
 pub(super) use patterns::{bind_params, bind_pattern};
-pub(in crate::bridge) use support::implicit_any_bindings;
 pub(super) use support::statement_leaves_flow;
+pub(in crate::bridge) use support::{implicit_any_bindings, report_implicit_any_params};
 
 use classes::check_class_declaration;
 pub(in crate::bridge) use classes::report_class_surface;
