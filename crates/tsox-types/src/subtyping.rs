@@ -10,6 +10,15 @@ use crate::types::{ObjectType, Param, TupleElement, Type, TypeParameterId};
 // that already failed to check, would need its own arm in every single case of that
 // match instead of one shared escape hatch here.
 pub fn is_subtype(arena: &TypeArena, sub: TypeId, sup: TypeId) -> bool {
+    // A deferred type (`T["k"]`, an indexed access on a type parameter) cannot be
+    // reduced here, and tsc decides it by rules this checker does not have. Giving up in the
+    // lenient direction reports fewer errors, never an invented one.
+    if sub != sup
+        && matches!(arena.get(sub), Type::IndexedAccess(..))
+        && crate::semantic::GenericSolver::contains_type_param(arena, sub)
+    {
+        return true;
+    }
     is_subtype_inner(arena, sub, sup, &mut PairStack::new(), &[])
 }
 
