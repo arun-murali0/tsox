@@ -14,4 +14,4 @@ checker running in-process, with no Node and no `tsc`.
 Commands: **tsox: Restart Language Server**, **tsox: Show Output**.
 
 tsox is young. It reports what it finds itself and may differ from `tsc`; please report
-differences at https://github.com/arun-murali0/tsox/issues.
+differences at https://github.com/tsoxide/tsox/issues.

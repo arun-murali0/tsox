@@ -1,7 +1,7 @@
 # tsox Documentation
 
 This directory is the maintained technical guide for tsox, and the source of the documentation site
-(https://arun-murali0.github.io/tsox/).
+(https://tsoxide.github.io/tsox/).
 
 - Using tsox: [install](guide/install.md), [command line](guide/cli.md), [editors](guide/editors.md),
   [npm](guide/npm.md), [try a build](guide/try-it.md).

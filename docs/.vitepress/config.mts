@@ -18,7 +18,7 @@ export default defineConfig({
       { text: "Architecture", link: "/architecture" },
       { text: "Contributing", link: "/contributing" },
       { text: "Roadmap", link: "/roadmap" },
-      { text: "GitHub", link: "https://github.com/arun-murali0/tsox" },
+      { text: "GitHub", link: "https://github.com/tsoxide/tsox" },
     ],
     sidebar: [
       {
@@ -85,9 +85,9 @@ export default defineConfig({
       },
     ],
     search: { provider: "local" },
-    socialLinks: [{ icon: "github", link: "https://github.com/arun-murali0/tsox" }],
+    socialLinks: [{ icon: "github", link: "https://github.com/tsoxide/tsox" }],
     editLink: {
-      pattern: "https://github.com/arun-murali0/tsox/edit/main/docs/:path",
+      pattern: "https://github.com/tsoxide/tsox/edit/main/docs/:path",
     },
     footer: { message: "MIT OR Apache-2.0" },
   },

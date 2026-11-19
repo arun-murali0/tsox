@@ -179,6 +179,20 @@ pub(super) fn holds_literal(ctx: &CheckContext<'_, '_>, declared: TypeId) -> boo
     match ctx.arena.get(declared) {
         Type::StringLiteral(_) | Type::NumberLiteral(_) | Type::BooleanLiteral(_) => true,
         Type::Union(members) => members.iter().any(|m| holds_literal(ctx, *m)),
+        // A type parameter whose constraint holds a literal or a primitive (`T extends "a" | "b"`,
+        // `K extends string`) asks for the literal too: tsc keeps `"1"` in `f({ value: "1" })`
+        // against `{ value: T }`, so that T can be inferred as `"1"` and not widened to string.
+        Type::GenericParameter(_, _, Some(bound)) => {
+            holds_literal(ctx, *bound) || holds_primitive(ctx, *bound)
+        }
+        _ => false,
+    }
+}
+
+fn holds_primitive(ctx: &CheckContext<'_, '_>, declared: TypeId) -> bool {
+    match ctx.arena.get(declared) {
+        Type::String | Type::Number | Type::Boolean => true,
+        Type::Union(members) => members.iter().any(|m| holds_primitive(ctx, *m)),
         _ => false,
     }
 }
@@ -303,6 +317,7 @@ pub(super) fn infer_array_expression_type(
     let mut element_types = Vec::with_capacity(array.elements.len());
     // Membership in `element_types`, so a literal of many distinct element types does one set
     // lookup per element instead of a scan of the list (the list keeps first-seen order).
+    let mut literal_types: Vec<TypeId> = Vec::new();
     let mut element_seen: std::collections::HashSet<TypeId> =
         std::collections::HashSet::with_capacity(array.elements.len());
 
@@ -340,9 +355,23 @@ pub(super) fn infer_array_expression_type(
             Some(d) if holds_literal(ctx, d) => type_id,
             _ => crate::types::widen(&ctx.arena, type_id),
         };
+        if is_object_literal(expr) && !literal_types.contains(&type_id) {
+            literal_types.push(type_id);
+        }
         if element_seen.insert(type_id) {
             element_types.push(type_id);
         }
+    }
+
+    // `[{ a: 1 }, { b: "x" }]`: the object literals are normalised against each other.
+    if literal_types.len() > 1 {
+        let normalised = normalize_object_literals(ctx, &literal_types);
+        for slot in element_types.iter_mut() {
+            if let Some(at) = literal_types.iter().position(|t| t == slot) {
+                *slot = normalised[at];
+            }
+        }
+        element_types.dedup();
     }
 
     let element_type = match element_types.len() {
@@ -352,4 +381,74 @@ pub(super) fn infer_array_expression_type(
     };
 
     ctx.arena.alloc(Type::Array(element_type))
+}
+
+// Problem: `cond ? { a: 1 } : { b: "x" }` and `[{ a: 1 }, { b: "x" }]` gave a union whose
+// members each lack the other's property, so `z.a` was reported (TS2339), where tsc accepts it.
+// Picked: tsc normalises the union of object literals: every member gets the properties it
+// lacks from the others as optional `undefined` (`{ a: number; b?: undefined } | { b: string;
+// a?: undefined }`). That is what lets `z.a ? ... : z.b` work, and it is what is printed.
+// Cost: only literals written in the expression itself are normalised; tsc also does it for a
+// variable that holds an object literal, which this does not see (the variable's type does
+// not remember it came from one).
+pub(super) fn normalize_object_literals(
+    ctx: &mut CheckContext<'_, '_>,
+    literals: &[TypeId],
+) -> Vec<TypeId> {
+    // Without strictNullChecks tsc fills the gaps with `any` and `undefined` is assignable
+    // to everything; neither is modelled for a missing property, so the union is left alone.
+    if !ctx.option(crate::check_options::OptionField::StrictNullChecks) {
+        return literals.to_vec();
+    }
+    let mut shapes: Vec<ObjectType> = Vec::with_capacity(literals.len());
+    for &id in literals {
+        match ctx.arena.get(id) {
+            Type::Object(object)
+                if object.string_index.is_none() && object.number_index.is_none() =>
+            {
+                shapes.push(object.clone())
+            }
+            _ => return literals.to_vec(),
+        }
+    }
+    let mut names: Vec<std::rc::Rc<str>> = Vec::new();
+    for shape in &shapes {
+        for property in shape.properties.iter() {
+            if !names.contains(&property.name) {
+                names.push(property.name.clone());
+            }
+        }
+    }
+    let undefined = ctx.arena.undefined();
+    let mut out = Vec::with_capacity(literals.len());
+    for (&id, shape) in literals.iter().zip(&shapes) {
+        let missing: Vec<&std::rc::Rc<str>> = names
+            .iter()
+            .filter(|name| !shape.properties.iter().any(|p| &p.name == *name))
+            .collect();
+        if missing.is_empty() {
+            out.push(id);
+            continue;
+        }
+        let mut properties: Vec<PropertyEntry> = shape.properties.to_vec();
+        for name in missing {
+            properties.push(PropertyEntry {
+                name: name.clone(),
+                type_id: undefined,
+                optional: true,
+                is_method: false,
+                modifiers: Default::default(),
+            });
+        }
+        out.push(ctx.arena.alloc(Type::Object(ObjectType::new(properties))));
+    }
+    out
+}
+
+/// An expression that is an object literal, seen through parentheses.
+pub(super) fn is_object_literal(expr: &oxc_ast::ast::Expression<'_>) -> bool {
+    matches!(
+        expr.without_parentheses(),
+        oxc_ast::ast::Expression::ObjectExpression(_)
+    )
 }

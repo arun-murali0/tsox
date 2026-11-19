@@ -34,7 +34,7 @@ issue for a person to resolve.
 ## GitHub Pages
 
 Settings → Pages → Source: **GitHub Actions**. The `Docs` workflow builds this site and deploys it
-from `main`, at `https://arun-murali0.github.io/tsox/`.
+from `main`, at `https://tsoxide.github.io/tsox/`.
 
 ## Releasing
 

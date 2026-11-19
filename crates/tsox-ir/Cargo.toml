@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
 description = "A typed mid-level IR, lowered from the AST and the semantic model, for native and WASM back ends."
 
 [lints]

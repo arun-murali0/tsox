@@ -881,3 +881,15 @@ pub fn contains_type_param(arena: &TypeArena, type_id: TypeId) -> bool {
     }
     !free_generic_params(arena, type_id).is_empty()
 }
+
+/// Whether a type mentions a free type parameter that is one of `ids`.
+pub fn mentions_any_param(
+    arena: &TypeArena,
+    type_id: TypeId,
+    ids: &[crate::types::TypeParameterId],
+) -> bool {
+    contains_type_param(arena, type_id)
+        && free_generic_params(arena, type_id)
+            .iter()
+            .any(|&(id, _)| ids.contains(&id))
+}

@@ -2,7 +2,7 @@
 
 A TypeScript type checker written in Rust, built to WebAssembly. It checks one source string and
 returns diagnostics. It is an early release: it reports what it finds itself and can differ from
-`tsc`. Please report differences at https://github.com/arun-murali0/tsox/issues.
+`tsc`. Please report differences at https://github.com/tsoxide/tsox/issues.
 
 ## Node
 
