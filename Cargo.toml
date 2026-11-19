@@ -165,22 +165,22 @@ authors = ["arun-murali <arunmurali0810@gmail.com>"]
 collapsible_if = "allow"
 
 [workspace.dependencies]
-oxc_allocator = "=0.151.0"
-oxc_ast = "=0.151.0"
-oxc_ast_visit = "=0.151.0"
-oxc_span = "=0.151.0"
-oxc_parser = "=0.151.0"
-oxc_semantic = { version = "=0.151.0", features = ["cfg"] }
-oxc_cfg = "=0.151.0"
-oxc_codegen = "=0.151.0"
-oxc_transformer = "=0.151.0"
+oxc_allocator = "=0.158.0"
+oxc_ast = "=0.158.0"
+oxc_ast_visit = "=0.158.0"
+oxc_span = "=0.158.0"
+oxc_parser = "=0.158.0"
+oxc_semantic = { version = "=0.158.0", features = ["cfg"] }
+oxc_cfg = "=0.158.0"
+oxc_codegen = "=0.158.0"
+oxc_transformer = "=0.158.0"
 oxc_resolver = "=11.24.3"
 thiserror = "2"
 tracing = "0.1"
 smallvec = "1.16"
 rayon = "1.10"
 salsa = "=0.28.5"
-bumpalo = "=3.20.3"
+bumpalo = "=3.20.4"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 serde = { version = "1", features = ["derive", "rc"] }
 proc-macro2 = "1.0.107"
