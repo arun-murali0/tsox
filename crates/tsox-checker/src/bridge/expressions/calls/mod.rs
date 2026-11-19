@@ -323,6 +323,35 @@ pub(super) fn infer_new_expression_type(
         return ctx.arena.alloc_promise(value);
     }
 
+    // A mixin result: `Constructor<Tagged> & typeof Base` constructs the intersection of what
+    // each constructor builds (tsc's mixin rule), not whatever the first signature builds.
+    if let Type::Intersection(members) = ctx.arena.get(callee_type).clone() {
+        let built: Vec<TypeId> = members
+            .iter()
+            .filter_map(|&member| match ctx.arena.get(member) {
+                Type::Function(f) => Some(f.return_type),
+                _ => None,
+            })
+            .collect();
+        let has_mixin_signature = members.iter().any(|&member| {
+            matches!(ctx.arena.get(member), Type::Function(f)
+                if f.params.len() == 1
+                    && f.params[0].rest
+                    && matches!(ctx.arena.get(f.params[0].type_id), Type::Array(e) if matches!(ctx.arena.get(*e), Type::Any)))
+        });
+        if has_mixin_signature && built.len() >= 2 && built.len() == members.len() {
+            for argument in &new_expr.arguments {
+                if let Some(expression) = argument.as_expression() {
+                    infer_expression_type(expression, scoping, ctx);
+                }
+            }
+            return ctx
+                .arena
+                .alloc_intersection(built.clone())
+                .unwrap_or(built[0]);
+        }
+    }
+
     check_callable(
         callee_type,
         CallSite {

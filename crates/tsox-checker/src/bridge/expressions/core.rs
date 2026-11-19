@@ -110,7 +110,9 @@ pub fn resolve_identifier_type(
             );
             return ctx.arena.error();
         }
-        if spaces.has_type && !spaces.has_value {
+        // A name that is also declared as a value (`type X` beside `declare function X`) has a
+        // value side the capability table does not record.
+        if spaces.has_type && !spaces.has_value && ctx.symbols.get(symbol_id).is_none() {
             ctx.error(
                 crate::diagnostic_messages::messages::type_used_as_value(&ident.name),
                 ident.span(),
