@@ -198,7 +198,7 @@
 "compiler__thisCapture1.ts": {"v":"MATCH","lines":[]},
 "compiler__thisConditionalOnMethodReturnOfGenericInstance.ts": {"v":"MATCH","lines":[]},
 "compiler__thisExpressionInCallExpressionWithTypeArguments.ts": {"v":"MATCH","lines":[{"line":3,"result":"exact","tsox":["TS2558 Expected 1 type arguments, but got 2."],"tsc":["TS2558 Expected 1 type arguments, but got 2."]}]},
-"compiler__thisExpressionInIndexExpression.ts": {"v":"GAP","lines":[{"line":4,"result":"gap","tsox":[],"tsc":["TS7006 Parameter 'r' implicitly has an 'any' type.","TS2683 'this' implicitly has type 'any' because it does not have a type annotation."]}]},
+"compiler__thisExpressionInIndexExpression.ts": {"v":"CODE DIFFERS","lines":[{"line":4,"result":"code","tsox":["TS7006 Parameter 'r' implicitly has an 'any' type."],"tsc":["TS7006 Parameter 'r' implicitly has an 'any' type.","TS2683 'this' implicitly has type 'any' because it does not have a type annotation."]}]},
 "compiler__thisExpressionOfGenericObject.ts": {"v":"MATCH","lines":[{"line":3,"result":"exact","tsox":["TS2564 Property 'obj' has no initializer and is not definitely assigned in the constructor."],"tsc":["TS2564 Property 'obj' has no initializer and is not definitely assigned in the constructor."]}]},
 "compiler__thisInAccessors.ts": {"v":"MATCH","lines":[]},
 "compiler__thisInArrowFunctionInStaticInitializer1.ts": {"v":"MATCH","lines":[{"line":3,"result":"exact","tsox":["TS7006 Parameter 'a' implicitly has an 'any' type."],"tsc":["TS7006 Parameter 'a' implicitly has an 'any' type."]}]},
