@@ -144,6 +144,9 @@ pub struct CheckContext<'ast, 'src> {
     pub in_constructor: bool,
     /// Abstract member names per top-level class: implementing one needs no `override`.
     pub abstract_members: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    /// Static member names per top-level class, inherited ones included: a static member that
+    /// redeclares one needs `override` under `noImplicitOverride` (TS4114).
+    pub static_members: std::collections::HashMap<String, std::collections::HashSet<String>>,
     /// Names already compared with `==` or `===`: such a comparison narrows the name for the
     /// code after it, so a later literal comparison is not judged on the declared literal type.
     pub compared_names: std::collections::HashSet<String>,
@@ -565,6 +568,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             loop_probe: false,
             operand_spans: None,
             abstract_members: Default::default(),
+            static_members: Default::default(),
             bracket_access: false,
             implicit_this: false,
             next_function_has_no_this: false,
