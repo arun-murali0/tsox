@@ -75,6 +75,7 @@ pub fn apply(symbol: SymbolId, base: TypeId, ctx: &mut CheckContext<'_, '_>) -> 
         .clone()
         .into_iter()
         .map(|n| PropertyEntry {
+            order: Default::default(),
             name: n.as_str().into(),
             type_id: any,
             optional: false,

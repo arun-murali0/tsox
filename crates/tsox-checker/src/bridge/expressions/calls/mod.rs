@@ -259,6 +259,7 @@ fn settled_result(
 ) -> TypeId {
     let status_literal = ctx.arena.alloc(Type::StringLiteral(status.into()));
     let entry = |name: &str, type_id: TypeId| crate::types::PropertyEntry {
+        order: Default::default(),
         name: name.into(),
         type_id,
         optional: false,

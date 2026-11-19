@@ -1014,6 +1014,7 @@ mod tests {
                 .into_iter()
                 .enumerate()
                 .map(|(index, name)| PropertyEntry {
+                    order: Default::default(),
                     name: name.into(),
                     type_id: if index == 0 { first } else { string },
                     optional: false,
@@ -1105,6 +1106,7 @@ mod tests {
         let number = arena.number();
         let object = arena.alloc(Type::Object(ObjectType::new(vec![
             crate::types::PropertyEntry {
+                order: Default::default(),
                 name: "length".into(),
                 type_id: number,
                 optional: false,
@@ -1473,6 +1475,7 @@ mod tests {
         let properties: Vec<PropertyEntry> = props
             .iter()
             .map(|&(name, type_id, optional)| PropertyEntry {
+                order: Default::default(),
                 name: name.into(),
                 type_id,
                 optional,
@@ -1715,6 +1718,7 @@ mod intersection_relation_tests {
         let entries = properties
             .iter()
             .map(|&(name, type_id, optional)| PropertyEntry {
+                order: Default::default(),
                 name: name.into(),
                 type_id,
                 optional,

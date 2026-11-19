@@ -426,6 +426,7 @@ impl Substitution<'_> {
                 let mut properties = Vec::with_capacity(object.properties.len());
                 for p in object.properties.iter() {
                     properties.push(PropertyEntry {
+                        order: Default::default(),
                         name: p.name.clone(),
                         type_id: self.rewrite(arena, p.type_id, cut),
                         optional: p.optional,

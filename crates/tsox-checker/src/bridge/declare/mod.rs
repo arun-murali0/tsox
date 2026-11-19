@@ -557,6 +557,7 @@ fn namespace_properties(
         let mut add = |name: &str, symbol: Option<oxc_semantic::SymbolId>| -> Option<()> {
             let type_id = ctx.symbols.get(symbol?)?;
             properties.push(crate::types::PropertyEntry {
+                order: Default::default(),
                 name: name.into(),
                 type_id,
                 optional: false,
@@ -595,6 +596,7 @@ fn namespace_properties(
                         })?,
                     };
                     properties.push(crate::types::PropertyEntry {
+                        order: Default::default(),
                         name: id.name.as_str().into(),
                         type_id,
                         optional: false,

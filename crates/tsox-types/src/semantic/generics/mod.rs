@@ -158,6 +158,7 @@ mod tests {
 
     fn property(name: &str, type_id: TypeId) -> PropertyEntry {
         PropertyEntry {
+            order: Default::default(),
             name: name.into(),
             type_id,
             optional: false,

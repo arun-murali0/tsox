@@ -102,6 +102,7 @@ pub(super) fn infer_object_expression_type(
         upsert_property(
             &mut properties,
             PropertyEntry {
+                order: Default::default(),
                 name: name.into(),
                 type_id,
                 optional: false,
@@ -433,6 +434,7 @@ pub(super) fn normalize_object_literals(
         let mut properties: Vec<PropertyEntry> = shape.properties.to_vec();
         for name in missing {
             properties.push(PropertyEntry {
+                order: Default::default(),
                 name: name.clone(),
                 type_id: undefined,
                 optional: true,

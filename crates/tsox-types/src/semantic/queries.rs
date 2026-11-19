@@ -265,6 +265,7 @@ mod tests {
         let declaration = arena.alloc_ref();
         let shape = |arena: &TypeArena| {
             Type::Object(ObjectType::new(vec![PropertyEntry {
+                order: Default::default(),
                 name: "value".into(),
                 type_id: arena.number(),
                 optional: false,

@@ -116,6 +116,7 @@ pub(super) fn narrow_by_property_presence(
         let unknown = arena.unknown();
         let record = arena.alloc(Type::Object(crate::types::ObjectType::new(vec![
             crate::types::PropertyEntry {
+                order: Default::default(),
                 name: property.into(),
                 type_id: unknown,
                 optional: false,
