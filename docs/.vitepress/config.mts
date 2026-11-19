@@ -8,10 +8,10 @@ export default defineConfig({
   base: process.env.DOCS_BASE ?? "/",
   cleanUrls: true,
   lastUpdated: true,
-  // The conformance folder is raw baseline data, not prose.
-  srcExclude: ["architecture/current-workflow-notes.md", "conformance/**", "node_modules/**"],
+  // conformance/ holds one page (the part 01-05 baseline) and its raw CSV, which is not a page.
+  srcExclude: ["architecture/current-workflow-notes.md", "node_modules/**"],
   // The design notes link to source files and to each other by repository path.
-  ignoreDeadLinks: true,
+  ignoreDeadLinks: false,
   themeConfig: {
     nav: [
       { text: "Guide", link: "/guide/install" },
