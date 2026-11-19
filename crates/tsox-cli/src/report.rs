@@ -90,7 +90,10 @@ fn groups(gave_up: &[GaveUp]) -> BTreeMap<&str, Group<'_>> {
         by_code
             .entry(item.code.as_str())
             .and_modify(|g| g.count += 1)
-            .or_insert(Group { count: 1, example: item });
+            .or_insert(Group {
+                count: 1,
+                example: item,
+            });
     }
     by_code
 }
@@ -106,7 +109,11 @@ fn header(ctx: &Context, gave_up: &[GaveUp]) -> String {
         ctx.errors,
         ctx.warnings,
         gave_up.len(),
-        if ctx.flags.is_empty() { "(none)" } else { &ctx.flags },
+        if ctx.flags.is_empty() {
+            "(none)"
+        } else {
+            &ctx.flags
+        },
         fingerprint(&codes)
     )
 }
@@ -118,13 +125,23 @@ pub fn local_markdown(ctx: &Context, gave_up: &[GaveUp], root: &std::path::Path)
     out += &header(ctx, gave_up);
     out += "```\n\n| Code | Count | Example message |\n| --- | ---: | --- |\n";
     for (code, group) in groups(gave_up) {
-        out += &format!("| {code} | {} | {} |\n", group.count, group.example.message.replace('|', "\\|"));
+        out += &format!(
+            "| {code} | {} | {} |\n",
+            group.count,
+            group.example.message.replace('|', "\\|")
+        );
     }
     out += "\n## Sites\n\n";
     for item in gave_up {
         let path = std::path::Path::new(&item.file);
         let shown = path.strip_prefix(root).unwrap_or(path);
-        out += &format!("- `{}:{}` {} {}\n", shown.display(), item.line, item.code, item.message);
+        out += &format!(
+            "- `{}:{}` {} {}\n",
+            shown.display(),
+            item.line,
+            item.code,
+            item.message
+        );
     }
     out
 }
@@ -142,7 +159,11 @@ pub fn issue_body(ctx: &Context, gave_up: &[GaveUp], keep_names: bool) -> String
         } else {
             redact(&group.example.message)
         };
-        out += &format!("| {code} | {} | {} |\n", group.count, message.replace('|', "\\|").replace('\n', " "));
+        out += &format!(
+            "| {code} | {} | {} |\n",
+            group.count,
+            message.replace('|', "\\|").replace('\n', " ")
+        );
     }
     out += "\nWhat the code looked like (optional, written by the reporter):\n\n";
     out
@@ -152,7 +173,12 @@ pub fn issue_title(gave_up: &[GaveUp]) -> String {
     let groups = groups(gave_up);
     let codes: Vec<&str> = groups.keys().copied().take(4).collect();
     let more = if groups.len() > 4 { ", ..." } else { "" };
-    format!("[unsupported] {}{} ({} places)", codes.join(", "), more, gave_up.len())
+    format!(
+        "[unsupported] {}{} ({} places)",
+        codes.join(", "),
+        more,
+        gave_up.len()
+    )
 }
 
 /// Percent-encoding for a query value: everything but the unreserved characters.
@@ -160,7 +186,9 @@ pub fn encode(text: &str) -> String {
     let mut out = String::with_capacity(text.len() * 2);
     for byte in text.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -191,11 +219,23 @@ pub fn issue_url(repo: &str, title: &str, body: &str) -> String {
 pub fn open_in_browser(url: &str) {
     use std::process::{Command, Stdio};
     let attempt = if cfg!(target_os = "windows") {
-        Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).stdout(Stdio::null()).stderr(Stdio::null()).status()
+        Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
     } else if cfg!(target_os = "macos") {
-        Command::new("open").arg(url).stdout(Stdio::null()).stderr(Stdio::null()).status()
+        Command::new("open")
+            .arg(url)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
     } else {
-        Command::new("xdg-open").arg(url).stdout(Stdio::null()).stderr(Stdio::null()).status()
+        Command::new("xdg-open")
+            .arg(url)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
     };
     let _ = attempt;
 }
@@ -206,7 +246,16 @@ pub fn submit_with_gh(repo: &str, title: &str, body: &str) -> Result<String, Str
     use std::io::Write;
     use std::process::{Command, Stdio};
     let mut child = Command::new("gh")
-        .args(["issue", "create", "--repo", repo, "--title", title, "--body-file", "-"])
+        .args([
+            "issue",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            title,
+            "--body-file",
+            "-",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -231,10 +280,23 @@ mod tests {
     use super::*;
 
     fn item(code: &str, message: &str) -> GaveUp {
-        GaveUp { file: "/home/me/secret/app.ts".into(), line: 7, code: code.into(), message: message.into() }
+        GaveUp {
+            file: "/home/me/secret/app.ts".into(),
+            line: 7,
+            code: code.into(),
+            message: message.into(),
+        }
     }
     fn ctx() -> Context {
-        Context { version: "0.0.0", os: "linux", arch: "x86_64", flags: String::new(), files: 3, errors: 0, warnings: 2 }
+        Context {
+            version: "0.0.0",
+            os: "linux",
+            arch: "x86_64",
+            flags: String::new(),
+            files: 3,
+            errors: 0,
+            warnings: 2,
+        }
     }
 
     #[test]
@@ -246,7 +308,10 @@ mod tests {
 
     #[test]
     fn the_issue_text_has_no_path_line_or_name() {
-        let gave_up = vec![item("TSR9012", "annotation 'SecretType' could not be resolved"), item("TSR9012", "annotation 'Other' could not be resolved")];
+        let gave_up = vec![
+            item("TSR9012", "annotation 'SecretType' could not be resolved"),
+            item("TSR9012", "annotation 'Other' could not be resolved"),
+        ];
         let body = issue_body(&ctx(), &gave_up, false);
         assert!(!body.contains("secret"));
         assert!(!body.contains("app.ts"));
@@ -273,7 +338,9 @@ mod tests {
     #[test]
     fn encoding_and_the_link_stay_in_bounds() {
         assert_eq!(encode("a b&c"), "a%20b%26c");
-        let long: String = (0..2000).map(|i| format!("line {i} with some text\n")).collect();
+        let long: String = (0..2000)
+            .map(|i| format!("line {i} with some text\n"))
+            .collect();
         let url = issue_url(DEFAULT_REPO, "t", &long);
         assert!(url.len() < 8000, "{}", url.len());
         assert!(url.starts_with("https://github.com/tsoxide/tsox/issues/new?title=t&body="));

@@ -221,14 +221,18 @@ fn handle_report(
         return None;
     }
     if tally.gave_up.is_empty() {
-        println!("\nreport: tsox did not skip anything in this run, so there is nothing to report.");
+        println!(
+            "\nreport: tsox did not skip anything in this run, so there is nothing to report."
+        );
         return None;
     }
     let repo = env::var("TSOX_REPORT_REPO").unwrap_or_else(|_| report::DEFAULT_REPO.to_string());
     let flags: Vec<&str> = args
         .iter()
         .map(String::as_str)
-        .filter(|a| a.starts_with("--") && !a.starts_with("--project") && !a.starts_with("--report"))
+        .filter(|a| {
+            a.starts_with("--") && !a.starts_with("--project") && !a.starts_with("--report")
+        })
         .collect();
     let _ = options;
     let ctx = report::Context {
@@ -242,7 +246,10 @@ fn handle_report(
     };
     if let Some(path) = file_flag {
         match fs::write(&path, report::local_markdown(&ctx, &tally.gave_up, root)) {
-            Ok(()) => println!("\nreport: wrote {path} ({} places). It stays on this machine.", tally.gave_up.len()),
+            Ok(()) => println!(
+                "\nreport: wrote {path} ({} places). It stays on this machine.",
+                tally.gave_up.len()
+            ),
             Err(error) => {
                 eprintln!("error: could not write {path}: {error}");
                 return Some(ExitCode::from(2));
@@ -254,12 +261,16 @@ fn handle_report(
         let title = report::issue_title(&tally.gave_up);
         let body = report::issue_body(&ctx, &tally.gave_up, keep_names);
         if submit {
-            println!("\nreport: this exact text would be posted to https://github.com/{repo}/issues\n\n{title}\n\n{body}");
+            println!(
+                "\nreport: this exact text would be posted to https://github.com/{repo}/issues\n\n{title}\n\n{body}"
+            );
             let yes = args.iter().any(|a| a == "--yes");
             if !yes {
                 use std::io::{BufRead, IsTerminal, Write};
                 if !std::io::stdin().is_terminal() {
-                    eprintln!("error: --report-submit asks for confirmation; pass --yes to confirm without a terminal");
+                    eprintln!(
+                        "error: --report-submit asks for confirmation; pass --yes to confirm without a terminal"
+                    );
                     return Some(ExitCode::from(2));
                 }
                 print!("Post it? [y/N] ");
