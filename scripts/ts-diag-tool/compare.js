@@ -142,6 +142,10 @@ const mapIndex = args.indexOf("--reference-map");
 const referenceMapDir = mapIndex === -1 ? null : args[mapIndex + 1];
 const refName = referenceMapDir ? "map" : tsgoMode ? "tsgo" : "tsc";
 const moduleMode = args.includes("--module") || tsgoMode;
+// --cases: the target is a folder of cases (each a folder of files, as the corpus's project parts
+// are). tsox checks every case as a project of its own, so a global name in one case never meets
+// another's; the results are read together. Run with the map, tsc is not run at all.
+const casesMode = args.includes("--cases");
 const runs = intFlag("--runs") ?? (moduleMode ? 5 : 1);
 const threads = intFlag("--threads");
 // tsox checks each file alone, with no module graph (see the doc comment above).
@@ -464,6 +468,29 @@ function runMeasured(cmd, { measure, label, env }) {
 
 function runTsox(extraArgs, { measure }) {
   const flatArgs = flatMode ? ["--flat"] : [];
+  if (casesMode) {
+    const outs = [];
+    let wallMs = 0;
+    let maxRssKb = null;
+    let how = null;
+    for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      // A case with only declaration files has nothing for tsox to select.
+      if (collectProjectFiles(path.join(target, entry.name)).length === 0) continue;
+      const config = path.join(target, entry.name, ".compare-tsconfig.json");
+      fs.writeFileSync(config, JSON.stringify({ compilerOptions: tsoxCompilerOptions }));
+      const run = runMeasured([tsoxBin, "--project", config, ...flatArgs, ...extraArgs], {
+        measure,
+        label: `tsox (${entry.name})`,
+      });
+      outs.push(run.stdout);
+      wallMs += run.wallMs ?? 0;
+      if (run.maxRssKb !== null) maxRssKb = Math.max(maxRssKb ?? 0, run.maxRssKb);
+      how = run.how;
+      fs.rmSync(config, { force: true });
+    }
+    return { stdout: outs.join("\n"), wallMs, maxRssKb, how };
+  }
   return runMeasured(
     [tsoxBin, "--project", tsconfigPath, ...flatArgs, ...extraArgs],
     {
@@ -976,9 +1003,14 @@ function runMappedReference() {
       "utf8",
     ),
   );
-  const found = collectTsFiles(target).sort();
+  // A project part is a folder of cases: its files are keyed `case/relative/path`, so two cases
+  // with an `a.ts` of their own stay apart. A single-file part is keyed by the bare file name.
+  const found = (moduleMode ? collectProjectFiles(target) : collectTsFiles(target)).sort();
   for (const fsPath of found) {
-    const entry = recorded[path.basename(fsPath)];
+    const key = moduleMode
+      ? path.relative(path.resolve(target), path.resolve(fsPath)).split(path.sep).join("/")
+      : path.basename(fsPath);
+    const entry = recorded[key];
     const results = [];
     for (const l of entry ? entry.lines : []) {
       for (const text of l.tsc) {

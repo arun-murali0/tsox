@@ -98,7 +98,38 @@ pub(super) fn claimed_type(
     ctx: &mut CheckContext<'_, '_>,
 ) -> Option<TypeId> {
     if !matches!(ctx.arena.get(claimed), Type::GenericParameter(..)) {
-        return Some(claimed);
+        if !crate::semantic::GenericSolver::contains_type_param(&ctx.arena, claimed) {
+            return Some(claimed);
+        }
+        // `target is { [K in P]: unknown }`: the claim is written in the callee's type
+        // parameters. Each one that is the type of a parameter is read from the argument
+        // given for it, and the claim is instantiated with those.
+        let signature = ctx.symbols.get(callee)?;
+        let Type::Function(function) = ctx.arena.get(signature).clone() else {
+            return Some(claimed);
+        };
+        let mut bindings = Vec::new();
+        for type_param in &function.type_params {
+            let Some(index) = function.params.iter().position(|p| {
+                matches!(ctx.arena.get(p.type_id), Type::GenericParameter(id, _, _) if *id == type_param.id)
+            }) else {
+                continue;
+            };
+            let Some(argument) = call.arguments.get(index).and_then(|a| a.as_expression()) else {
+                continue;
+            };
+            let before = ctx.diagnostics.len();
+            let inferred =
+                crate::bridge::expressions::infer_expression_type(argument, scoping, ctx);
+            ctx.diagnostics.truncate(before);
+            bindings.push((type_param.id, inferred));
+        }
+        let instantiated = crate::semantic::GenericSolver::substitute_bound_type_params(
+            &mut ctx.arena,
+            claimed,
+            &bindings,
+        );
+        return Some(instantiated);
     }
     let signature = ctx.symbols.get(callee)?;
     let Type::Function(function) = ctx.arena.get(signature).clone() else {
@@ -120,6 +151,12 @@ pub(super) fn narrow_to_claimed(
     claimed: TypeId,
     want_true: bool,
 ) -> TypeId {
+    // A claim still written in the callee's own type parameters (`target is { [K in P]: ... }`)
+    // was not instantiated with the call's arguments, and narrowing to it would put `P` into
+    // the caller's types: the value keeps its type.
+    if crate::semantic::GenericSolver::contains_type_param(arena, claimed) {
+        return current;
+    }
     let members = union_members(arena, current).unwrap_or_else(|| vec![current]);
     let mut kept = Vec::with_capacity(members.len());
     for member in &members {

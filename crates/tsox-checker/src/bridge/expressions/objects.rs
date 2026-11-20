@@ -67,7 +67,10 @@ pub(super) fn infer_object_expression_type(
             PropertyKey::StaticIdentifier(key) => key.name.to_string(),
             PropertyKey::StringLiteral(key) => key.value.to_string(),
             PropertyKey::NumericLiteral(key) => key.value.to_string(),
-            _ => continue,
+            other => match tsox_types::type_annotation::well_known_symbol_key(other) {
+                Some(name) => name,
+                None => continue,
+            },
         };
         let declared = expected
             .map(|e| declared_properties(ctx, e, &name))

@@ -28,16 +28,16 @@ itself and can differ from `tsc`: it misses some errors (gaps) and, less often, 
 `tsc` does not (a false positive).
 
 How close it is to `tsc` is measured, not claimed. Every change is run over TypeScript's own test
-suite (the single-file cases of release **v6.0.3**, 10,083 files) and compared with a recorded map
+suite (every case of release **v6.0.3**: 10,083 single-file cases and 2,313 multi-file or JSX cases, 14,274 files) and compared with a recorded map
 of what `tsc` says:
 
 <!-- corpus-status:start -->
 | | |
 | --- | --- |
-| Files where tsox and tsc agree exactly | **5,197 of 10,083** (51.5%) |
-| Lines with a diagnostic from either side | 37,496, of which 17,837 agree |
-| Gaps (tsc reports, tsox misses) | 13,616 lines; most often TS2322 (1348), TS2339 (639), TS7006 (623), TS1005 (557), TS2304 (503) |
-| False positives (tsox reports, tsc does not) | 2,366 lines; most often TS2322 (646), TS2339 (528), TS2345 (348), TS2693 (181), TS2349 (96) |
+| Files where tsox and tsc agree exactly | **8,022 of 14,274** (56.2%) |
+| Lines with a diagnostic from either side | 41,878, of which 19,101 agree |
+| Gaps (tsc reports, tsox misses) | 16,190 lines; most often TS2322 (1556), TS7026 (1189), TS2339 (727), TS7006 (708), TS1005 (662) |
+| False positives (tsox reports, tsc does not) | 2,549 lines; most often TS2322 (654), TS2339 (582), TS2345 (351), TS2693 (212), TS2349 (117) |
 | Corpus | TypeScript v6.0.3, recorded in `tests/corpus/typescript-6.0.3` |
 <!-- corpus-status:end -->
 
@@ -122,6 +122,20 @@ cargo xtask corpus run && cargo xtask corpus verify    # the corpus map
 
 The checks that gate a merge are described in [contributing](docs/contributing.md) and
 [the corpus map](docs/corpus.md).
+
+## How it is made
+
+tsox is built with AI assistance (Claude, from Anthropic), and a person decides and checks what goes in:
+
+- **Design choices are human.** The maintainer sets the direction (the crate layers, what is built first,
+  what is left out) and records each decision, with its reason and what would reopen it, in
+  [decisions](docs/decisions.md).
+- **Every change is reviewed and applied by the maintainer.** The AI drafts code, tests and docs as patches; the
+  maintainer reads them, applies them and merges. Nothing reaches `main` without passing the checks below.
+- **Tests, not trust.** A change must pass **All green** and **Corpus map**: the output over TypeScript's own suite
+  may not get worse. The numbers in [Status](#status) are measured by that run, not written by hand.
+- **Say if it looks wrong.** AI-written code can be wrong in ways that are easy to miss. If tsox disagrees
+  with `tsc`, trust `tsc` and [report it](https://github.com/tsoxide/tsox/issues).
 
 ## Contributing
 

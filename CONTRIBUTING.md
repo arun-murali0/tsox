@@ -23,6 +23,14 @@ If results improved, `cargo xtask corpus update` records them; commit `tests/cor
 pull request. The owner's branches merge automatically; a pull request from anyone else is reviewed
 and merged by the owner. Details: `docs/contributing.md`, `docs/corpus.md`.
 
+## AI assistance
+
+Much of this code is drafted with AI assistance (Claude). That changes nothing about what a merge needs:
+a person reads every change, and it must pass the same checks. If you use an AI assistant for a pull request,
+you are responsible for the result. Read it, run the tests, and say so in the description. Design decisions
+are made by the maintainer and recorded in [docs/decisions.md](docs/decisions.md); a change that goes against
+one should say so and say why.
+
 ## Local checks
 
 ```bash

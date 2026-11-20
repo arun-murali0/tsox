@@ -1286,14 +1286,15 @@ pub fn resolve_object_members(
         // dropping just that member.
         let entry = match *member {
             TSSignature::TSPropertySignature(property) => {
-                let PropertyKey::StaticIdentifier(key) = &property.key else {
-                    return None;
+                let name: std::rc::Rc<str> = match &property.key {
+                    PropertyKey::StaticIdentifier(key) => key.name.to_string().into(),
+                    other => well_known_symbol_key(other)?.into(),
                 };
                 let annotation = property.type_annotation.as_ref()?;
                 let type_id = resolve_type_annotation(annotation, namespace, arena)?;
                 PropertyEntry {
                     order: Default::default(),
-                    name: key.name.to_string().into(),
+                    name,
                     type_id,
                     optional: property.optional,
                     is_method: false,
@@ -1390,14 +1391,12 @@ fn resolve_method_signature(
     namespace: &mut TypeNamespace,
     arena: &mut TypeArena,
 ) -> Option<PropertyEntry> {
-    if !matches!(method.kind, TSMethodSignatureKind::Method)
-        || method.computed
-        || method.this_param.is_some()
-    {
+    if !matches!(method.kind, TSMethodSignatureKind::Method) || method.this_param.is_some() {
         return None;
     }
-    let PropertyKey::StaticIdentifier(key) = &method.key else {
-        return None;
+    let name: std::rc::Rc<str> = match &method.key {
+        PropertyKey::StaticIdentifier(key) if !method.computed => key.name.to_string().into(),
+        other => well_known_symbol_key(other)?.into(),
     };
     let return_annotation = method.return_type.as_ref()?;
 
@@ -1417,12 +1416,29 @@ fn resolve_method_signature(
     }));
     Some(PropertyEntry {
         order: Default::default(),
-        name: key.name.to_string().into(),
+        name,
         type_id: function,
         optional: method.optional,
         is_method: true,
         modifiers: Default::default(),
     })
+}
+
+/// The name a member written `[Symbol.iterator]` is stored under: `@@iterator`. An identifier cannot
+/// start with `@`, so it never meets a property of that name written in source. Only the
+/// well-known symbols are read; a computed key of any other kind stays unrepresentable.
+pub fn well_known_symbol_key(key: &PropertyKey) -> Option<String> {
+    let PropertyKey::StaticMemberExpression(member) = key else {
+        return None;
+    };
+    let oxc_ast::ast::Expression::Identifier(object) = &member.object else {
+        return None;
+    };
+    // Only the iteration protocol is modelled: the other well-known members (`hasInstance`,
+    // `toStringTag`, `toPrimitive`, ...) sit on interfaces whose other parts are not all
+    // representable, and a type with only those members is worse than one without them.
+    (object.name == "Symbol" && matches!(&*member.property.name, "iterator" | "asyncIterator"))
+        .then(|| format!("@@{}", member.property.name))
 }
 
 struct DottedName<'n> {

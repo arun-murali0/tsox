@@ -5,5 +5,5 @@ class Point {
     return y;
   }
 
-  [Symbol.iterator]() {}
+  [Symbol.toPrimitive]() {}
 }

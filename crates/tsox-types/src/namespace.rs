@@ -2461,7 +2461,7 @@ fn static_member_name(key: &PropertyKey<'_>) -> Option<String> {
         PropertyKey::StaticIdentifier(id) => Some(id.name.to_string()),
         PropertyKey::StringLiteral(lit) => Some(lit.value.to_string()),
         PropertyKey::NumericLiteral(lit) => Some(lit.value.to_string()),
-        _ => None,
+        other => crate::type_annotation::well_known_symbol_key(other),
     }
 }
 
