@@ -123,6 +123,20 @@ cargo xtask corpus run && cargo xtask corpus verify    # the corpus map
 The checks that gate a merge are described in [contributing](docs/contributing.md) and
 [the corpus map](docs/corpus.md).
 
+## How it is made
+
+tsox is built with AI assistance (Claude, from Anthropic), and a person decides and checks what goes in:
+
+- **Design choices are human.** The maintainer sets the direction (the crate layers, what is built first,
+  what is left out) and records each decision, with its reason and what would reopen it, in
+  [decisions](docs/decisions.md).
+- **Every change is reviewed and applied by the maintainer.** The AI drafts code, tests and docs as patches; the
+  maintainer reads them, applies them and merges. Nothing reaches `main` without passing the checks below.
+- **Tests, not trust.** A change must pass **All green** and **Corpus map**: the output over TypeScript's own suite
+  may not get worse. The numbers in [Status](#status) are measured by that run, not written by hand.
+- **Say if it looks wrong.** AI-written code can be wrong in ways that are easy to miss. If tsox disagrees
+  with `tsc`, trust `tsc` and [report it](https://github.com/tsoxide/tsox/issues).
+
 ## Contributing
 
 Bug reports, failing cases and pull requests are welcome. The smallest source that shows a difference

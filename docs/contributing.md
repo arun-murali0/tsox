@@ -16,6 +16,13 @@ Every branch and pull request runs three checks. All must pass.
 the owner's account are merged automatically once they pass and a staging gate (tsox against real
 tsc on the fixtures) agrees. A pull request from anyone else is merged by the owner after review.
 
+## AI assistance
+
+Much of tsox is drafted with AI assistance (Claude). A person reads and checks every change, and it must pass the
+same checks as any other. If you use an AI assistant for a pull request, you are responsible for what you send:
+read it, run the tests, and say in the description that an assistant helped. The design choices are made by the
+maintainer and recorded in [decisions](decisions.md).
+
 ## A change, step by step
 
 <Flow :steps="['Fork and branch', 'Failing case first', 'Smallest change', 'scripts/ci.sh', 'Corpus map', 'Pull request']" />
