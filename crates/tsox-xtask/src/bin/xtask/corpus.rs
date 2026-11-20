@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const DEFAULT_TAG: &str = "v6.0.3";
 const PART_SIZE: usize = 500;
+const PROJECT_PART_SIZE: usize = 250;
 const REPO: &str = "https://github.com/microsoft/TypeScript";
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -68,6 +69,7 @@ struct Opts {
     parts: Vec<String>,
     positional: Option<PathBuf>,
     readme: bool,
+    real: bool,
 }
 
 fn parse(args: &[String]) -> Opts {
@@ -79,6 +81,7 @@ fn parse(args: &[String]) -> Opts {
         parts: vec![],
         positional: None,
         readme: false,
+        real: false,
     };
     let mut i = 0;
     while i < args.len() {
@@ -105,6 +108,7 @@ fn parse(args: &[String]) -> Opts {
                 i += 1
             }
             "--readme" => o.readme = true,
+            "--real" => o.real = true,
             other if !other.starts_with("--") => o.positional = Some(PathBuf::from(other)),
             _ => {}
         }
@@ -168,10 +172,12 @@ fn normalised(bytes: &[u8]) -> String {
 fn fetch(o: &Opts) -> Result<PathBuf, String> {
     let out = corpus_dir(o);
     let marker = out.join(".complete");
-    if marker.exists() {
+    let projects_marker = out.join(".projects-complete");
+    if marker.exists() && projects_marker.exists() {
         println!("{} is already fetched.", out.display());
         return Ok(out);
     }
+    let singles_done = marker.exists();
     let work = o.dest.join(format!("_clone-{}", o.tag));
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&o.dest).map_err(|e| e.to_string())?;
@@ -208,47 +214,132 @@ fn fetch(o: &Opts) -> Result<PathBuf, String> {
         "tests/cases/conformance",
     ])?;
 
-    // A case with more than one `// @filename:` is a multi-file project, which this corpus leaves out.
+    // A case with more than one `// @filename:` is a multi-file project, and a `.tsx` case has JSX.
+    // Neither fits the one-file-per-case parts, so each is split into a folder of its own, in the
+    // parts named `part-pNN` (the single-file parts keep their numbering, so the map does not move).
     let directive = Regex::new(r"(?im)^\s*//\s*@filename\s*:").unwrap();
     let cases = work.join("tests/cases");
     let mut chosen: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut projects: BTreeMap<String, PathBuf> = BTreeMap::new();
     for kind in ["compiler", "conformance"] {
         let mut files = Vec::new();
         walk(&cases.join(kind), &mut files);
         for path in files {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            if !name.ends_with(".ts") || name.ends_with(".d.ts") {
+            let tsx = name.ends_with(".tsx");
+            if !(name.ends_with(".ts") || tsx) || name.ends_with(".d.ts") {
                 continue;
             }
             let text =
                 String::from_utf8_lossy(&fs::read(&path).map_err(|e| e.to_string())?).into_owned();
-            if directive.find_iter(&text).count() > 1 {
-                continue;
-            }
             let rel = path.strip_prefix(&cases).unwrap();
             let joined: Vec<String> = rel
                 .components()
                 .map(|c| c.as_os_str().to_string_lossy().into_owned())
                 .collect();
-            chosen.insert(joined.join("__"), path);
+            if tsx || directive.find_iter(&text).count() > 1 {
+                let stem = joined.join("__");
+                let stem = stem
+                    .strip_suffix(".tsx")
+                    .or_else(|| stem.strip_suffix(".ts"))
+                    .unwrap_or(&stem)
+                    .to_string();
+                projects.insert(stem, path);
+            } else {
+                chosen.insert(joined.join("__"), path);
+            }
         }
     }
     for name in crashers() {
         chosen.remove(&name);
+        projects.remove(name.trim_end_matches(".ts").trim_end_matches(".tsx"));
     }
-    let _ = fs::remove_dir_all(&out);
     let mut count = 0;
-    for (i, (name, path)) in chosen.iter().enumerate() {
-        let part = out.join(format!("part-{:02}", i / PART_SIZE + 1));
-        fs::create_dir_all(&part).map_err(|e| e.to_string())?;
+    if !singles_done {
+        let _ = fs::remove_dir_all(&out);
+        for (i, (name, path)) in chosen.iter().enumerate() {
+            let part = out.join(format!("part-{:02}", i / PART_SIZE + 1));
+            fs::create_dir_all(&part).map_err(|e| e.to_string())?;
+            let text = normalised(&fs::read(path).map_err(|e| e.to_string())?);
+            fs::write(part.join(name), text).map_err(|e| e.to_string())?;
+            count = i + 1;
+        }
+        fs::write(&marker, format!("{} {} files\n", o.tag, count)).map_err(|e| e.to_string())?;
+    }
+    let mut cases_written = 0;
+    for (i, (name, path)) in projects.iter().enumerate() {
+        let case = out
+            .join(format!("part-p{:02}", i / PROJECT_PART_SIZE + 1))
+            .join(name);
         let text = normalised(&fs::read(path).map_err(|e| e.to_string())?);
-        fs::write(part.join(name), text).map_err(|e| e.to_string())?;
-        count = i + 1;
+        let base = path.file_name().unwrap().to_string_lossy().into_owned();
+        for (file, content) in split_case(&text, &base) {
+            let target = case.join(&file);
+            fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+            fs::write(target, content).map_err(|e| e.to_string())?;
+        }
+        cases_written = i + 1;
     }
     let _ = fs::remove_dir_all(&work);
-    fs::write(&marker, format!("{} {} files\n", o.tag, count)).map_err(|e| e.to_string())?;
-    println!("fetched {count} files of {} into {}", o.tag, out.display());
+    fs::write(
+        &projects_marker,
+        format!("{} {} cases\n", o.tag, cases_written),
+    )
+    .map_err(|e| e.to_string())?;
+    println!(
+        "fetched {count} single files and {cases_written} multi-file or JSX cases of {} into {}",
+        o.tag,
+        out.display()
+    );
     Ok(out)
+}
+
+/// How the test harness reads a case: every `// @name: value` line is an option and is not part
+/// of any file, and `// @filename: x` starts the file `x`. A case with no `@filename` is one file
+/// named after the case. Names are made relative to the case folder, and never leave it.
+fn split_case(text: &str, base: &str) -> Vec<(String, String)> {
+    let option = Regex::new(r"(?i)^\s*//\s*@(\w+)\s*:\s*(.*)$").unwrap();
+    let mut files: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, Vec<&str>)> = None;
+    let mut saw_name = false;
+    for line in text.lines() {
+        if let Some(m) = option.captures(line) {
+            if m[1].eq_ignore_ascii_case("filename") {
+                saw_name = true;
+                if let Some((name, body)) = current.take() {
+                    files.push((name, body.join("\n")));
+                }
+                current = Some((m[2].trim().to_string(), Vec::new()));
+            }
+            continue;
+        }
+        if let Some((_, body)) = current.as_mut() {
+            body.push(line);
+        }
+    }
+    if let Some((name, body)) = current.take() {
+        files.push((name, body.join("\n")));
+    }
+    if !saw_name {
+        return vec![(base.to_string(), text.to_string())];
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    files
+        .into_iter()
+        .filter_map(|(name, body)| {
+            let cleaned: Vec<String> = name
+                .replace('\\', "/")
+                .split('/')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty() && p != "." && p != "..")
+                .collect();
+            if cleaned.is_empty() {
+                return None;
+            }
+            let joined = cleaned.join("/");
+            seen.insert(joined.clone()).then_some((joined, body))
+        })
+        .collect()
 }
 
 // ---- the map -----------------------------------------------------------------------------------
@@ -311,11 +402,7 @@ fn load_reports(dir: &Path) -> Result<BTreeMap<String, Part>, String> {
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let mut entries = Part::new();
         for f in report.files {
-            let name = Path::new(&f.file)
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned();
+            let name = entry_key(&f.file);
             let mut lines = f.lines;
             lines.sort_by_key(|l| l.line);
             entries.insert(
@@ -334,12 +421,44 @@ fn load_reports(dir: &Path) -> Result<BTreeMap<String, Part>, String> {
     Ok(out)
 }
 
+/// The key of a file in a part: its name for a single-file part, and `case/relative/path` for a
+/// project part, so two cases that both have an `a.ts` stay apart.
+fn entry_key(file: &str) -> String {
+    let parts: Vec<&str> = file.split(['/', '\\']).collect();
+    match parts.iter().rposition(|p| p.starts_with("part-p")) {
+        Some(i) if i + 2 < parts.len() => parts[i + 1..].join("/"),
+        _ => parts.last().copied().unwrap_or("").to_string(),
+    }
+}
+
+/// Every `.ts` and `.tsx` file under a project part, as `case/relative/path`.
+fn project_files(folder: &Path) -> Vec<String> {
+    let mut all = Vec::new();
+    walk(folder, &mut all);
+    let mut out: Vec<String> = all
+        .iter()
+        .filter_map(|p| {
+            let rel = p
+                .strip_prefix(folder)
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let ok = (rel.ends_with(".ts") || rel.ends_with(".tsx")) && !rel.ends_with(".d.ts");
+            ok.then_some(rel)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 /// Writes the map from reports. A file a report does not list had nothing on either side.
 fn build(o: &Opts) -> Result<u8, String> {
     for (part, found) in load_reports(&reports_dir(o))? {
         let mut names: Vec<String> = found.keys().cloned().collect();
         let folder = corpus_dir(o).join(&part);
-        if folder.is_dir() {
+        if folder.is_dir() && part.starts_with("part-p") {
+            names.extend(project_files(&folder));
+        } else if folder.is_dir() {
             names.extend(
                 fs::read_dir(&folder)
                     .map_err(|e| e.to_string())?
@@ -581,7 +700,7 @@ fn status(o: &Opts) -> Result<u8, String> {
 /// parallel; compare.js is the one piece that stays Node, because it is what drives the real tsc.
 fn run_parts(o: &Opts) -> Result<u8, String> {
     let data = corpus_dir(o);
-    if !data.join(".complete").exists() {
+    if !data.join(".complete").exists() || !data.join(".projects-complete").exists() {
         fetch(o)?;
     }
     let root = crate::root();
@@ -635,12 +754,28 @@ fn run_parts(o: &Opts) -> Result<u8, String> {
                     }
                     let out = fs::File::create(reports.join(format!("{part}.json")))
                         .expect("report file");
-                    let result = Command::new("node")
-                        .arg(tool.join("compare.js"))
-                        .arg(data.join(part))
-                        .arg(&binary)
-                        .args(["--json", "--reference-map"])
-                        .arg(map_dir(&o.tag))
+                    // A project part is a folder of cases. With the map, tsox checks the whole part
+                    // in one run; with `--real`, tsc checks each case in a Program of its own.
+                    let project = part.starts_with("part-p");
+                    let mut command = Command::new("node");
+                    if project && o.real {
+                        command
+                            .arg(tool.join("corpus-cases.js"))
+                            .arg(data.join(part))
+                            .arg(&binary);
+                    } else {
+                        command
+                            .arg(tool.join("compare.js"))
+                            .arg(data.join(part))
+                            .arg(&binary);
+                        command
+                            .args(["--json", "--reference-map"])
+                            .arg(map_dir(&o.tag));
+                        if project {
+                            command.args(["--module", "--cases", "--runs", "1"]);
+                        }
+                    }
+                    let result = command
                         .current_dir(&root)
                         .stdout(out)
                         .stderr(Stdio::piped())

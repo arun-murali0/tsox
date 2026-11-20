@@ -98,7 +98,9 @@ fn infer_expression_type_inner(
         Expression::ThisExpression(this) => match ctx.current_class_instance {
             Some(instance) => instance,
             None => {
-                if ctx.implicit_this {
+                if ctx.implicit_this
+                    && ctx.option(crate::check_options::OptionField::NoImplicitThis)
+                {
                     ctx.error(
                         crate::diagnostic_messages::messages::this_implicitly_any(),
                         this.span,

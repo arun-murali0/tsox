@@ -112,9 +112,13 @@ fn check_function_declaration_inner(
             .note_owner(symbol_id, name.name.as_str(), name.span());
     }
     hoist_function_declarations(&body.statements, ctx);
+    // A function declaration gets its `this` from how it is called; with no `this`
+    // parameter nothing says what it is, so a use of it is an implicit any.
+    let outer_implicit_this = std::mem::replace(&mut ctx.implicit_this, func.this_param.is_none());
     for body_stmt in &body.statements {
         check_statement(body_stmt, scoping, ctx);
     }
+    ctx.implicit_this = outer_implicit_this;
     let returned = ctx.leave_return_scope(return_scope);
     ctx.narrow = outer_narrow;
     ctx.note_function_return(
