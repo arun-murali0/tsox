@@ -259,6 +259,11 @@ fn bind_array_pattern(
         // A tuple with a generic spread (`[string, ...T]`) is iterable; its elements past the
         // fixed ones are `T[number]`, which this checker does not model, so they read as `any`.
         Type::Variadic(_) => (ctx.arena.any(), false),
+        // An object with a `[Symbol.iterator]` member is iterable; what it yields is not read
+        // from the member's return type here, so its elements are `any`.
+        Type::Object(object) if object.properties.iter().any(|p| &*p.name == "@@iterator") => {
+            (ctx.arena.any(), false)
+        }
         // Problem: `const [, a] = x || []` with `x: any` reported TS2488 on `never[] | any`.
         // tsc folds any union that has an `any` member into `any`, and destructuring it is
         // fine; this checker keeps the members apart.

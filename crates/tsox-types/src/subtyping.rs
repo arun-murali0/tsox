@@ -305,6 +305,17 @@ fn is_subtype_uncached(
     }) {
         return related;
     }
+    // An array, a tuple or a string is iterable, but the built-in array and string types
+    // carry no `[Symbol.iterator]` member to compare: against an iterable shape they are
+    // taken to satisfy it (what they yield is not compared).
+    if let Type::Object(target) = arena.get(sup)
+        && target.properties.iter().any(|p| &*p.name == "@@iterator")
+        && (matches!(arena.get(sub), Type::Array(_) | Type::Tuple(_))
+            || sub == arena.string()
+            || matches!(arena.get(sub), Type::StringLiteral(_)))
+    {
+        return true;
+    }
     match (arena.get(sub), arena.get(sup)) {
         (_, Type::Unknown) => true,
 

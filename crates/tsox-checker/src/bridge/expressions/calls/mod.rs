@@ -919,7 +919,15 @@ fn check_callable(
         // fallback evidence: it must not displace a concrete candidate supplied by
         // an ordinary argument, but it can still infer a parameter when no stronger
         // source exists. This wires the session's priority model into real calls.
-        let priority = if is_object {
+        // A callback that only returns `undefined` or `null` says nothing about the type
+        // parameter it returns to, so it must not displace what the other arguments gave
+        // (`f("", p => undefined)` keeps `T = string`).
+        let returns_nullish = matches!(
+            ctx.arena.get(inferred),
+            Type::Function(function)
+                if matches!(ctx.arena.get(function.return_type), Type::Undefined | Type::Null)
+        );
+        let priority = if is_object || returns_nullish {
             InferencePriority::Low
         } else {
             InferencePriority::Contextual

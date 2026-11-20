@@ -500,6 +500,25 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
         is_async: bool,
     ) -> ReturnScope {
         let expected = declared.map(|ty| if is_async { self.promised_type(ty) } else { ty });
+        // A generator's `return` is checked against the iterator's return type argument, not
+        // against the iterator type itself, and the iteration protocol is not modelled far
+        // enough to take it apart: a function annotated with one is not checked at `return`.
+        let expected = expected.filter(|&ty| {
+            !matches!(
+                self.arena.app_parts(ty),
+                Some((
+                    "Generator"
+                        | "AsyncGenerator"
+                        | "IterableIterator"
+                        | "AsyncIterableIterator"
+                        | "Iterator"
+                        | "AsyncIterator"
+                        | "Iterable"
+                        | "AsyncIterable",
+                    _
+                ))
+            )
+        });
         let scope = self.enter_return_scope(expected, infer);
         self.current_return_async = is_async;
         scope
