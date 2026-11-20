@@ -323,7 +323,7 @@
 "compiler__generatorES6_3.ts": {"v":"MATCH","lines":[]},
 "compiler__generatorES6_4.ts": {"v":"MATCH","lines":[]},
 "compiler__generatorES6_5.ts": {"v":"MATCH","lines":[{"line":3,"result":"exact","tsox":["TS2304 Cannot find name 'a'.","TS2304 Cannot find name 'b'.","TS2304 Cannot find name 'c'."],"tsc":["TS2304 Cannot find name 'a'.","TS2304 Cannot find name 'b'.","TS2304 Cannot find name 'c'."]}]},
-"compiler__generatorES6_6.ts": {"v":"GAP","lines":[{"line":5,"result":"gap","tsox":[],"tsc":["TS7057 'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation."]}]},
+"compiler__generatorES6_6.ts": {"v":"MATCH","lines":[{"line":5,"result":"exact","tsox":["TS7057 'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation."],"tsc":["TS7057 'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation."]}]},
 "compiler__generatorReturnExpressionIsChecked.ts": {"v":"CODE DIFFERS","lines":[{"line":5,"result":"code","tsox":["TS2304 Cannot find name 'invalid'."],"tsc":["TS2552 Cannot find name 'invalid'. Did you mean 'oninvalid'?"]}]},
 "compiler__generatorTransformFinalLabel.ts": {"v":"MATCH","lines":[]},
 "compiler__genericAndNonGenericInheritedSignature1.ts": {"v":"CODE DIFFERS","lines":[{"line":8,"result":"code","tsox":["TS2430 Interface 'Hello' incorrectly extends interface 'Foo'."],"tsc":["TS2320 Interface 'Hello' cannot simultaneously extend types 'Foo' and 'Bar'.\n  Named property 'f' of types 'Foo' and 'Bar' are not identical."]}]},

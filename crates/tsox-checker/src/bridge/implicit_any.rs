@@ -29,6 +29,8 @@ pub fn report_implicit_any<'ast>(program: &Program<'ast>, ctx: &mut CheckContext
         context_free_returns: Vec::new(),
         next_is_method: false,
         class_declarations: Vec::new(),
+        generators: Vec::new(),
+        yield_parent: YieldParent::Unknown,
     };
     walker.visit_program(program);
 }
@@ -51,6 +53,25 @@ struct Walker<'c, 'ast, 'src> {
     // Per enclosing class: whether it is a declaration. A class expression can be typed from
     // where it is used, so its methods are contextually typed.
     class_declarations: Vec<bool>,
+    // Per enclosing function: whether it is a generator with no return type. Only such a
+    // generator reports a `yield` whose result is read and has no type to come from (TS7057).
+    generators: Vec<bool>,
+    // What the expression about to be visited sits under, set by the parent just before it
+    // visits that child and taken by `visit_expression`.
+    yield_parent: YieldParent,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum YieldParent {
+    // Not one of the positions below: a `yield` here may have a contextual type, so it is
+    // not reported.
+    Unknown,
+    // An expression statement: the result is not used.
+    Unused,
+    // A position that gives the expression no contextual type: the initializer of an
+    // unannotated variable, parameter, property or enum member, a computed key, a template
+    // literal's substitution, the operand of another `yield`.
+    NoContext,
 }
 
 // How tsc writes a member name in these messages: an identifier as is, a string with its
@@ -181,9 +202,120 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
         self.ambient -= 1;
     }
 
+    fn visit_expression(&mut self, expr: &oxc_ast::ast::Expression<'a>) {
+        use oxc_ast::ast::Expression;
+        let parent = std::mem::replace(&mut self.yield_parent, YieldParent::Unknown);
+        match expr {
+            // Parentheses do not change what is around the expression.
+            Expression::ParenthesizedExpression(_) => self.yield_parent = parent,
+            Expression::YieldExpression(yield_expression)
+                if parent == YieldParent::NoContext
+                    && !yield_expression.delegate
+                    && self.generators.last().copied().unwrap_or(false) =>
+            {
+                self.report(
+                    DiagnosticCode::ImplicitAnyYield,
+                    messages::yield_implicitly_any(),
+                    yield_expression.span,
+                );
+            }
+            _ => {}
+        }
+        walk::walk_expression(self, expr);
+        self.yield_parent = YieldParent::Unknown;
+    }
+
+    fn visit_expression_statement(&mut self, statement: &oxc_ast::ast::ExpressionStatement<'a>) {
+        self.yield_parent = YieldParent::Unused;
+        self.visit_expression(&statement.expression);
+    }
+
+    fn visit_yield_expression(&mut self, yield_expression: &oxc_ast::ast::YieldExpression<'a>) {
+        if let Some(argument) = &yield_expression.argument {
+            // `yield* x` takes its type from the iterable it delegates to.
+            self.yield_parent = if yield_expression.delegate {
+                YieldParent::Unknown
+            } else {
+                YieldParent::NoContext
+            };
+            self.visit_expression(argument);
+        }
+    }
+
+    fn visit_variable_declarator(&mut self, declarator: &oxc_ast::ast::VariableDeclarator<'a>) {
+        self.visit_binding_pattern(&declarator.id);
+        if let Some(annotation) = &declarator.type_annotation {
+            self.visit_ts_type_annotation(annotation);
+        }
+        if let Some(init) = &declarator.init {
+            // A destructuring pattern gives the initializer a contextual type of its own.
+            self.yield_parent = if declarator.type_annotation.is_some()
+                || !matches!(
+                    declarator.id,
+                    oxc_ast::ast::BindingPattern::BindingIdentifier(_)
+                ) {
+                YieldParent::Unknown
+            } else {
+                YieldParent::NoContext
+            };
+            self.visit_expression(init);
+        }
+    }
+
+    fn visit_formal_parameter(&mut self, param: &oxc_ast::ast::FormalParameter<'a>) {
+        self.visit_decorators(&param.decorators);
+        self.visit_binding_pattern(&param.pattern);
+        if let Some(annotation) = &param.type_annotation {
+            self.visit_ts_type_annotation(annotation);
+        }
+        if let Some(initializer) = &param.initializer {
+            self.yield_parent = if param.type_annotation.is_some() {
+                YieldParent::Unknown
+            } else {
+                YieldParent::NoContext
+            };
+            self.visit_expression(initializer);
+        }
+    }
+
+    fn visit_ts_enum_member(&mut self, member: &oxc_ast::ast::TSEnumMember<'a>) {
+        self.visit_ts_enum_member_name(&member.id);
+        if let Some(initializer) = &member.initializer {
+            self.yield_parent = YieldParent::NoContext;
+            self.visit_expression(initializer);
+        }
+    }
+
+    fn visit_template_literal(&mut self, template: &oxc_ast::ast::TemplateLiteral<'a>) {
+        self.visit_template_elements(&template.quasis);
+        for expression in &template.expressions {
+            self.yield_parent = YieldParent::NoContext;
+            self.visit_expression(expression);
+        }
+    }
+
+    fn visit_object_property(&mut self, property: &oxc_ast::ast::ObjectProperty<'a>) {
+        // A computed key is read with no contextual type. That holds for a plain property;
+        // tsc says nothing about a `yield` in the key of a method or accessor.
+        if property.computed
+            && property.kind == oxc_ast::ast::PropertyKind::Init
+            && !property.method
+        {
+            self.yield_parent = YieldParent::NoContext;
+        }
+        self.visit_property_key(&property.key);
+        self.yield_parent = YieldParent::Unknown;
+        self.visit_expression(&property.value);
+    }
+
     fn visit_function(&mut self, func: &Function<'a>, flags: oxc_semantic::ScopeFlags) {
         let is_method = std::mem::take(&mut self.next_is_method);
         let declaration = func.r#type == oxc_ast::ast::FunctionType::FunctionDeclaration;
+        // A function expression or an object method can be typed from where it is used
+        // (`f(function* () { const a = yield 0 })`), so only a declaration or a class method
+        // is known to have no contextual return type.
+        self.generators
+            .push(func.generator && func.return_type.is_none() && (declaration || is_method));
         self.context_free_returns
             .push((declaration || is_method) && func.return_type.is_none());
         if func.body.is_none() {
@@ -200,6 +332,7 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
         }
         walk::walk_function(self, func, flags);
         self.context_free_returns.pop();
+        self.generators.pop();
     }
 
     fn visit_arrow_function_expression(
@@ -207,7 +340,9 @@ impl<'a> Visit<'a> for Walker<'_, '_, '_> {
         arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>,
     ) {
         self.context_free_returns.push(false);
+        self.generators.push(false);
         walk::walk_arrow_function_expression(self, arrow);
+        self.generators.pop();
         self.context_free_returns.pop();
     }
 

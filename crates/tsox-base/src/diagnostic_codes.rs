@@ -93,6 +93,7 @@ pub enum DiagnosticCode {
     ImplicitAnyConstructSignature,
     ImplicitAnyCallSignature,
     ImplicitAnyRestParameter,
+    ImplicitAnyYield,
 
     // 1500s: generics
     TypeArgumentCountMismatch,
@@ -308,6 +309,7 @@ impl DiagnosticCode {
             ImplicitAnyConstructSignature => "TSR1408",
             ImplicitAnyCallSignature => "TSR1409",
             ImplicitAnyRestParameter => "TSR1410",
+            ImplicitAnyYield => "TSR1411",
 
             TypeArgumentCountMismatch => "TSR1501",
             TypeIsNotGeneric => "TSR1502",
@@ -594,6 +596,7 @@ impl DiagnosticCode {
 
             ImplicitAnyParameter => 7006,
             ImplicitAnyRestParameter => 7019,
+            ImplicitAnyYield => 7057,
             ImplicitAnyElement => 7053,
             ImplicitAnyThis => 2683,
             ImplicitAnyReturn => 7023,

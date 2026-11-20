@@ -516,6 +516,14 @@ pub mod messages {
         )
     }
 
+    pub fn yield_implicitly_any() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyYield,
+            "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation."
+                .to_string(),
+        )
+    }
+
     pub fn function_lacks_return_annotation(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::ImplicitAnyFunctionReturn,
