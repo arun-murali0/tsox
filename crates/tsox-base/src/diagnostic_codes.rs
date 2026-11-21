@@ -230,6 +230,7 @@ pub enum DiagnosticCode {
     UnresolvableTypeAnnotation,
     UnresolvableDestructuringTypeAnnotation,
     UnresolvableTypeParameterConstraint,
+    FlowApproximated,
 
     // 9100s: the checker itself failed (no tsc counterpart)
     InternalCheckerError,
@@ -439,6 +440,7 @@ impl DiagnosticCode {
             UnresolvableTypeAnnotation => "TSR9012",
             UnresolvableDestructuringTypeAnnotation => "TSR9013",
             UnresolvableTypeParameterConstraint => "TSR9014",
+            FlowApproximated => "TSR9015",
             InternalCheckerError => "TSR9101",
             NestingTooDeep => "TSR9102",
             FlowShadowDisagreement => "TSR9201",
@@ -653,6 +655,7 @@ impl DiagnosticCode {
             | UnresolvableTypeAnnotation
             | UnresolvableDestructuringTypeAnnotation
             | UnresolvableTypeParameterConstraint
+            | FlowApproximated
             | InternalCheckerError
             | NestingTooDeep
             | FlowShadowDisagreement

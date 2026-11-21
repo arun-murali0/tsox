@@ -192,6 +192,7 @@ the message function that builds it, and the code areas that call that function 
 | TSR9012 | `UnresolvableTypeAnnotation` | - | `unresolvable_type_annotation` | `tsox-checker/bridge/statements` |
 | TSR9013 | `UnresolvableDestructuringTypeAnnotation` | - | `unresolvable_destructuring_type_annotation` | `tsox-checker/bridge/statements` |
 | TSR9014 | `UnresolvableTypeParameterConstraint` | - | `unresolvable_type_parameter_constraint` | `tsox-checker/bridge/mod` |
+| TSR9015 | `FlowApproximated` | - | `flow_approximated` | `tsox-checker/bridge/statements` |
 | TSR9101 | `InternalCheckerError` | - | `internal_checker_error` | `tsox-checker/unit` |
 | TSR9102 | `NestingTooDeep` | - | `nesting_too_deep` | `tsox-checker/bridge/context`, `tsox-checker/bridge/expressions`, `tsox-checker/bridge/mod`, `tsox-checker/bridge/statements` |
 | TSR9201 | `FlowShadowDisagreement` | - | `flow_shadow_disagreement` | `tsox-checker/bridge/flow_shadow` |
@@ -217,6 +218,7 @@ Each is a place where tsox gives up with a warning instead of checking. Pick one
 | TSR9012 | `UnresolvableTypeAnnotation` | `tsox-checker/bridge/statements` |
 | TSR9013 | `UnresolvableDestructuringTypeAnnotation` | `tsox-checker/bridge/statements` |
 | TSR9014 | `UnresolvableTypeParameterConstraint` | `tsox-checker/bridge/mod` |
+| TSR9015 | `FlowApproximated` | `tsox-checker/bridge/statements` |
 
 ## Defined but never raised
 

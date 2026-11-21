@@ -1047,6 +1047,17 @@ pub mod messages {
         )
     }
 
+    /// A control-flow rule that this checker takes in a simpler form than `tsc` does. What
+    /// is narrowed or reported after it can differ from `tsc`.
+    pub fn flow_approximated(what: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::FlowApproximated,
+            format!(
+                "{what} is not modelled exactly by tsox; narrowing after it may differ from tsc."
+            ),
+        )
+    }
+
     pub fn unimplemented_statement_kind(kind: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::UnimplementedStatementKind,
