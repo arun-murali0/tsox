@@ -1290,8 +1290,12 @@ pub fn resolve_object_members(
                     PropertyKey::StaticIdentifier(key) => key.name.to_string().into(),
                     other => well_known_symbol_key(other)?.into(),
                 };
-                let annotation = property.type_annotation.as_ref()?;
-                let type_id = resolve_type_annotation(annotation, namespace, arena)?;
+                // A member written without a type (`x;`) is `any`, as in tsc, which reports the
+                // implicit any (TS7008) at the member and goes on with the rest of the type.
+                let type_id = match property.type_annotation.as_ref() {
+                    Some(annotation) => resolve_type_annotation(annotation, namespace, arena)?,
+                    None => arena.any(),
+                };
                 PropertyEntry {
                     order: Default::default(),
                     name,
