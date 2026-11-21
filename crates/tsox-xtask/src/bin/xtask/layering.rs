@@ -85,6 +85,7 @@ pub fn run() -> u8 {
             }
         }
     }
+    problems.extend(oxc_outside_bridge());
     for p in &problems {
         eprintln!("layering: {p}");
     }
@@ -95,4 +96,37 @@ pub fn run() -> u8 {
     } else {
         1
     }
+}
+
+/// The checker reads the Oxc AST only in `bridge/`; what the rest of the crate sees is what
+/// `bridge` returns (docs/architecture/flow.md). Any other file of the crate that names an
+/// `oxc_` crate breaks that.
+fn oxc_outside_bridge() -> Vec<String> {
+    fn walk(dir: &std::path::Path, bridge: &std::path::Path, found: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path != bridge {
+                    walk(&path, bridge, found);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && std::fs::read_to_string(&path).is_ok_and(|text| {
+                    text.lines()
+                        .any(|l| l.contains("oxc_") && !l.trim_start().starts_with("//"))
+                })
+            {
+                found.push(format!(
+                    "{} names an Oxc crate outside tsox-checker/src/bridge/",
+                    path.strip_prefix(crate::root()).unwrap_or(&path).display()
+                ));
+            }
+        }
+    }
+    let src = crate::root().join("crates/tsox-checker/src");
+    let mut found = Vec::new();
+    walk(&src, &src.join("bridge"), &mut found);
+    found
 }

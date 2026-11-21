@@ -19,10 +19,11 @@ use tsox_types::{
 };
 
 pub mod bridge;
-pub mod flow;
+// The flow graph and the reachability rules read the Oxc AST, so they live in `bridge`, the
+// one place that does; the rest of the crate sees only what they return. These paths stay.
+pub use bridge::{flow, reachability};
 #[cfg(feature = "snapshot")]
 pub mod probe_log;
-pub mod reachability;
 pub mod unit;
 #[cfg(feature = "snapshot")]
 pub mod unit_snapshot;

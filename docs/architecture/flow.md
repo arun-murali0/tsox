@@ -1,6 +1,6 @@
 # The flow graph
 
-`tsox_checker::flow` builds, for every function body and the top level of a file, a table of
+`tsox_checker::flow` (the code is `bridge/flow.rs`, and `tsox_checker::reachability` is `bridge/reachability.rs`: both read the Oxc AST, so they sit in `bridge/`, and `cargo xtask layering` fails if any other file of the crate names an Oxc crate) builds, for every function body and the top level of a file, a table of
 flow nodes in the shape tsc's binder produces. It is arena-free data and a pure function of the
 source, so it fits the query layer like the other unit outputs. Nothing reads it for narrowing
 yet; see "Phases" below.
