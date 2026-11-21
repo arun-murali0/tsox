@@ -115,16 +115,17 @@ fn check_class<'ast>(class: &Class<'ast>, ctx: &mut CheckContext<'ast, '_>) {
         if conflicts.is_empty() {
             ctx.error(
                 crate::diagnostic_messages::messages::class_incorrectly_implements(
-                    &ctx.arena, &id.name, interface,
+                    &ctx.arena, &id.name, instance, interface,
                 ),
                 implemented.span(),
             );
         }
         for property in conflicts {
             let span = member_span(class, &property).unwrap_or_else(|| implemented.span());
+            let (own, inherited) = property_types(ctx, instance, interface, &property);
             ctx.error(
                 crate::diagnostic_messages::messages::class_property_incompatible(
-                    &ctx.arena, &property, &id.name, interface,
+                    &ctx.arena, &property, &id.name, own, inherited, interface,
                 ),
                 span,
             );
@@ -180,6 +181,28 @@ fn first_incompatible_property(
     None
 }
 
+// The types a derived and a base type give property `name`.
+fn property_types(
+    ctx: &CheckContext<'_, '_>,
+    derived: crate::arena::TypeId,
+    base: crate::arena::TypeId,
+    name: &str,
+) -> (crate::arena::TypeId, crate::arena::TypeId) {
+    use crate::types::Type;
+    let find = |ty: crate::arena::TypeId| match ctx.arena.get(ty) {
+        Type::Object(object) => object
+            .properties
+            .iter()
+            .find(|p| &*p.name == name)
+            .map(|p| p.type_id),
+        _ => None,
+    };
+    (
+        find(derived).unwrap_or(derived),
+        find(base).unwrap_or(base),
+    )
+}
+
 fn member_span(class: &Class<'_>, name: &str) -> Option<oxc_span::Span> {
     use oxc_ast::ast::ClassElement;
     class.body.body.iter().find_map(|element| match element {
@@ -229,15 +252,18 @@ fn check_extends<'ast>(
         return;
     };
     match member_span(class, &property) {
-        Some(span) => ctx.error(
-            crate::diagnostic_messages::messages::class_property_incompatible(
-                &ctx.arena, &property, &id.name, base,
-            ),
-            span,
-        ),
+        Some(span) => {
+            let (own, inherited) = property_types(ctx, instance, base, &property);
+            ctx.error(
+                crate::diagnostic_messages::messages::class_property_incompatible(
+                    &ctx.arena, &property, &id.name, own, inherited, base,
+                ),
+                span,
+            )
+        }
         None => ctx.error(
             crate::diagnostic_messages::messages::class_incorrectly_extends(
-                &ctx.arena, &id.name, base,
+                &ctx.arena, &id.name, instance, base,
             ),
             id.span,
         ),
@@ -280,6 +306,7 @@ fn check_interface<'ast>(
                 crate::diagnostic_messages::messages::interface_incorrectly_extends(
                     &ctx.arena,
                     &interface.id.name,
+                    derived,
                     base,
                 ),
                 interface.id.span,

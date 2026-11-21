@@ -301,6 +301,19 @@ fn tuple_as_array_reason(
     levels
 }
 
+// The bound of a type parameter with any chain of parameters followed to the first type that is
+// not one; `None` when the chain ends in a parameter that has no bound.
+fn base_constraint(arena: &TypeArena, bound: Option<TypeId>) -> Option<TypeId> {
+    let mut current = bound?;
+    for _ in 0..32 {
+        match arena.get(current) {
+            Type::GenericParameter(_, _, next) => current = (*next)?,
+            _ => return Some(current),
+        }
+    }
+    None
+}
+
 fn children(arena: &TypeArena, source: TypeId, target: TypeId, depth: usize) -> Vec<Level> {
     if depth >= MAX_DEPTH {
         return Vec::new();
@@ -330,6 +343,9 @@ fn children(arena: &TypeArena, source: TypeId, target: TypeId, depth: usize) -> 
         // tsc says so, and says which of two things is true of the constraint.
         (_, Type::GenericParameter(_, name, bound)) => {
             let shown = display_source_type(arena, source, target);
+            // tsc reads the base constraint: a bound that is itself a type parameter is
+            // followed down, and a chain that ends in a parameter with no bound has none.
+            let bound = &base_constraint(arena, *bound);
             let text = match bound {
                 Some(bound) if is_subtype(arena, source, *bound) => format!(
                     "'{shown}' is assignable to the constraint of type '{name}', but '{name}' could be instantiated with a different subtype of constraint '{}'.",

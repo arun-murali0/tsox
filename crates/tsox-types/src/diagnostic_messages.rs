@@ -80,28 +80,36 @@ pub mod messages {
     pub fn class_incorrectly_extends(
         arena: &TypeArena,
         class_name: &str,
+        instance: TypeId,
         base: TypeId,
     ) -> DiagnosticMessage {
-        DiagnosticMessage::new(
-            DiagnosticCode::ClassIncorrectlyExtends,
+        headed(
+            arena,
             format!(
                 "Class '{class_name}' incorrectly extends base class '{}'.",
                 crate::type_display::display_type(arena, base)
             ),
+            instance,
+            base,
+            DiagnosticCode::ClassIncorrectlyExtends,
         )
     }
 
     pub fn interface_incorrectly_extends(
         arena: &TypeArena,
         name: &str,
+        derived: TypeId,
         base: TypeId,
     ) -> DiagnosticMessage {
-        DiagnosticMessage::new(
-            DiagnosticCode::InterfaceIncorrectlyExtends,
+        headed(
+            arena,
             format!(
                 "Interface '{name}' incorrectly extends interface '{}'.",
                 crate::type_display::display_type(arena, base)
             ),
+            derived,
+            base,
+            DiagnosticCode::InterfaceIncorrectlyExtends,
         )
     }
 
@@ -138,32 +146,39 @@ pub mod messages {
         )
     }
 
+    // `own` is the class member's type and `inherited` the base member's; tsc explains the
+    // mismatch between the two under the headline.
     pub fn class_property_incompatible(
         arena: &TypeArena,
         property: &str,
         class_name: &str,
+        own: TypeId,
+        inherited: TypeId,
         interface: TypeId,
     ) -> DiagnosticMessage {
-        DiagnosticMessage::new(
-            DiagnosticCode::ClassPropertyIncompatible,
-            format!(
-                "Property '{property}' in type '{class_name}' is not assignable to the same property in base type '{}'.",
-                crate::type_display::display_type(arena, interface)
-            ),
-        )
+        let mut levels = vec![Level::headline(format!(
+            "Property '{property}' in type '{class_name}' is not assignable to the same property in base type '{}'.",
+            crate::type_display::display_type(arena, interface)
+        ))];
+        levels.extend(mismatch_levels(arena, own, inherited));
+        DiagnosticMessage::new(DiagnosticCode::ClassPropertyIncompatible, render(&levels))
     }
 
     pub fn class_incorrectly_implements(
         arena: &TypeArena,
         class_name: &str,
+        instance: TypeId,
         interface: TypeId,
     ) -> DiagnosticMessage {
-        DiagnosticMessage::new(
-            DiagnosticCode::ClassImplementsMismatch,
+        headed(
+            arena,
             format!(
                 "Class '{class_name}' incorrectly implements interface '{}'.",
                 crate::type_display::display_type(arena, interface)
             ),
+            instance,
+            interface,
+            DiagnosticCode::ClassImplementsMismatch,
         )
     }
 
