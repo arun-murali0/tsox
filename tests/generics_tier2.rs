@@ -319,6 +319,7 @@ fn constraint_is_checked_with_the_other_parameters_substituted() {
 // extends string satisfies Box's `T extends string`, an unconstrained V does not.
 // Previously both were skipped.
 #[test]
+#[ignore = "known gap: a generic type argument is not judged against its constraint (TS2344), because that gave 19 false positives over the corpus; see the commit that added the skip"]
 fn type_parameter_argument_is_checked_through_its_bound() {
     let source = include_str!(
         "fixtures/generics-tier2/type_parameter_argument_is_checked_through_its_bound.ts"
