@@ -124,8 +124,8 @@ pub mod messages {
             DiagnosticCode::PropertyNotAssignableToIndex,
             format!(
                 "Property '{property}' of type '{}' is not assignable to '{index_kind}' index type '{}'.",
-                crate::type_display::display_type(arena, property_type),
-                crate::type_display::display_type(arena, index_type)
+                crate::type_display::display_type_unqualified(arena, property_type),
+                crate::type_display::display_type_unqualified(arena, index_type)
             ),
         )
     }
@@ -889,7 +889,7 @@ pub mod messages {
             DiagnosticCode::PropertyDoesNotExist,
             format!(
                 "Property '{property_name}' does not exist on type '{}'.",
-                display_type(arena, object_type)
+                crate::type_display::display_type_unqualified(arena, object_type)
             ),
         )
     }
@@ -904,7 +904,7 @@ pub mod messages {
             DiagnosticCode::PropertyNeedsNewerLib,
             format!(
                 "Property '{property_name}' does not exist on type '{}'. Do you need to change your target library? Try changing the 'lib' compiler option to '{lib}' or later.",
-                display_type(arena, object_type)
+                crate::type_display::display_type_unqualified(arena, object_type)
             ),
         )
     }
@@ -919,7 +919,7 @@ pub mod messages {
             DiagnosticCode::PropertyDoesNotExistSuggestion,
             format!(
                 "Property '{property_name}' does not exist on type '{}'. Did you mean '{suggestion}'?",
-                display_type(arena, object_type)
+                crate::type_display::display_type_unqualified(arena, object_type)
             ),
         )
     }
@@ -1099,6 +1099,7 @@ pub mod messages {
         required: usize,
         total: usize,
     ) -> DiagnosticMessage {
+        let display_name = &crate::type_display::unqualify_names(display_name);
         let text = if required == total {
             format!("Generic type '{display_name}' requires {total} type argument(s).")
         } else {

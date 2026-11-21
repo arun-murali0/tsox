@@ -650,8 +650,12 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
     // when it starts a name (not when it ends another identifier or path).
     // Cost: a member of an enclosing namespace that a local name hides would also lose its
     // prefix, which tsc keeps.
-    fn message_text(&self, text: String) -> String {
-        let mut text = text;
+    fn message_text(&self, code: crate::diagnostic_codes::DiagnosticCode, text: String) -> String {
+        let mut text = if relation_error_code(code) {
+            relation_names(&text)
+        } else {
+            text
+        };
         let mut prefixes: Vec<&String> = self.namespace.scope_prefixes().iter().collect();
         prefixes.sort_by_key(|prefix| std::cmp::Reverse(prefix.len()));
         for prefix in prefixes {
@@ -717,7 +721,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
                 &crate::type_display::display_type(&self.arena, target),
             );
         }
-        let text = self.message_text(message.text);
+        let text = self.message_text(message.code, message.text);
         self.diagnostics.push(Diagnostic {
             severity: Severity::Error,
             code: message.code,
@@ -850,7 +854,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
     }
 
     pub fn warning(&mut self, message: DiagnosticMessage, span: Span) {
-        let text = self.message_text(message.text);
+        let text = self.message_text(message.code, message.text);
         self.diagnostics.push(Diagnostic {
             severity: Severity::Warning,
             code: message.code,
@@ -892,4 +896,23 @@ mod tests {
             assert!(!ctx.should_stop());
         }
     }
+}
+
+// The codes whose lines tsc builds with its relation-error printer (TS2322 and its kin).
+fn relation_error_code(code: crate::diagnostic_codes::DiagnosticCode) -> bool {
+    matches!(
+        code.tsc_code(),
+        Some(2322 | 2345 | 2415 | 2416 | 2420 | 2430 | 2739 | 2740 | 2741)
+    )
+}
+
+// tsc prints a type in these messages by its own name (`B`, not `A.B`), and keeps the paths only
+// where two different ones end in the same name, so the reader can tell them apart
+// (`Type 'Abcd.E' is not assignable to type 'First.E'`). Each line is handled alone, as tsc
+// builds each line alone.
+fn relation_names(text: &str) -> String {
+    text.split('\n')
+        .map(crate::type_display::unqualify_names)
+        .collect::<Vec<_>>()
+        .join("\n")
 }

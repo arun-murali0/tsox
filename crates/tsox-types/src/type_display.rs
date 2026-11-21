@@ -42,6 +42,85 @@ fn finish(mut out: String) -> String {
     out
 }
 
+// The type as tsc prints it where a diagnostic does not give the printer an enclosing
+// declaration: a namespace member is named by its own name (`C`), not by the path that reaches
+// it (`M.C`). Only the dotted prefix of a name is dropped; the text inside a string literal
+// type is left alone.
+pub fn display_type_unqualified(arena: &TypeArena, type_id: TypeId) -> String {
+    unqualify_names(&display_type(arena, type_id))
+}
+
+// A name is shortened only when no other path in the text ends in the same name: tsc keeps the
+// paths of two different types that would otherwise read alike (`Foo.Yep | Bar.Yep`).
+pub fn unqualify_names(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let is_start = |c: char| c.is_alphabetic() || c == '_' || c == '$';
+    let is_part = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    // (start, end, index where the last segment begins) of every dotted path outside a
+    // string literal type.
+    let mut paths: Vec<(usize, usize, usize)> = Vec::new();
+    let mut i = 0;
+    let mut in_string = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_string {
+            if c == '\\' {
+                i += 1;
+            } else if c == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if is_start(c) && (i == 0 || (!is_part(chars[i - 1]) && chars[i - 1] != '.')) {
+            let start = i;
+            let mut last_start = i;
+            let mut j = i;
+            loop {
+                let mut k = j;
+                while k < chars.len() && is_part(chars[k]) {
+                    k += 1;
+                }
+                if k + 1 < chars.len() && chars[k] == '.' && is_start(chars[k + 1]) {
+                    last_start = k + 1;
+                    j = k + 1;
+                } else {
+                    j = k;
+                    break;
+                }
+            }
+            paths.push((start, j, last_start));
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    let mut spellings: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    for &(start, end, last) in &paths {
+        let last_name: String = chars[last..end].iter().collect();
+        let full: String = chars[start..end].iter().collect();
+        spellings.entry(last_name).or_default().insert(full);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for &(start, end, last) in &paths {
+        out.extend(&chars[at..start]);
+        let last_name: String = chars[last..end].iter().collect();
+        let shorten = spellings.get(&last_name).is_some_and(|set| set.len() == 1);
+        let from = if shorten { last } else { start };
+        out.extend(&chars[from..end]);
+        at = end;
+    }
+    out.extend(&chars[at..]);
+    out
+}
+
 pub fn display_type(arena: &TypeArena, type_id: TypeId) -> String {
     let mut out = String::new();
     write_type(arena, type_id, &mut out, MAX_DEPTH);
