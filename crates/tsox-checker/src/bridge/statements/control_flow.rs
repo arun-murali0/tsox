@@ -182,6 +182,12 @@ fn run_loop(
             for &symbol_id in &written {
                 head.remove(symbol_id);
             }
+            ctx.warning(
+                crate::diagnostic_messages::messages::flow_approximated(
+                    "The state at a loop head that did not settle",
+                ),
+                span,
+            );
         }
     }
 
@@ -510,8 +516,20 @@ pub(super) fn check_try_statement(
     let mut written_in_handler = Vec::new();
     if let Some(handler) = &try_stmt.handler {
         let mut at_catch = outer.clone();
+        let mut dropped = false;
         for &symbol_id in &written_in_try {
+            dropped |= outer.mentions(symbol_id);
             at_catch.remove(symbol_id);
+        }
+        // tsc enters the catch from every point of the try, so a name written there is the
+        // union of what it was at each; here it is its declared type.
+        if dropped {
+            ctx.warning(
+                crate::diagnostic_messages::messages::flow_approximated(
+                    "The state a catch block is entered with",
+                ),
+                handler.span,
+            );
         }
         ctx.narrow = at_catch;
         if let Some(param) = &handler.param {
@@ -592,7 +610,9 @@ pub(super) fn check_switch_statement(
         .push(JumpFrame::new(None, FrameKind::Switch));
     let mut pending_tests: Vec<&Expression> = Vec::new();
     let mut pending_default = false;
-    for case in &switch_stmt.cases {
+    let case_count = switch_stmt.cases.len();
+    for (index, case) in switch_stmt.cases.iter().enumerate() {
+        let is_last_case = index + 1 == case_count;
         ctx.narrow = outer_narrow.clone();
         match &case.test {
             Some(test) => {
@@ -620,6 +640,21 @@ pub(super) fn check_switch_statement(
 
         for stmt in &case.consequent {
             check_statement(stmt, scoping, ctx);
+        }
+        // A body that can run on into the next case is narrowed as if reached directly
+        // (see above); say so, since what follows can differ from tsc.
+        let falls_through = !is_last_case
+            && !case.consequent.last().is_some_and(|last| {
+                matches!(
+                    last,
+                    Statement::BreakStatement(_) | Statement::ContinueStatement(_)
+                ) || super::support::statement_always_exits(last)
+            });
+        if falls_through {
+            ctx.warning(
+                crate::diagnostic_messages::messages::flow_approximated("Switch fallthrough"),
+                case.span,
+            );
         }
     }
     ctx.jump_frames.pop();

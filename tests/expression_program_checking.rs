@@ -118,7 +118,18 @@ fn function_expression_does_not_inherit_this() {
     let source = include_str!(
         "fixtures/expression-program-checking/function_expression_does_not_inherit_this.ts"
     );
-    let diagnostics = check(source, "function_expression_does_not_inherit_this.ts");
+    // `this` is only an implicit any under `noImplicitThis`, as in tsc.
+    let options = tsox::CheckOptions {
+        no_implicit_this: true,
+        ..tsox::CheckOptions::default()
+    };
+    let unit = tsox::UnitContext::new(
+        tsox::FileId::ROOT,
+        "function_expression_does_not_inherit_this.ts",
+        source,
+    )
+    .with_options(options);
+    let diagnostics = tsox::Worker::new().check_unit(&unit).unwrap().diagnostics;
     assert_eq!(
         diagnostics.len(),
         1,

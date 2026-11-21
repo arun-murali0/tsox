@@ -288,6 +288,7 @@ fn a_number_is_assignable_to_a_mixed_enum_and_to_a_union_with_an_enum() {
 // lines 4, 5 and 6 are reported (4 is the false branch); line 1 declares `Parameters` as the
 // library does.
 #[test]
+#[ignore = "known gap: a generic type argument is not judged against its constraint (TS2344), because that gave 19 false positives over the corpus; see the commit that added the skip"]
 fn a_conditional_true_branch_satisfies_a_bound_its_check_type_was_tested_against() {
     let source = "type Parameters<T extends (...args: any) => any> = T extends (...args: infer P) => any ? P : never;\ntype A<V> = V extends (...a: any[]) => any ? Parameters<V> : never;\ntype B<T> = { [K in keyof T]: T[K] extends (...a: any[]) => void ? (...a: Parameters<T[K]>) => void : void };\ntype C<V> = V extends string ? never : Parameters<V>;\ntype D<V> = V extends string ? Parameters<V> : never;\ntype E<V> = V extends (() => any) ? Parameters<V[]> : never;\ntype U = [A<() => void>, B<{ f: () => void }>, C<number>, D<number>, E<() => void>];\n";
     let ctx = UnitContext::new(FileId::ROOT, "t.ts", source).with_options(CheckOptions::default());

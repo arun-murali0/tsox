@@ -516,6 +516,21 @@ pub mod messages {
         )
     }
 
+    pub fn jsx_element_implicitly_any() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyJsxElement,
+            "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.",
+        )
+    }
+
+    pub fn yield_implicitly_any() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyYield,
+            "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation."
+                .to_string(),
+        )
+    }
+
     pub fn function_lacks_return_annotation(name: &str) -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::ImplicitAnyFunctionReturn,
@@ -1029,6 +1044,17 @@ pub mod messages {
             DiagnosticCode::UnimplementedRestDestructuring,
             "Rest destructuring (`...rest`) does not yet compute a precise type; \
              the binding is not checked by tsox.",
+        )
+    }
+
+    /// A control-flow rule that this checker takes in a simpler form than `tsc` does. What
+    /// is narrowed or reported after it can differ from `tsc`.
+    pub fn flow_approximated(what: &str) -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::FlowApproximated,
+            format!(
+                "{what} is not modelled exactly by tsox; narrowing after it may differ from tsc."
+            ),
         )
     }
 

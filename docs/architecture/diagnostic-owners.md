@@ -69,6 +69,8 @@ the message function that builds it, and the code areas that call that function 
 | TSR1408 | `ImplicitAnyConstructSignature` | TS7013 | `construct_signature_lacks_return_annotation` | `tsox-checker/bridge/implicit_any` |
 | TSR1409 | `ImplicitAnyCallSignature` | TS7020 | `call_signature_lacks_return_annotation` | `tsox-checker/bridge/implicit_any` |
 | TSR1410 | `ImplicitAnyRestParameter` | TS7019 | `rest_parameter_implicitly_any` | `tsox-checker/bridge/implicit_any`, `tsox-checker/bridge/statements` |
+| TSR1411 | `ImplicitAnyYield` | TS7057 | `yield_implicitly_any` | `tsox-checker/bridge/implicit_any` |
+| TSR1412 | `ImplicitAnyJsxElement` | TS7026 | `jsx_element_implicitly_any` | `tsox-checker/bridge/expressions` |
 | TSR1501 | `TypeArgumentCountMismatch` | TS2314 | `type_argument_count_mismatch` | `tsox-checker/bridge/mod` |
 | TSR1502 | `TypeIsNotGeneric` | TS2315 | `type_is_not_generic` | `tsox-checker/bridge/mod` |
 | TSR1503 | `DuplicateTypeDeclaration` | TS2300 | `duplicate_type_declaration` | `tsox-checker/bridge/declare`, `tsox-checker/bridge/duplicates` |
@@ -190,6 +192,7 @@ the message function that builds it, and the code areas that call that function 
 | TSR9012 | `UnresolvableTypeAnnotation` | - | `unresolvable_type_annotation` | `tsox-checker/bridge/statements` |
 | TSR9013 | `UnresolvableDestructuringTypeAnnotation` | - | `unresolvable_destructuring_type_annotation` | `tsox-checker/bridge/statements` |
 | TSR9014 | `UnresolvableTypeParameterConstraint` | - | `unresolvable_type_parameter_constraint` | `tsox-checker/bridge/mod` |
+| TSR9015 | `FlowApproximated` | - | `flow_approximated` | `tsox-checker/bridge/statements` |
 | TSR9101 | `InternalCheckerError` | - | `internal_checker_error` | `tsox-checker/unit` |
 | TSR9102 | `NestingTooDeep` | - | `nesting_too_deep` | `tsox-checker/bridge/context`, `tsox-checker/bridge/expressions`, `tsox-checker/bridge/mod`, `tsox-checker/bridge/statements` |
 | TSR9201 | `FlowShadowDisagreement` | - | `flow_shadow_disagreement` | `tsox-checker/bridge/flow_shadow` |
@@ -215,6 +218,7 @@ Each is a place where tsox gives up with a warning instead of checking. Pick one
 | TSR9012 | `UnresolvableTypeAnnotation` | `tsox-checker/bridge/statements` |
 | TSR9013 | `UnresolvableDestructuringTypeAnnotation` | `tsox-checker/bridge/statements` |
 | TSR9014 | `UnresolvableTypeParameterConstraint` | `tsox-checker/bridge/mod` |
+| TSR9015 | `FlowApproximated` | `tsox-checker/bridge/statements` |
 
 ## Defined but never raised
 
