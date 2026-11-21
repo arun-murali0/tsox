@@ -12,8 +12,8 @@ use oxc_semantic::Scoping;
 
 use super::context::CheckContext;
 use super::{
-    class_implements, duplicates, implicit_any, parameter_properties, strict_mode_names,
-    tuple_grammar, unreachable_code, unresolved_names,
+    class_implements, duplicate_members, duplicates, implicit_any, parameter_properties,
+    strict_mode_names, tuple_grammar, unreachable_code, unresolved_names,
 };
 
 /// What a whole-file pass is given. Passes that need less ignore the rest.
@@ -51,6 +51,11 @@ pub(super) const PASSES: &[Pass] = &[
         name: "implicit_any",
         doc: "Reports bindings and members whose type falls back to `any` under noImplicitAny.",
         run: |program, _, ctx| implicit_any::report_implicit_any(program, ctx),
+    },
+    Pass {
+        name: "duplicate_members",
+        doc: "Reports members of one class, interface or type literal that share a name, and a repeated type parameter.",
+        run: |program, _, ctx| duplicate_members::report_duplicate_members(program, ctx),
     },
     Pass {
         name: "duplicates",
