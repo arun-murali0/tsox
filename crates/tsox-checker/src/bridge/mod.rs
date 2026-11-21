@@ -13,6 +13,7 @@ mod implicit_any;
 mod imports;
 mod model;
 mod narrow;
+mod parameter_properties;
 mod parse;
 mod passes;
 mod probe;

@@ -12,8 +12,8 @@ use oxc_semantic::Scoping;
 
 use super::context::CheckContext;
 use super::{
-    class_implements, duplicates, implicit_any, strict_mode_names, tuple_grammar, unreachable_code,
-    unresolved_names,
+    class_implements, duplicates, implicit_any, parameter_properties, strict_mode_names,
+    tuple_grammar, unreachable_code, unresolved_names,
 };
 
 /// What a whole-file pass is given. Passes that need less ignore the rest.
@@ -41,6 +41,11 @@ pub(super) const PASSES: &[Pass] = &[
         name: "strict_mode_names",
         doc: "Reports names that are reserved in strict mode and misuse of `eval` or `arguments`.",
         run: |program, _, ctx| strict_mode_names::report_strict_mode_names(program, ctx),
+    },
+    Pass {
+        name: "parameter_properties",
+        doc: "Reports a parameter property outside a constructor implementation.",
+        run: |program, _, ctx| parameter_properties::report_parameter_properties(program, ctx),
     },
     Pass {
         name: "implicit_any",

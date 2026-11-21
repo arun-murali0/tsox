@@ -73,6 +73,13 @@ pub mod messages {
     /// The code and text for `actual` not being assignable to `expected`, reported
     /// under `plain` when no missing property replaces it. Used where a caller reports
     /// a mismatch of its own kind (a property of an object literal, an arrow body).
+    pub fn parameter_property_outside_constructor() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ParameterPropertyOutsideConstructor,
+            "A parameter property is only allowed in a constructor implementation.",
+        )
+    }
+
     pub fn tuple_index_out_of_range(text: String) -> DiagnosticMessage {
         DiagnosticMessage::new(DiagnosticCode::TupleIndexOutOfRange, text)
     }
