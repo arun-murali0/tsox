@@ -182,6 +182,12 @@ fn run_loop(
             for &symbol_id in &written {
                 head.remove(symbol_id);
             }
+            ctx.warning(
+                crate::diagnostic_messages::messages::flow_approximated(
+                    "The state at a loop head that did not settle",
+                ),
+                span,
+            );
         }
     }
 
@@ -510,8 +516,20 @@ pub(super) fn check_try_statement(
     let mut written_in_handler = Vec::new();
     if let Some(handler) = &try_stmt.handler {
         let mut at_catch = outer.clone();
+        let mut dropped = false;
         for &symbol_id in &written_in_try {
+            dropped |= outer.mentions(symbol_id);
             at_catch.remove(symbol_id);
+        }
+        // tsc enters the catch from every point of the try, so a name written there is the
+        // union of what it was at each; here it is its declared type.
+        if dropped {
+            ctx.warning(
+                crate::diagnostic_messages::messages::flow_approximated(
+                    "The state a catch block is entered with",
+                ),
+                handler.span,
+            );
         }
         ctx.narrow = at_catch;
         if let Some(param) = &handler.param {

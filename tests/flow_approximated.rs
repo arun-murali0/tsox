@@ -30,3 +30,13 @@ fn bodies_that_break_return_or_are_empty_are_not() {
         0
     );
 }
+
+#[test]
+fn a_catch_entered_without_a_narrowed_name_written_in_the_try_is_reported() {
+    let source = "declare var x: string | number;\nif (typeof x === \"string\") {\n  try { x = 1; } catch (e) { x; }\n}";
+    assert_eq!(approximated(source), 1);
+    assert_eq!(
+        approximated("declare var y: string | number;\ntry { y = 1; } catch (e) { y; }"),
+        0
+    );
+}
