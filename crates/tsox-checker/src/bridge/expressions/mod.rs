@@ -392,6 +392,18 @@ fn infer_expression_type_inner(
             ctx.arena.error()
         }
 
+        // An element's own checking (attributes, children, components) is not done yet; what
+        // is reported is that its intrinsic tags have no `JSX.IntrinsicElements` to be looked
+        // up in.
+        Expression::JSXElement(element) => {
+            report_jsx_without_intrinsics(element, ctx);
+            ctx.warning(
+                crate::diagnostic_messages::messages::unimplemented_expression_kind(),
+                expr.span(),
+            );
+            ctx.arena.error()
+        }
+
         _ => {
             ctx.warning(
                 crate::diagnostic_messages::messages::unimplemented_expression_kind(),
@@ -463,5 +475,41 @@ fn widen_if_narrowed(
         )
     } else {
         (left, right)
+    }
+}
+
+// TS7026 on each intrinsic (lowercase) tag of `element` and of the elements nested in it, when
+// the project is known to declare no `JSX.IntrinsicElements`. A file that mentions `JSX`, imports
+// something (which may bring the namespace) or names a JSX pragma is left alone: its namespace
+// may come from where this checker does not look.
+fn report_jsx_without_intrinsics(
+    element: &oxc_ast::ast::JSXElement,
+    ctx: &mut CheckContext<'_, '_>,
+) {
+    use oxc_ast::ast::{JSXChild, JSXElementName};
+    if !ctx.jsx_intrinsics_absent
+        || ctx.source_text.contains("JSX")
+        || ctx.source_text.contains("@jsx")
+        || ctx.source_text.contains("import ")
+        || ctx.source_text.contains("require(")
+    {
+        return;
+    }
+    if let JSXElementName::Identifier(name) = &element.opening_element.name
+        && name
+            .name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase())
+    {
+        ctx.error(
+            crate::diagnostic_messages::messages::jsx_element_implicitly_any(),
+            name.span,
+        );
+    }
+    for child in &element.children {
+        if let JSXChild::Element(child) = child {
+            report_jsx_without_intrinsics(child, ctx);
+        }
     }
 }

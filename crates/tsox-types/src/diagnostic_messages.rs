@@ -516,6 +516,13 @@ pub mod messages {
         )
     }
 
+    pub fn jsx_element_implicitly_any() -> DiagnosticMessage {
+        DiagnosticMessage::new(
+            DiagnosticCode::ImplicitAnyJsxElement,
+            "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.",
+        )
+    }
+
     pub fn yield_implicitly_any() -> DiagnosticMessage {
         DiagnosticMessage::new(
             DiagnosticCode::ImplicitAnyYield,

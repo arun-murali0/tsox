@@ -136,6 +136,11 @@ fn bind_project_globals<'ast>(
     ctx: &mut CheckContext<'ast, '_>,
     source: &dyn ImportSource,
 ) {
+    ctx.jsx_intrinsics_absent = source
+        .global_members("JSX")
+        .iter()
+        .all(|member| member != "JSX.IntrinsicElements")
+        && source.global_decls("JSX.IntrinsicElements").is_empty();
     let mut names: Vec<String> = scoping
         .root_unresolved_references()
         .keys()

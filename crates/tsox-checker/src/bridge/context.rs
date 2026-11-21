@@ -56,6 +56,9 @@ pub struct CheckContext<'ast, 'src> {
     pub file_name: &'src str,
     // The source text of the unit being checked, for a message that quotes it (empty until set).
     pub source_text: &'src str,
+    // True only when the project is known to declare no `JSX.IntrinsicElements`; an intrinsic
+    // JSX element is then implicitly any (TS7026). Stays false when that is not known.
+    pub jsx_intrinsics_absent: bool,
     // The compiler options this unit is checked under (see check_options.rs).
     pub options: crate::check_options::CheckOptions,
     /// The options this unit has read (see `CheckContext::option`).
@@ -561,6 +564,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             diagnostics: Vec::new(),
             file_name,
             source_text: "",
+            jsx_intrinsics_absent: false,
             options: crate::check_options::CheckOptions::default(),
             options_read: std::cell::Cell::new(crate::check_options::OptionReads::none()),
             flow_reads: Vec::new(),

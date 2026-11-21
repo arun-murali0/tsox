@@ -70,6 +70,7 @@ the message function that builds it, and the code areas that call that function 
 | TSR1409 | `ImplicitAnyCallSignature` | TS7020 | `call_signature_lacks_return_annotation` | `tsox-checker/bridge/implicit_any` |
 | TSR1410 | `ImplicitAnyRestParameter` | TS7019 | `rest_parameter_implicitly_any` | `tsox-checker/bridge/implicit_any`, `tsox-checker/bridge/statements` |
 | TSR1411 | `ImplicitAnyYield` | TS7057 | `yield_implicitly_any` | `tsox-checker/bridge/implicit_any` |
+| TSR1412 | `ImplicitAnyJsxElement` | TS7026 | `jsx_element_implicitly_any` | `tsox-checker/bridge/expressions` |
 | TSR1501 | `TypeArgumentCountMismatch` | TS2314 | `type_argument_count_mismatch` | `tsox-checker/bridge/mod` |
 | TSR1502 | `TypeIsNotGeneric` | TS2315 | `type_is_not_generic` | `tsox-checker/bridge/mod` |
 | TSR1503 | `DuplicateTypeDeclaration` | TS2300 | `duplicate_type_declaration` | `tsox-checker/bridge/declare`, `tsox-checker/bridge/duplicates` |
