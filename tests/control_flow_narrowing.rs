@@ -205,7 +205,11 @@ fn narrowing_does_not_leak_between_switch_cases() {
 #[test]
 fn narrowing_does_not_leak_past_switch() {
     let source = include_str!("fixtures/narrowing-scopes/narrowing_does_not_leak_past_switch.ts");
-    let diagnostics = check(source, "narrowing_does_not_leak_past_switch.ts");
+    // The fallthrough warning (TSR9015) is not what this test is about; count errors only.
+    let diagnostics: Vec<_> = check(source, "narrowing_does_not_leak_past_switch.ts")
+        .into_iter()
+        .filter(|d| d.severity == tsox::Severity::Error)
+        .collect();
     assert_eq!(
         diagnostics.len(),
         1,
@@ -330,10 +334,14 @@ fn switch_case_narrowing_does_not_leak_to_the_next_case() {
     let source = include_str!(
         "fixtures/control-flow-narrowing/switch_case_narrowing_does_not_leak_to_the_next_case.ts"
     );
-    let diagnostics = check(
+    // The fallthrough warning (TSR9015) is not what this test is about; count errors only.
+    let diagnostics: Vec<_> = check(
         source,
         "switch_case_narrowing_does_not_leak_to_the_next_case.ts",
-    );
+    )
+    .into_iter()
+    .filter(|d| d.severity == tsox::Severity::Error)
+    .collect();
     assert_eq!(
         diagnostics.len(),
         1,
