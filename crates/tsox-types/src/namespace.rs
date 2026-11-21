@@ -2125,14 +2125,47 @@ impl<'a> TypeNamespace<'a> {
                         type_params,
                         is_untyped,
                     }));
-                    upsert_property(
-                        &mut properties,
-                        name,
-                        method_type,
-                        false,
-                        true,
-                        member_modifiers(class, self.file_id, method.accessibility, false),
-                    );
+                    // Overloads: `m(a: A): R; m(a: A, b: B): R; m(...) { ... }`. The signatures
+                    // without a body make up the type, as an intersection of them, and the
+                    // implementation's own signature is not visible once there are any.
+                    let is_overload = method.value.body.is_none();
+                    let has_overloads = class.body.body.iter().any(|other| {
+                        matches!(
+                            other,
+                            ClassElement::MethodDefinition(o)
+                                if !o.r#static
+                                    && o.kind == MethodDefinitionKind::Method
+                                    && o.value.body.is_none()
+                                    && static_member_name(&o.key).as_deref() == Some(name.as_str())
+                        )
+                    });
+                    if !is_overload && has_overloads {
+                        // The implementation is not part of the type, but its accessibility is
+                        // the one callers see (the signatures' own are checked against it).
+                        let modifiers =
+                            member_modifiers(class, self.file_id, method.accessibility, false);
+                        if let Some(existing) = properties
+                            .iter_mut()
+                            .find(|p| *p.name == *name && p.is_method)
+                        {
+                            existing.modifiers = modifiers;
+                        }
+                        continue;
+                    }
+                    let earlier = properties
+                        .iter()
+                        .find(|p| *p.name == *name && p.is_method)
+                        .map(|p| (p.type_id, p.modifiers.clone()));
+                    let method_type = match earlier {
+                        Some((earlier_type, _)) if is_overload => arena
+                            .alloc_intersection(vec![earlier_type, method_type])
+                            .unwrap_or(method_type),
+                        _ => method_type,
+                    };
+                    let _ = earlier.as_ref().map(|e| &e.1);
+                    let modifiers =
+                        member_modifiers(class, self.file_id, method.accessibility, false);
+                    upsert_property(&mut properties, name, method_type, false, true, modifiers);
                 }
 
                 // Problem: `get total(): number { ... }` was dropped without a word, so

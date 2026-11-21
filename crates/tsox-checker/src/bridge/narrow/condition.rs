@@ -14,6 +14,9 @@ pub fn register_aliased_condition(
 ) {
     let (mut on_true, mut on_false) = narrow_condition(init, scoping, ctx);
     let stable = |symbol_id: SymbolId| {
+        if symbol_id == THIS_ROOT {
+            return true;
+        }
         let flags = scoping.symbol_flags(symbol_id);
         let reassignable = flags.is_block_scoped() && !flags.is_const_variable();
         !reassignable && !scoping.symbol_is_mutated(symbol_id)
@@ -72,6 +75,11 @@ pub struct PathRef {
     pub path: Vec<String>,
 }
 
+/// The root of a narrowed path that starts at `this` (`this._x`). `this` is no symbol, so it
+/// gets one the scope tree never hands out; a narrowing state is per function body, where
+/// `this` does not change.
+pub const THIS_ROOT: SymbolId = SymbolId::new((u32::MAX - 1) as usize);
+
 pub fn path_of_member(member: &StaticMemberExpression, scoping: &Scoping) -> Option<PathRef> {
     if member.optional {
         return None;
@@ -89,6 +97,13 @@ pub fn path_of_member(member: &StaticMemberExpression, scoping: &Scoping) -> Opt
                 let symbol_id = resolve_symbol_id(ident, scoping)?;
                 path.reverse();
                 return Some(PathRef { symbol_id, path });
+            }
+            Expression::ThisExpression(_) => {
+                path.reverse();
+                return Some(PathRef {
+                    symbol_id: THIS_ROOT,
+                    path,
+                });
             }
             _ => return None,
         }

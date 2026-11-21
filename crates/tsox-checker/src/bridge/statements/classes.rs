@@ -125,6 +125,34 @@ pub(super) fn check_class_declaration(
         return;
     };
 
+    // Classes are looked up by name, so a second class of the same name in another block of a
+    // merged namespace resolves to the last one. A shape that lacks a member this class
+    // declares is that other class's: its bodies are not checked against it.
+    let shape_is_this_class = class.body.body.iter().all(|element| {
+        let (key, is_static) = match element {
+            ClassElement::MethodDefinition(m) if m.kind != MethodDefinitionKind::Constructor => {
+                (&m.key, m.r#static)
+            }
+            ClassElement::PropertyDefinition(p) => (&p.key, p.r#static),
+            _ => return true,
+        };
+        let PropertyKey::StaticIdentifier(key) = key else {
+            return true;
+        };
+        is_static
+            || instance_object
+                .properties
+                .iter()
+                .any(|p| p.name.as_ref() == key.name.as_str())
+    });
+    if !shape_is_this_class {
+        ctx.warning(
+            crate::diagnostic_messages::messages::unimplemented_class_shape(&name.name),
+            class.span(),
+        );
+        return;
+    }
+
     let outer_class_instance = ctx.current_class_instance.replace(instance_type);
     ctx.current_class_ids.push(crate::namespace::class_identity(
         ctx.namespace.file_id(),
@@ -152,9 +180,13 @@ pub(super) fn check_class_declaration(
     // than reused from instance_object.
     if let Some(ctor) = super::super::declare::find_constructor(class) {
         if let Some(ctor_body) = &ctor.body {
-            if let Some(params) =
-                resolve_function_params(&ctor.params, &mut ctx.namespace, &mut ctx.arena)
+            // A parameter that does not resolve is reported where it is written; the body is
+            // still checked, with the parameters bound as unresolved (`any`), as a static
+            // method's are.
             {
+                let params =
+                    resolve_function_params(&ctor.params, &mut ctx.namespace, &mut ctx.arena)
+                        .unwrap_or_default();
                 bind_params(&ctor.params, &params, scoping, ctx);
                 // Like a function declaration, a constructor body starts with no
                 // narrowing and leaves none behind.
@@ -190,9 +222,43 @@ pub(super) fn check_class_declaration(
                 else {
                     continue;
                 };
-                let Type::Function(method_type) = ctx.arena.get(method_property.type_id).clone()
-                else {
-                    continue;
+                let has_overloads = class.body.body.iter().any(|other| {
+                    matches!(
+                        other,
+                        ClassElement::MethodDefinition(o)
+                            if !o.r#static
+                                && o.kind == MethodDefinitionKind::Method
+                                && o.value.body.is_none()
+                                && matches!(&o.key, PropertyKey::StaticIdentifier(k) if k.name == key.name)
+                    )
+                });
+                let method_type = match ctx.arena.get(method_property.type_id).clone() {
+                    Type::Function(function) if !has_overloads => function,
+                    // An overloaded method is the intersection of its signatures; the
+                    // body belongs to the implementation signature, resolved here.
+                    _ => {
+                        let Some(params) = resolve_function_params(
+                            &method.value.params,
+                            &mut ctx.namespace,
+                            &mut ctx.arena,
+                        ) else {
+                            continue;
+                        };
+                        let return_type = method
+                            .value
+                            .return_type
+                            .as_ref()
+                            .and_then(|rt| {
+                                resolve_type_annotation(rt, &mut ctx.namespace, &mut ctx.arena)
+                            })
+                            .unwrap_or_else(|| ctx.arena.any());
+                        crate::types::FunctionType {
+                            params,
+                            return_type,
+                            type_params: Vec::new(),
+                            is_untyped: false,
+                        }
+                    }
                 };
 
                 // The method's own `<B>` list, active for its body the way a function
@@ -231,7 +297,11 @@ pub(super) fn check_class_declaration(
             // has no entry in instance_object the way an instance method does,
             // and its signature is resolved fresh here instead.
             ClassElement::MethodDefinition(method)
-                if method.r#static && method.kind == MethodDefinitionKind::Method =>
+                if (method.r#static && method.kind == MethodDefinitionKind::Method)
+                    || matches!(
+                        method.kind,
+                        MethodDefinitionKind::Get | MethodDefinitionKind::Set
+                    ) =>
             {
                 let Some(method_body) = &method.value.body else {
                     continue;
@@ -265,7 +335,11 @@ pub(super) fn check_class_declaration(
                 // no-diagnostic case a `this` of legitimately unknown origin
                 // already gets (see the doc comment on Expression::ThisExpression
                 // in expressions/mod.rs), rather than being silently wrong.
-                let outer_class_instance_for_this = ctx.current_class_instance.take();
+                let outer_class_instance_for_this = if method.r#static {
+                    ctx.current_class_instance.take()
+                } else {
+                    ctx.current_class_instance
+                };
                 let outer_narrow = std::mem::take(&mut ctx.narrow);
                 for body_stmt in &method_body.statements {
                     check_statement(body_stmt, scoping, ctx);
@@ -280,13 +354,6 @@ pub(super) fn check_class_declaration(
                     None,
                 );
                 ctx.namespace.pop_type_params(method_type_params);
-            }
-
-            ClassElement::MethodDefinition(method) if method.r#static => {
-                ctx.warning(
-                    crate::diagnostic_messages::messages::unimplemented_static_accessor(),
-                    method.span(),
-                );
             }
 
             ClassElement::PropertyDefinition(prop) if prop.r#static => {
@@ -307,6 +374,30 @@ pub(super) fn check_class_declaration(
                             );
                         }
                     }
+                }
+            }
+
+            // An instance property's initializer runs in the constructor, with `this` the
+            // instance; it is checked against the property's annotation like a static one.
+            ClassElement::PropertyDefinition(prop) if !prop.r#static && !prop.declare => {
+                let Some(initializer) = &prop.value else {
+                    continue;
+                };
+                let actual = infer_expression_type(initializer, scoping, ctx);
+                if let Some(annotation) = &prop.type_annotation
+                    && let Some(declared) =
+                        resolve_type_annotation(annotation, &mut ctx.namespace, &mut ctx.arena)
+                    // A type still written in the class's own type parameters (`{ [P in keyof T]?: T[P] }`)
+                    // is not compared: its assignability is deferred here.
+                    && !crate::semantic::GenericSolver::contains_type_param(&ctx.arena, declared)
+                    && !ctx.is_assignable_instantiating(actual, declared)
+                {
+                    ctx.error(
+                        crate::diagnostic_messages::messages::static_field_initializer_mismatch(
+                            &ctx.arena, actual, declared,
+                        ),
+                        initializer.span(),
+                    );
                 }
             }
 
