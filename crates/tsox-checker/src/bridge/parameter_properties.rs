@@ -45,9 +45,8 @@ impl<'ast> Visit<'ast> for Walker<'_, 'ast, '_> {
         let allowed = self.constructor_with_body;
         self.constructor_with_body = false;
         for parameter in &function.params.items {
-            let is_property = parameter.accessibility.is_some()
-                || parameter.readonly
-                || parameter.r#override;
+            let is_property =
+                parameter.accessibility.is_some() || parameter.readonly || parameter.r#override;
             if is_property && !allowed {
                 self.ctx.error(
                     messages::parameter_property_outside_constructor(),

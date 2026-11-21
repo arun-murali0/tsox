@@ -197,10 +197,7 @@ fn property_types(
             .map(|p| p.type_id),
         _ => None,
     };
-    (
-        find(derived).unwrap_or(derived),
-        find(base).unwrap_or(base),
-    )
+    (find(derived).unwrap_or(derived), find(base).unwrap_or(base))
 }
 
 fn member_span(class: &Class<'_>, name: &str) -> Option<oxc_span::Span> {

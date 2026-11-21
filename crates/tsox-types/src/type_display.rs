@@ -429,10 +429,7 @@ fn write_type(arena: &TypeArena, type_id: TypeId, out: &mut String, depth: usize
                 // tsc parenthesizes an intersection or a function type that is a member of a
                 // union: `(A & B) | (C & D)`, `(() => void) | string`.
                 let parenthesize = !arena.is_named(member)
-                    && matches!(
-                        arena.get(member),
-                        Type::Intersection(_) | Type::Function(_)
-                    );
+                    && matches!(arena.get(member), Type::Intersection(_) | Type::Function(_));
                 if parenthesize {
                     out.push('(');
                 }

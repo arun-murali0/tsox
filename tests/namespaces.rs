@@ -405,7 +405,10 @@ fn a_relation_error_names_a_namespace_member_by_its_own_name() {
         found.iter().any(|(_, m)| m.contains("to type 'T'")),
         "{found:?}"
     );
-    assert!(found.iter().all(|(_, m)| !m.contains("Test.T")), "{found:?}");
+    assert!(
+        found.iter().all(|(_, m)| !m.contains("Test.T")),
+        "{found:?}"
+    );
 }
 
 #[test]

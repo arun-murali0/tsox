@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use oxc_ast::ast::{
-    Class, ClassElement, MethodDefinitionKind, PropertyKey, TSInterfaceDeclaration, TSSignature,
-    TSTypeLiteral, TSTypeParameterDeclaration, Program,
+    Class, ClassElement, MethodDefinitionKind, Program, PropertyKey, TSInterfaceDeclaration,
+    TSSignature, TSTypeLiteral, TSTypeParameterDeclaration,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_span::{GetSpan, Span};

@@ -143,7 +143,8 @@ pub(super) fn infer_assignment_expression_type(
                     ctx,
                 );
                 ctx.operand_spans = Some((assign.left.span(), assign.right.span()));
-                ctx.compound_operator = (binary_operator == BinaryOperator::Addition).then_some("+=");
+                ctx.compound_operator =
+                    (binary_operator == BinaryOperator::Addition).then_some("+=");
                 let result = infer_binary_expression_type(
                     binary_operator,
                     target_type,
