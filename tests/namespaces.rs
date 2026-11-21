@@ -396,10 +396,16 @@ fn messages_inside_a_namespace_use_the_short_member_name() {
 }
 
 #[test]
-fn messages_outside_a_namespace_keep_the_qualified_name() {
+fn a_relation_error_names_a_namespace_member_by_its_own_name() {
+    // tsc: "Type 'number' is not assignable to type 'T'." (not 'Test.T'); a path is kept only
+    // where two different ones would read alike.
     let found =
         errors("namespace Test { export interface T { a: number } }\nconst x: Test.T = 5;\n");
-    assert!(found.iter().any(|(_, m)| m.contains("Test.T")), "{found:?}");
+    assert!(
+        found.iter().any(|(_, m)| m.contains("to type 'T'")),
+        "{found:?}"
+    );
+    assert!(found.iter().all(|(_, m)| !m.contains("Test.T")), "{found:?}");
 }
 
 #[test]
