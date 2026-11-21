@@ -375,6 +375,8 @@ fn report_missing_overrides<'ast>(
         .iter()
         .map(|p| p.name.clone())
         .collect();
+    // tsc names the base as written with its arguments (`C3<U>`), not the bare class name.
+    let base_shown = crate::type_display::display_type(&ctx.arena, base);
     for element in &class.body.body {
         let (key, is_static, has_override, skip) = match element {
             ClassElement::PropertyDefinition(p) => (&p.key, p.r#static, p.r#override, false),
@@ -411,7 +413,7 @@ fn report_missing_overrides<'ast>(
             .is_some_and(|set| set.contains(name.as_ref()));
         if !is_abstract && base_members.iter().any(|m| m.as_ref() == name.as_ref()) {
             ctx.error(
-                crate::diagnostic_messages::messages::missing_override_modifier(base_name),
+                crate::diagnostic_messages::messages::missing_override_modifier(&base_shown),
                 key.span(),
             );
         }

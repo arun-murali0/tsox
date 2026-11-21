@@ -138,7 +138,7 @@ fn infer_arrow_function_type_inner(
                 let awaited = ctx.awaited_type(inferred);
                 ctx.arena.alloc_promise(awaited)
             }
-            None => inferred,
+            None => widen_unit_return(ctx, inferred, contextual),
         }
     } else {
         let ArrowFunctionBody::FunctionBody(body) = &arrow.body else {
@@ -169,6 +169,7 @@ fn infer_arrow_function_type_inner(
             } else {
                 ctx.arena.alloc_union(returned)
             };
+            let inferred = widen_unit_return(ctx, inferred, contextual);
             if arrow.r#async {
                 let awaited = ctx.awaited_type(inferred);
                 ctx.arena.alloc_promise(awaited)
@@ -192,6 +193,56 @@ fn infer_arrow_function_type_inner(
         type_params,
         is_untyped: false,
     }))
+}
+
+// A function whose return type is inferred from one literal (`() => 1`) returns the widened
+// type (`number`), unless the contextual signature's return type is itself a literal or a type
+// parameter, which asks for the literal to be kept. A union of several literals is not a
+// single literal and is left as it is, as in tsc.
+fn widen_unit_return(
+    ctx: &CheckContext<'_, '_>,
+    inferred: TypeId,
+    contextual: Option<TypeId>,
+) -> TypeId {
+    if ctx.const_context
+        || !matches!(
+            ctx.arena.get(inferred),
+            Type::StringLiteral(_) | Type::NumberLiteral(_) | Type::BooleanLiteral(_)
+        )
+    {
+        return inferred;
+    }
+    // The contextual type may be a union of function types; any of them can ask for a literal.
+    let contextual_members = contextual
+        .map(|c| match ctx.arena.get(c) {
+            Type::Union(members) => members.clone(),
+            _ => vec![c],
+        })
+        .unwrap_or_default();
+    let wants_literal = contextual_members.iter().any(|&c| {
+        let Type::Function(f) = ctx.arena.get(c) else {
+            return false;
+        };
+        let ret = f.return_type;
+        let members = match ctx.arena.get(ret) {
+            Type::Union(members) => members.clone(),
+            _ => vec![ret],
+        };
+        members.iter().any(|&m| {
+            matches!(
+                ctx.arena.get(m),
+                Type::StringLiteral(_)
+                    | Type::NumberLiteral(_)
+                    | Type::BooleanLiteral(_)
+                    | Type::GenericParameter(..)
+            )
+        })
+    });
+    if wants_literal {
+        inferred
+    } else {
+        crate::types::widen(&ctx.arena, inferred)
+    }
 }
 
 pub(super) fn infer_function_expression_type(
@@ -267,6 +318,7 @@ fn infer_function_expression_type_inner(
             } else {
                 ctx.arena.alloc_union(returned)
             };
+            return_type = widen_unit_return(ctx, return_type, contextual);
             if func.r#async {
                 let awaited = ctx.awaited_type(return_type);
                 return_type = ctx.arena.alloc_promise(awaited);

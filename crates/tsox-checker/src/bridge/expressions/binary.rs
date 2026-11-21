@@ -329,7 +329,8 @@ pub(super) fn infer_binary_expression_type(
             } else if is_number {
                 ctx.arena.number()
             } else {
-                push_binary_op_mismatch(ctx, span, "+", left, right);
+                let operator = ctx.compound_operator.unwrap_or("+");
+                push_binary_op_mismatch(ctx, span, operator, left, right);
                 ctx.arena.error()
             }
         }

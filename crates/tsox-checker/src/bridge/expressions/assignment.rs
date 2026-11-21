@@ -143,6 +143,7 @@ pub(super) fn infer_assignment_expression_type(
                     ctx,
                 );
                 ctx.operand_spans = Some((assign.left.span(), assign.right.span()));
+                ctx.compound_operator = (binary_operator == BinaryOperator::Addition).then_some("+=");
                 let result = infer_binary_expression_type(
                     binary_operator,
                     target_type,
@@ -151,6 +152,7 @@ pub(super) fn infer_assignment_expression_type(
                     ctx,
                 );
                 ctx.operand_spans = None;
+                ctx.compound_operator = None;
                 // The write happens only if the operation's result fits what the
                 // target reads as right now — the narrowed type, not the declared
                 // one — which tsc checks (TS2322). When it does not, the write is

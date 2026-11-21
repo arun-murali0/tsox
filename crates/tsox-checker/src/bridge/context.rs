@@ -166,6 +166,9 @@ pub struct CheckContext<'ast, 'src> {
     /// The spans of the operands of the binary operation being checked, for the diagnostics that
     /// belong to one operand (TS2362 on the left, TS2363 on the right).
     pub operand_spans: Option<(oxc_span::Span, oxc_span::Span)>,
+    // The compound operator (`+=`) a binary check stands in for, so the message names the
+    // operator the source wrote, as tsc does. `None` for a plain binary expression.
+    pub compound_operator: Option<&'static str>,
     /// Set while a bracket access with a literal key is looked up like a property read.
     pub bracket_access: bool,
 
@@ -590,6 +593,7 @@ impl<'ast, 'src> CheckContext<'ast, 'src> {
             in_export_declaration: false,
             loop_probe: false,
             operand_spans: None,
+            compound_operator: None,
             abstract_members: Default::default(),
             static_members: Default::default(),
             bracket_access: false,

@@ -36,6 +36,7 @@ pub(super) fn infer_logical_expression_type(
             ctx.narrow = outer_narrow;
 
             let left_falsy = narrow_to_falsy(&mut ctx.arena, left_type);
+            let left_falsy = definitely_falsy_part(&mut ctx.arena, left_falsy);
             ctx.arena.alloc_union(vec![left_falsy, right_type])
         }
 
@@ -60,6 +61,27 @@ pub(super) fn infer_logical_expression_type(
             ctx.arena.alloc_union(vec![left_non_nullish, right_type])
         }
     }
+}
+
+// The part of the left operand of `&&` that survives into the result. tsc keeps only the
+// values that are falsy for certain: a `boolean` becomes `false`, a `string` becomes `\"\"` and a
+// `number` becomes `0`, so `flag && x` reads `false | X` and not `boolean | X`. Other members
+// are kept as the narrowing left them.
+fn definitely_falsy_part(arena: &mut crate::arena::TypeArena, id: TypeId) -> TypeId {
+    let members = match arena.get(id) {
+        Type::Union(members) => members.clone(),
+        _ => vec![id],
+    };
+    let mapped: Vec<TypeId> = members
+        .into_iter()
+        .map(|member| match arena.get(member) {
+            Type::Boolean => arena.alloc(Type::BooleanLiteral(false)),
+            Type::String => arena.alloc(Type::StringLiteral(String::new())),
+            Type::Number => arena.alloc(Type::NumberLiteral(0.0)),
+            _ => member,
+        })
+        .collect();
+    arena.alloc_union(mapped)
 }
 
 // A ternary's result is the union of both branches, and each branch is checked
