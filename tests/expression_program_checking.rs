@@ -659,7 +659,11 @@ fn switch_case_body_mismatch_is_caught() {
 fn switch_case_body_checks_clean_including_default() {
     let source =
         include_str!("fixtures/expression-program-checking/switch_case_body_checks_clean.ts");
-    let diagnostics = check(source, "switch_case_body_checks_clean.ts");
+    // The fallthrough warning (TSR9015) is not a false positive; look at errors only.
+    let diagnostics: Vec<_> = check(source, "switch_case_body_checks_clean.ts")
+        .into_iter()
+        .filter(|d| d.severity == tsox::Severity::Error)
+        .collect();
     assert!(
         diagnostics.is_empty(),
         "expected no false positives, got: {diagnostics:?}"
