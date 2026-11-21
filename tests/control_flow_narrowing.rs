@@ -13,7 +13,15 @@ fn check(fixture_source: &str, file_name: &str) -> Vec<tsox::Diagnostic> {
     let result = checker.check_source(fixture_source, file_name);
     assert!(result.is_ok(), "fixture should at least parse: {result:?}");
     result
-        .map(|checked| checked.diagnostics)
+        .map(|checked| {
+            // A FlowApproximated warning says what was simplified, not what the source means;
+            // these tests are about the errors.
+            checked
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.code != DiagnosticCode::FlowApproximated)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
